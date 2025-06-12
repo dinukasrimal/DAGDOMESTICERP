@@ -1,4 +1,3 @@
-
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { GoogleSheetsService, SheetOrder } from './googleSheetsService';
 
@@ -51,8 +50,7 @@ export class DataService {
   }
 
   private convertSheetOrderToOrder(sheetOrder: SheetOrder): Order {
-    // Always set status to 'pending' for new orders from sheets
-    // Only set to 'scheduled' if both start and end dates are present
+    // Check if this order has schedule dates - if so, it's already scheduled
     const hasScheduleDates = sheetOrder.planStartDate && sheetOrder.planEndDate;
     
     return {
@@ -79,7 +77,11 @@ export class DataService {
     try {
       const sheetOrders = await this.googleSheetsService.fetchOrders();
       this.orders = sheetOrders.map(order => this.convertSheetOrderToOrder(order));
-      console.log(`Converted ${this.orders.length} orders, pending: ${this.orders.filter(o => o.status === 'pending').length}`);
+      
+      const pendingCount = this.orders.filter(o => o.status === 'pending').length;
+      const scheduledCount = this.orders.filter(o => o.status === 'scheduled').length;
+      
+      console.log(`Converted ${this.orders.length} orders: ${pendingCount} pending, ${scheduledCount} scheduled`);
       return this.orders;
     } catch (error) {
       console.error('Error fetching orders from sheet:', error);
@@ -100,7 +102,10 @@ export class DataService {
   }
 
   getPendingOrders(): Order[] {
-    return this.orders.filter(order => order.status === 'pending');
+    // Only return orders that are truly pending (no plan dates)
+    return this.orders.filter(order => 
+      order.status === 'pending' && !order.planStartDate && !order.planEndDate
+    );
   }
 
   getProductionLines(): ProductionLine[] {

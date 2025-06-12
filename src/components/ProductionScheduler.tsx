@@ -1,16 +1,17 @@
 
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
+import { useProductionData } from '../hooks/useProductionData';
 import { SchedulingBoard } from './SchedulingBoard';
 import { PendingOrdersSidebar } from './PendingOrdersSidebar';
 import { AdminPanel } from './AdminPanel';
-import { Header } from './Header';
 import { GoogleSheetsConfig } from './GoogleSheetsConfig';
+import { Header } from './Header';
 import { Order } from '../types/scheduler';
-import { useProductionData } from '../hooks/useProductionData';
-import { Button } from './ui/button';
-import { RefreshCw, AlertCircle } from 'lucide-react';
 
 export const ProductionScheduler: React.FC = () => {
+  const [userRole, setUserRole] = useState<'planner' | 'superuser'>('planner');
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  
   const {
     orders,
     productionLines,
@@ -30,212 +31,134 @@ export const ProductionScheduler: React.FC = () => {
     clearError
   } = useProductionData();
 
-  const [scheduledOrders, setScheduledOrders] = useState<any[]>([]);
-  const [showAdminPanel, setShowAdminPanel] = useState(false);
-  const [userRole, setUserRole] = useState<'planner' | 'superuser'>('planner');
+  const handleToggleAdmin = () => {
+    setShowAdminPanel(!showAdminPanel);
+  };
 
-  const handleOrderSchedule = async (order: Order, lineId: string, startDate: Date, rampUpPlanId: string) => {
-    const rampUpPlan = rampUpPlans.find(plan => plan.id === rampUpPlanId);
-    if (!rampUpPlan) return;
+  const handleRoleChange = (role: 'planner' | 'superuser') => {
+    setUserRole(role);
+    if (role === 'planner') {
+      setShowAdminPanel(false);
+    }
+  };
 
-    // Calculate daily production based on SMV and efficiency
-    const calculateDailyProduction = (day: number) => {
-      let efficiency = rampUpPlan.finalEfficiency;
-      const dayPlan = rampUpPlan.efficiencies.find(e => e.day === day);
-      if (dayPlan) {
-        efficiency = dayPlan.efficiency;
-      } else if (day <= Math.max(...rampUpPlan.efficiencies.map(e => e.day))) {
-        const lastPlan = rampUpPlan.efficiencies[rampUpPlan.efficiencies.length - 1];
-        efficiency = lastPlan.efficiency;
+  const handleOrderScheduled = useCallback(async (order: Order, startDate: Date, endDate: Date) => {
+    try {
+      // Update the order with schedule dates
+      const updatedOrder = {
+        ...order,
+        planStartDate: startDate,
+        planEndDate: endDate,
+        status: 'scheduled' as const
+      };
+
+      // Update the orders list
+      setOrders(prevOrders => 
+        prevOrders.map(o => o.id === order.id ? updatedOrder : o)
+      );
+
+      // Update the schedule in Google Sheets if configured
+      if (isGoogleSheetsConfigured) {
+        await updateOrderSchedule(updatedOrder, startDate, endDate);
       }
+
+      console.log('Order scheduled successfully:', order.poNumber);
+    } catch (error) {
+      console.error('Failed to schedule order:', error);
+    }
+  }, [setOrders, updateOrderSchedule, isGoogleSheetsConfigured]);
+
+  const handleOrderSplit = useCallback((orderId: string, splitQuantity: number) => {
+    setOrders(prevOrders => {
+      const orderToSplit = prevOrders.find(o => o.id === orderId);
+      if (!orderToSplit || splitQuantity >= orderToSplit.orderQuantity) {
+        return prevOrders;
+      }
+
+      const remainingQuantity = orderToSplit.orderQuantity - splitQuantity;
       
-      return Math.round((540 / order.smv) * (efficiency / 100) * order.moCount);
-    };
+      // Create the split order
+      const splitOrder: Order = {
+        ...orderToSplit,
+        id: `${orderId}-split-${Date.now()}`,
+        orderQuantity: splitQuantity,
+        cutQuantity: Math.round((orderToSplit.cutQuantity / orderToSplit.orderQuantity) * splitQuantity),
+        issueQuantity: Math.round((orderToSplit.issueQuantity / orderToSplit.orderQuantity) * splitQuantity),
+        status: 'pending'
+      };
 
-    // Calculate end date
-    let currentDate = new Date(startDate);
-    let remainingQuantity = order.orderQuantity;
-    let day = 1;
+      // Update the original order
+      const updatedOriginalOrder: Order = {
+        ...orderToSplit,
+        orderQuantity: remainingQuantity,
+        cutQuantity: orderToSplit.cutQuantity - splitOrder.cutQuantity,
+        issueQuantity: orderToSplit.issueQuantity - splitOrder.issueQuantity
+      };
 
-    while (remainingQuantity > 0) {
-      // Skip weekends and holidays
-      if (currentDate.getDay() !== 0 && currentDate.getDay() !== 6 && 
-          !holidays.some(h => h.date.toDateString() === currentDate.toDateString())) {
-        const dailyProduction = calculateDailyProduction(day);
-        remainingQuantity -= dailyProduction;
-        day++;
-      }
-      currentDate.setDate(currentDate.getDate() + 1);
-    }
+      return prevOrders.map(o => 
+        o.id === orderId ? updatedOriginalOrder : o
+      ).concat(splitOrder);
+    });
+  }, [setOrders]);
 
-    const endDate = new Date(currentDate);
-    endDate.setDate(endDate.getDate() - 1);
+  // Filter pending orders - exclude orders that have plan dates (are scheduled)
+  const pendingOrders = orders.filter(order => 
+    order.status === 'pending' && !order.planStartDate && !order.planEndDate
+  );
 
-    const scheduledOrder = {
-      id: `scheduled-${Date.now()}`,
-      orderId: order.id,
-      lineId,
-      startDate,
-      endDate,
-      rampUpPlanId,
-      order
-    };
-
-    setScheduledOrders(prev => [...prev, scheduledOrder]);
-    
-    // Update order status to 'scheduled' and remove from pending list
-    updateOrderStatus(order.id, 'scheduled');
-    
-    // Update order with plan dates
-    setOrders(prev => prev.map(o => 
-      o.id === order.id 
-        ? { ...o, status: 'scheduled', planStartDate: startDate, planEndDate: endDate }
-        : o
-    ));
-
-    // Update Google Sheets if configured
-    if (isGoogleSheetsConfigured) {
-      try {
-        await updateOrderSchedule(order, startDate, endDate);
-      } catch (err) {
-        console.error('Failed to update Google Sheets:', err);
-        // Continue with local update even if sheet update fails
-      }
-    }
-
-    console.log(`Order ${order.poNumber} scheduled. Remaining pending orders: ${orders.filter(o => o.status === 'pending').length - 1}`);
-  };
-
-  const handleOrderSplit = (orderId: string, splitQuantity: number) => {
-    const order = orders.find(o => o.id === orderId);
-    if (!order || splitQuantity >= order.orderQuantity) return;
-
-    const remainingQuantity = order.orderQuantity - splitQuantity;
-    
-    const newOrder: Order = {
-      ...order,
-      id: `${order.id}-split-${Date.now()}`,
-      poNumber: `${order.poNumber}-SPLIT`,
-      orderQuantity: splitQuantity,
-      cutQuantity: Math.round((order.cutQuantity * splitQuantity) / order.orderQuantity),
-      issueQuantity: Math.round((order.issueQuantity * splitQuantity) / order.orderQuantity),
-      status: 'pending',
-      planStartDate: null,
-      planEndDate: null,
-      actualProduction: {}
-    };
-
-    setOrders(prev => [
-      ...prev.map(o => 
-        o.id === orderId 
-          ? { 
-              ...o, 
-              orderQuantity: remainingQuantity,
-              cutQuantity: order.cutQuantity - newOrder.cutQuantity,
-              issueQuantity: order.issueQuantity - newOrder.issueQuantity
-            }
-          : o
-      ),
-      newOrder
-    ]);
-
-    console.log(`Order ${order.poNumber} split. New order: ${newOrder.poNumber} (${splitQuantity}), Remaining: ${remainingQuantity}`);
-  };
-
-  // Show Google Sheets configuration if not configured
-  if (!isGoogleSheetsConfigured) {
+  if (showAdminPanel) {
     return (
-      <div className="flex flex-col h-screen bg-background">
-        <Header 
-          userRole={userRole}
-          onToggleAdmin={() => setShowAdminPanel(!showAdminPanel)}
-          onRoleChange={setUserRole}
-        />
-        
-        <div className="flex-1 flex items-center justify-center p-8">
-          <GoogleSheetsConfig 
-            onConfigured={configureGoogleSheets}
-            isConfigured={isGoogleSheetsConfigured}
-          />
-        </div>
-      </div>
+      <AdminPanel
+        orders={orders}
+        productionLines={productionLines}
+        holidays={holidays}
+        rampUpPlans={rampUpPlans}
+        onOrdersChange={setOrders}
+        onProductionLinesChange={setProductionLines}
+        onHolidaysChange={setHolidays}
+        onRampUpPlansChange={setRampUpPlans}
+        onClose={() => setShowAdminPanel(false)}
+      />
     );
   }
 
-  // Filter pending orders for sidebar
-  const pendingOrders = orders.filter(order => order.status === 'pending');
-  
   return (
     <div className="flex flex-col h-screen bg-background">
-      <Header 
+      <Header
         userRole={userRole}
-        onToggleAdmin={() => setShowAdminPanel(!showAdminPanel)}
-        onRoleChange={setUserRole}
+        onToggleAdmin={handleToggleAdmin}
+        onRoleChange={handleRoleChange}
       />
       
-      {/* Sync Status Bar */}
-      <div className="border-b border-border bg-card px-6 py-2">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-4">
-            <GoogleSheetsConfig 
-              onConfigured={configureGoogleSheets}
+      <div className="flex-1 flex overflow-hidden">
+        <PendingOrdersSidebar
+          orders={pendingOrders}
+          onOrderSplit={handleOrderSplit}
+        />
+        
+        <div className="flex-1 flex flex-col">
+          <div className="p-4 border-b border-border">
+            <GoogleSheetsConfig
+              isLoading={isLoading}
+              error={error}
               isConfigured={isGoogleSheetsConfigured}
+              onSync={fetchOrdersFromGoogleSheets}
+              onConfigure={configureGoogleSheets}
+              onClearError={clearError}
             />
-            
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={fetchOrdersFromGoogleSheets}
-              disabled={isLoading}
-              className="flex items-center space-x-2"
-            >
-              <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
-              <span>Sync Orders</span>
-            </Button>
-            
-            <div className="text-sm text-muted-foreground">
-              Total: {orders.length} | Pending: {pendingOrders.length} | Scheduled: {orders.filter(o => o.status === 'scheduled').length}
-            </div>
           </div>
           
-          {error && (
-            <div className="flex items-center space-x-2 text-destructive">
-              <AlertCircle className="h-4 w-4" />
-              <span className="text-sm">{error}</span>
-              <Button variant="ghost" size="sm" onClick={clearError}>×</Button>
-            </div>
-          )}
-        </div>
-      </div>
-      
-      {showAdminPanel ? (
-        <AdminPanel
-          productionLines={productionLines}
-          holidays={holidays}
-          rampUpPlans={rampUpPlans}
-          onProductionLinesChange={setProductionLines}
-          onHolidaysChange={setHolidays}
-          onRampUpPlansChange={setRampUpPlans}
-        />
-      ) : (
-        <div className="flex flex-1 overflow-hidden">
-          <PendingOrdersSidebar 
-            orders={pendingOrders}
-            onOrderSplit={handleOrderSplit}
-          />
-          
-          <div className="flex-1">
+          <div className="flex-1 overflow-auto">
             <SchedulingBoard
+              orders={orders}
               productionLines={productionLines}
-              scheduledOrders={scheduledOrders}
               holidays={holidays}
               rampUpPlans={rampUpPlans}
-              onOrderSchedule={handleOrderSchedule}
-              onScheduledOrdersChange={setScheduledOrders}
+              onOrderScheduled={handleOrderScheduled}
             />
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };
