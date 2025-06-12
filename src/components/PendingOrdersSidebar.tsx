@@ -6,7 +6,7 @@ import { Badge } from './ui/badge';
 import { Input } from './ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 import { Order } from '../types/scheduler';
-import { Package, Scissors, Target } from 'lucide-react';
+import { Package, Scissors, Target, Search } from 'lucide-react';
 
 interface PendingOrdersSidebarProps {
   orders: Order[];
@@ -18,6 +18,13 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
   onOrderSplit
 }) => {
   const [splitQuantities, setSplitQuantities] = useState<{ [orderId: string]: number }>({});
+  const [searchTerm, setSearchTerm] = useState('');
+
+  // Filter orders based on search term
+  const filteredOrders = orders.filter(order =>
+    order.poNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    order.styleId.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
   const handleSplit = (orderId: string) => {
     const quantity = splitQuantities[orderId];
@@ -39,10 +46,21 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
         <p className="text-sm text-muted-foreground">
           {orders.length} orders waiting to be scheduled
         </p>
+        
+        {/* Search Input */}
+        <div className="mt-3 relative">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search PO or Style..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="pl-10"
+          />
+        </div>
       </div>
       
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {orders.map((order) => (
+        {filteredOrders.map((order) => (
           <Card
             key={order.id}
             className="cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow"
@@ -117,6 +135,14 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
             </CardContent>
           </Card>
         ))}
+        
+        {filteredOrders.length === 0 && searchTerm && (
+          <div className="text-center py-8 text-muted-foreground">
+            <Search className="h-12 w-12 mx-auto mb-4 opacity-50" />
+            <p>No orders found</p>
+            <p className="text-sm">Try adjusting your search terms</p>
+          </div>
+        )}
         
         {orders.length === 0 && (
           <div className="text-center py-8 text-muted-foreground">

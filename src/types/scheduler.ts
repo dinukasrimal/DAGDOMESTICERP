@@ -12,6 +12,8 @@ export interface Order {
   planEndDate: Date | null;
   actualProduction: { [date: string]: number };
   assignedLineId?: string; // Track which production line this order is assigned to
+  basePONumber?: string; // Base PO number without split suffix
+  splitNumber?: number; // Split number for tracking
 }
 
 export interface ProductionLine {

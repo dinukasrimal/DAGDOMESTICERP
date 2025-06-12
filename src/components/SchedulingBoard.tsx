@@ -52,16 +52,17 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   const dates = generateDateRange();
 
+  // Fixed ramp-up calculation to show all days properly
   const calculateDailyProduction = (order: Order, line: ProductionLine, startDate: Date, method: 'capacity' | 'rampup', rampUpPlanId?: string) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
     let currentDate = new Date(startDate);
-    let dayNumber = 1;
+    let workingDayNumber = 1; // Track working days only
 
     const rampUpPlan = rampUpPlans.find(p => p.id === rampUpPlanId);
 
     while (remainingQty > 0) {
-      // Only skip holidays - removed weekend check
+      // Only skip holidays (not weekends)
       const isHoliday = holidays.some(h => h.date.toDateString() === currentDate.toDateString());
       
       if (!isHoliday) {
@@ -73,21 +74,32 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           const baseCapacity = (540 * order.moCount) / order.smv;
           let efficiency = rampUpPlan.finalEfficiency;
           
-          const rampUpDay = rampUpPlan.efficiencies.find(e => e.day === dayNumber);
+          // Find efficiency for current working day
+          const rampUpDay = rampUpPlan.efficiencies.find(e => e.day === workingDayNumber);
           if (rampUpDay) {
             efficiency = rampUpDay.efficiency;
           }
           
           dailyCapacity = Math.floor((baseCapacity * efficiency) / 100);
+          console.log(`Day ${workingDayNumber}: Base capacity ${baseCapacity}, Efficiency ${efficiency}%, Daily capacity ${dailyCapacity}`);
         }
 
         const plannedQty = Math.min(remainingQty, dailyCapacity);
-        dailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
-        remainingQty -= plannedQty;
-        dayNumber++;
+        if (plannedQty > 0) {
+          dailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
+          remainingQty -= plannedQty;
+          console.log(`${currentDate.toISOString().split('T')[0]}: Planned ${plannedQty}, Remaining ${remainingQty}`);
+        }
+        workingDayNumber++; // Only increment on working days
       }
       
       currentDate.setDate(currentDate.getDate() + 1);
+      
+      // Safety check to prevent infinite loop
+      if (currentDate.getTime() - startDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
+        console.warn('Breaking loop after 365 days to prevent infinite loop');
+        break;
+      }
     }
 
     return dailyPlan;

@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback } from 'react';
 import { useProductionData } from '../hooks/useProductionData';
 import { SchedulingBoard } from './SchedulingBoard';
@@ -88,6 +87,7 @@ export const ProductionScheduler: React.FC = () => {
     console.log('Order moved back to pending:', order.poNumber);
   }, [setOrders]);
 
+  // Completely redone split functionality with proper numbering
   const handleOrderSplit = useCallback((orderId: string, splitQuantity: number) => {
     setOrders(prevOrders => {
       const orderToSplit = prevOrders.find(o => o.id === orderId);
@@ -97,18 +97,35 @@ export const ProductionScheduler: React.FC = () => {
 
       const remainingQuantity = orderToSplit.orderQuantity - splitQuantity;
       
-      // Count existing splits for this order to determine split number
-      const existingSplits = prevOrders.filter(o => 
-        o.poNumber.includes(orderToSplit.poNumber) && o.poNumber.includes('Split')
-      ).length;
+      // Get the base PO number (without any existing "Split X" suffix)
+      let basePONumber = orderToSplit.poNumber;
+      if (basePONumber.includes(' Split ')) {
+        basePONumber = basePONumber.split(' Split ')[0];
+      }
       
-      const splitNumber = existingSplits + 1;
+      // Find all orders that share the same base PO number to determine next split number
+      const relatedOrders = prevOrders.filter(o => {
+        const orderBasePO = o.poNumber.includes(' Split ') ? o.poNumber.split(' Split ')[0] : o.poNumber;
+        return orderBasePO === basePONumber;
+      });
       
-      // Create the split order with numbered naming
+      // Count existing splits to determine the next split number
+      const existingSplitNumbers = relatedOrders
+        .filter(o => o.poNumber.includes(' Split '))
+        .map(o => {
+          const match = o.poNumber.match(/ Split (\d+)$/);
+          return match ? parseInt(match[1]) : 0;
+        })
+        .filter(num => num > 0);
+      
+      // Find the next available split number
+      const nextSplitNumber = existingSplitNumbers.length > 0 ? Math.max(...existingSplitNumbers) + 1 : 1;
+      
+      // Create the split order with proper numbering
       const splitOrder: Order = {
         ...orderToSplit,
         id: `${orderId}-split-${Date.now()}`,
-        poNumber: `${orderToSplit.poNumber} Split ${splitNumber}`,
+        poNumber: `${basePONumber} Split ${nextSplitNumber}`,
         orderQuantity: splitQuantity,
         cutQuantity: Math.round((orderToSplit.cutQuantity / orderToSplit.orderQuantity) * splitQuantity),
         issueQuantity: Math.round((orderToSplit.issueQuantity / orderToSplit.orderQuantity) * splitQuantity),
@@ -116,7 +133,9 @@ export const ProductionScheduler: React.FC = () => {
         planStartDate: null,
         planEndDate: null,
         actualProduction: {},
-        assignedLineId: undefined
+        assignedLineId: undefined,
+        basePONumber: basePONumber,
+        splitNumber: nextSplitNumber
       };
 
       // Update the original order
@@ -124,8 +143,20 @@ export const ProductionScheduler: React.FC = () => {
         ...orderToSplit,
         orderQuantity: remainingQuantity,
         cutQuantity: orderToSplit.cutQuantity - splitOrder.cutQuantity,
-        issueQuantity: orderToSplit.issueQuantity - splitOrder.issueQuantity
+        issueQuantity: orderToSplit.issueQuantity - splitOrder.issueQuantity,
+        // If original was not a split, make it Split 0 (or keep existing split number)
+        basePONumber: basePONumber,
+        splitNumber: orderToSplit.splitNumber || 0
       };
+
+      // If the original order doesn't have a split number and we're creating splits, mark it as the base
+      if (!orderToSplit.poNumber.includes(' Split ')) {
+        updatedOriginalOrder.poNumber = `${basePONumber} Split 0`;
+        updatedOriginalOrder.splitNumber = 0;
+      }
+
+      console.log(`Split order created: ${splitOrder.poNumber} (qty: ${splitQuantity})`);
+      console.log(`Original order updated: ${updatedOriginalOrder.poNumber} (qty: ${remainingQuantity})`);
 
       return prevOrders.map(o => 
         o.id === orderId ? updatedOriginalOrder : o
