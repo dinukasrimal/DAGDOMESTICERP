@@ -129,7 +129,13 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const planDates = Object.keys(dailyPlan);
       const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
       
-      await onOrderScheduled(draggedOrder, selectedDate, endDate, dailyPlan);
+      // Create updated order with line assignment
+      const updatedOrder = {
+        ...draggedOrder,
+        assignedLineId: selectedLineId  // Store which line this order is assigned to
+      };
+      
+      await onOrderScheduled(updatedOrder, selectedDate, endDate, dailyPlan);
       setShowScheduleDialog(false);
       setDraggedOrder(null);
       setSelectedRampUpPlanId('');
@@ -166,12 +172,14 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return holidays.some(h => h.date.toDateString() === date.toDateString());
   };
 
+  // Fixed function: Only get scheduled orders for the SPECIFIC line and date
   const getScheduledOrdersForLineAndDate = (lineId: string, date: Date) => {
     const dateStr = date.toISOString().split('T')[0];
     return orders.filter(order => 
       order.status === 'scheduled' &&
       order.planStartDate &&
       order.planEndDate &&
+      order.assignedLineId === lineId && // KEY FIX: Only show orders assigned to this specific line
       date >= order.planStartDate &&
       date <= order.planEndDate &&
       order.actualProduction[dateStr] > 0
@@ -243,7 +251,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                     </div>
                   )}
                   
-                  {/* Render scheduled order slots */}
+                  {/* Render scheduled order slots - ONLY for this specific line */}
                   {getScheduledOrdersForLineAndDate(line.id, date).map((scheduledOrder) => {
                     const dailyQty = getDailyPlannedQuantity(scheduledOrder, date);
                     return (

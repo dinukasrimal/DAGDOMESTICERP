@@ -1,4 +1,3 @@
-
 export interface Order {
   id: string;
   poNumber: string;
@@ -12,6 +11,7 @@ export interface Order {
   planStartDate: Date | null;
   planEndDate: Date | null;
   actualProduction: { [date: string]: number };
+  assignedLineId?: string; // Track which production line this order is assigned to
 }
 
 export interface ProductionLine {

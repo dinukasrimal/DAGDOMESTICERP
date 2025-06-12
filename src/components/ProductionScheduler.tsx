@@ -45,13 +45,14 @@ export const ProductionScheduler: React.FC = () => {
 
   const handleOrderScheduled = useCallback(async (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => {
     try {
-      // Update the order with schedule dates and daily production plan
+      // Update the order with schedule dates, daily production plan, and line assignment
       const updatedOrder = {
         ...order,
         planStartDate: startDate,
         planEndDate: endDate,
         status: 'scheduled' as const,
-        actualProduction: dailyPlan
+        actualProduction: dailyPlan,
+        assignedLineId: order.assignedLineId // Preserve the line assignment
       };
 
       // Update the orders list
@@ -64,7 +65,7 @@ export const ProductionScheduler: React.FC = () => {
         await updateOrderSchedule(updatedOrder, startDate, endDate);
       }
 
-      console.log('Order scheduled successfully:', order.poNumber);
+      console.log('Order scheduled successfully:', order.poNumber, 'on line:', order.assignedLineId);
     } catch (error) {
       console.error('Failed to schedule order:', error);
     }
@@ -76,7 +77,8 @@ export const ProductionScheduler: React.FC = () => {
       planStartDate: null,
       planEndDate: null,
       status: 'pending' as const,
-      actualProduction: {}
+      actualProduction: {},
+      assignedLineId: undefined // Clear the line assignment when moving back to pending
     };
 
     setOrders(prevOrders => 
