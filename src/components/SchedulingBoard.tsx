@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -61,11 +60,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     const rampUpPlan = rampUpPlans.find(p => p.id === rampUpPlanId);
 
     while (remainingQty > 0) {
-      // Skip weekends and holidays
-      const isWeekend = currentDate.getDay() === 0 || currentDate.getDay() === 6;
+      // Only skip holidays - removed weekend check
       const isHoliday = holidays.some(h => h.date.toDateString() === currentDate.toDateString());
       
-      if (!isWeekend && !isHoliday) {
+      if (!isHoliday) {
         let dailyCapacity = 0;
         
         if (method === 'capacity') {
@@ -207,7 +205,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
               <div
                 key={date.toISOString()}
                 className={`w-32 p-2 border-r border-border text-center ${
-                  isWeekend(date) || isHoliday(date) ? 'bg-muted' : 'bg-card'
+                  isHoliday(date) ? 'bg-muted' : 'bg-card'
                 }`}
               >
                 <div className="text-xs font-medium">
@@ -238,14 +236,14 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                 <div
                   key={`${line.id}-${date.toISOString()}`}
                   className={`w-32 h-20 border-r border-border relative ${
-                    isWeekend(date) || isHoliday(date) 
+                    isHoliday(date) 
                       ? 'bg-muted/50' 
                       : 'bg-background hover:bg-muted/20'
                   }`}
                   onDrop={(e) => handleDrop(e, line.id, date)}
                   onDragOver={handleDragOver}
                 >
-                  {!isWeekend(date) && !isHoliday(date) && (
+                  {!isHoliday(date) && (
                     <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
                       <Plus className="h-4 w-4 text-muted-foreground" />
                     </div>
