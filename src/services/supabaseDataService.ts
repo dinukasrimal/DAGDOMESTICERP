@@ -23,7 +23,7 @@ export class SupabaseDataService {
       status: order.status,
       planStartDate: order.plan_start_date ? new Date(order.plan_start_date) : null,
       planEndDate: order.plan_end_date ? new Date(order.plan_end_date) : null,
-      actualProduction: order.actual_production || {},
+      actualProduction: (order.actual_production as { [date: string]: number }) || {},
       assignedLineId: order.assigned_line_id,
       basePONumber: order.base_po_number,
       splitNumber: order.split_number
@@ -71,7 +71,7 @@ export class SupabaseDataService {
     return data.map(plan => ({
       id: plan.id,
       name: plan.name,
-      efficiencies: plan.efficiencies,
+      efficiencies: plan.efficiencies as { day: number; efficiency: number }[],
       finalEfficiency: plan.final_efficiency
     }));
   }
@@ -112,7 +112,7 @@ export class SupabaseDataService {
       status: data.status,
       planStartDate: data.plan_start_date ? new Date(data.plan_start_date) : null,
       planEndDate: data.plan_end_date ? new Date(data.plan_end_date) : null,
-      actualProduction: data.actual_production || {},
+      actualProduction: (data.actual_production as { [date: string]: number }) || {},
       assignedLineId: data.assigned_line_id,
       basePONumber: data.base_po_number,
       splitNumber: data.split_number
