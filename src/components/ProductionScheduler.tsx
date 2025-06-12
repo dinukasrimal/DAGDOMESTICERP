@@ -1,98 +1,38 @@
-
 import React, { useState } from 'react';
 import { SchedulingBoard } from './SchedulingBoard';
 import { PendingOrdersSidebar } from './PendingOrdersSidebar';
 import { AdminPanel } from './AdminPanel';
 import { Header } from './Header';
-import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
-
-// Mock data for initial development
-const initialOrders: Order[] = [
-  {
-    id: '1',
-    poNumber: 'PO-2024-001',
-    styleId: 'ST-001',
-    orderQuantity: 1000,
-    smv: 12.5,
-    moCount: 25,
-    cutQuantity: 1000,
-    issueQuantity: 950,
-    status: 'pending',
-    planStartDate: null,
-    planEndDate: null,
-    actualProduction: {}
-  },
-  {
-    id: '2',
-    poNumber: 'PO-2024-002',
-    styleId: 'ST-002',
-    orderQuantity: 750,
-    smv: 8.0,
-    moCount: 20,
-    cutQuantity: 750,
-    issueQuantity: 720,
-    status: 'pending',
-    planStartDate: null,
-    planEndDate: null,
-    actualProduction: {}
-  },
-  {
-    id: '3',
-    poNumber: 'PO-2024-003',
-    styleId: 'ST-003',
-    orderQuantity: 1500,
-    smv: 15.2,
-    moCount: 30,
-    cutQuantity: 1500,
-    issueQuantity: 1450,
-    status: 'pending',
-    planStartDate: null,
-    planEndDate: null,
-    actualProduction: {}
-  }
-];
-
-const initialProductionLines: ProductionLine[] = [
-  { id: '1', name: 'Line A - Knitwear', capacity: 100 },
-  { id: '2', name: 'Line B - Woven', capacity: 80 },
-  { id: '3', name: 'Line C - Casual', capacity: 120 },
-  { id: '4', name: 'Line D - Formal', capacity: 90 }
-];
-
-const initialRampUpPlans: RampUpPlan[] = [
-  {
-    id: '1',
-    name: 'Standard Plan',
-    efficiencies: [
-      { day: 1, efficiency: 50 },
-      { day: 2, efficiency: 70 },
-      { day: 3, efficiency: 85 },
-      { day: 4, efficiency: 90 }
-    ],
-    finalEfficiency: 90
-  },
-  {
-    id: '2',
-    name: 'Fast Track Plan',
-    efficiencies: [
-      { day: 1, efficiency: 70 },
-      { day: 2, efficiency: 85 },
-      { day: 3, efficiency: 95 }
-    ],
-    finalEfficiency: 95
-  }
-];
+import { GoogleSheetsConfig } from './GoogleSheetsConfig';
+import { Order } from '../types/scheduler';
+import { useProductionData } from '../hooks/useProductionData';
+import { Button } from './ui/button';
+import { RefreshCw, AlertCircle } from 'lucide-react';
 
 export const ProductionScheduler: React.FC = () => {
-  const [orders, setOrders] = useState<Order[]>(initialOrders);
-  const [productionLines, setProductionLines] = useState<ProductionLine[]>(initialProductionLines);
-  const [holidays, setHolidays] = useState<Holiday[]>([]);
-  const [rampUpPlans, setRampUpPlans] = useState<RampUpPlan[]>(initialRampUpPlans);
+  const {
+    orders,
+    productionLines,
+    holidays,
+    rampUpPlans,
+    isLoading,
+    error,
+    isGoogleSheetsConfigured,
+    setOrders,
+    setProductionLines,
+    setHolidays,
+    setRampUpPlans,
+    fetchOrdersFromGoogleSheets,
+    configureGoogleSheets,
+    updateOrderSchedule,
+    clearError
+  } = useProductionData();
+
   const [scheduledOrders, setScheduledOrders] = useState<any[]>([]);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [userRole, setUserRole] = useState<'planner' | 'superuser'>('planner');
 
-  const handleOrderSchedule = (order: Order, lineId: string, startDate: Date, rampUpPlanId: string) => {
+  const handleOrderSchedule = async (order: Order, lineId: string, startDate: Date, rampUpPlanId: string) => {
     const rampUpPlan = rampUpPlans.find(plan => plan.id === rampUpPlanId);
     if (!rampUpPlan) return;
 
@@ -147,6 +87,16 @@ export const ProductionScheduler: React.FC = () => {
         ? { ...o, status: 'scheduled', planStartDate: startDate, planEndDate: endDate }
         : o
     ));
+
+    // Update Google Sheets if configured
+    if (isGoogleSheetsConfigured) {
+      try {
+        await updateOrderSchedule(order, startDate, endDate);
+      } catch (err) {
+        console.error('Failed to update Google Sheets:', err);
+        // Continue with local update even if sheet update fails
+      }
+    }
   };
 
   const handleOrderSplit = (orderId: string, splitQuantity: number) => {
@@ -183,6 +133,26 @@ export const ProductionScheduler: React.FC = () => {
     ]);
   };
 
+  // Show Google Sheets configuration if not configured
+  if (!isGoogleSheetsConfigured) {
+    return (
+      <div className="flex flex-col h-screen bg-background">
+        <Header 
+          userRole={userRole}
+          onToggleAdmin={() => setShowAdminPanel(!showAdminPanel)}
+          onRoleChange={setUserRole}
+        />
+        
+        <div className="flex-1 flex items-center justify-center p-8">
+          <GoogleSheetsConfig 
+            onConfigured={configureGoogleSheets}
+            isConfigured={isGoogleSheetsConfigured}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen bg-background">
       <Header 
@@ -190,6 +160,37 @@ export const ProductionScheduler: React.FC = () => {
         onToggleAdmin={() => setShowAdminPanel(!showAdminPanel)}
         onRoleChange={setUserRole}
       />
+      
+      {/* Sync Status Bar */}
+      <div className="border-b border-border bg-card px-6 py-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-4">
+            <GoogleSheetsConfig 
+              onConfigured={configureGoogleSheets}
+              isConfigured={isGoogleSheetsConfigured}
+            />
+            
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={fetchOrdersFromGoogleSheets}
+              disabled={isLoading}
+              className="flex items-center space-x-2"
+            >
+              <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+              <span>Sync Orders</span>
+            </Button>
+          </div>
+          
+          {error && (
+            <div className="flex items-center space-x-2 text-destructive">
+              <AlertCircle className="h-4 w-4" />
+              <span className="text-sm">{error}</span>
+              <Button variant="ghost" size="sm" onClick={clearError}>×</Button>
+            </div>
+          )}
+        </div>
+      </div>
       
       {showAdminPanel ? (
         <AdminPanel
