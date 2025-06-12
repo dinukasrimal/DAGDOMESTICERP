@@ -4,40 +4,40 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
-import { Sheet, CheckCircle, AlertCircle } from 'lucide-react';
+import { Sheet, CheckCircle, AlertCircle, RefreshCw } from 'lucide-react';
 
 interface GoogleSheetsConfigProps {
-  onConfigured: () => void;
+  isLoading: boolean;
+  error: string | null;
   isConfigured: boolean;
+  onSync: () => Promise<void>;
+  onConfigure: () => void;
+  onClearError: () => void;
 }
 
 export const GoogleSheetsConfig: React.FC<GoogleSheetsConfigProps> = ({
-  onConfigured,
-  isConfigured
+  isLoading,
+  error,
+  isConfigured,
+  onSync,
+  onConfigure,
+  onClearError
 }) => {
   const [apiKey, setApiKey] = useState('');
   const [spreadsheetId, setSpreadsheetId] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const handleSave = async () => {
     if (!apiKey.trim() || !spreadsheetId.trim()) {
-      setError('API Key and Spreadsheet ID are required');
       return;
     }
-
-    setIsLoading(true);
-    setError(null);
 
     try {
       localStorage.setItem('googleSheets_apiKey', apiKey);
       localStorage.setItem('googleSheets_spreadsheetId', spreadsheetId);
       
-      onConfigured();
+      onConfigure();
     } catch (err) {
-      setError('Failed to save configuration');
-    } finally {
-      setIsLoading(false);
+      console.error('Failed to save configuration:', err);
     }
   };
 
@@ -54,10 +54,38 @@ export const GoogleSheetsConfig: React.FC<GoogleSheetsConfigProps> = ({
             </Badge>
           </CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
             Connected to ORDER SECTION tab. Expected columns: PO Number, Style Name, SMV, QTY, MO Count
           </p>
+          
+          {error && (
+            <div className="flex items-center space-x-2 text-destructive text-sm">
+              <AlertCircle className="h-4 w-4" />
+              <span>{error}</span>
+              <Button variant="ghost" size="sm" onClick={onClearError}>
+                Clear
+              </Button>
+            </div>
+          )}
+          
+          <Button 
+            onClick={onSync} 
+            disabled={isLoading}
+            className="w-full"
+          >
+            {isLoading ? (
+              <>
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                Syncing...
+              </>
+            ) : (
+              <>
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Sync Orders
+              </>
+            )}
+          </Button>
         </CardContent>
       </Card>
     );
@@ -108,7 +136,7 @@ export const GoogleSheetsConfig: React.FC<GoogleSheetsConfigProps> = ({
           </div>
         )}
         
-        <Button onClick={handleSave} disabled={isLoading} className="w-full">
+        <Button onClick={handleSave} disabled={isLoading || !apiKey.trim() || !spreadsheetId.trim()} className="w-full">
           {isLoading ? 'Connecting...' : 'Connect to Google Sheets'}
         </Button>
       </CardContent>

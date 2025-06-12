@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -6,25 +5,31 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Calendar } from './ui/calendar';
-import { ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
+import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { Plus, Trash2, Edit, Settings, Calendar as CalendarIcon, Target } from 'lucide-react';
 
 interface AdminPanelProps {
+  orders: Order[];
   productionLines: ProductionLine[];
   holidays: Holiday[];
   rampUpPlans: RampUpPlan[];
+  onOrdersChange: (orders: Order[]) => void;
   onProductionLinesChange: (lines: ProductionLine[]) => void;
   onHolidaysChange: (holidays: Holiday[]) => void;
   onRampUpPlansChange: (plans: RampUpPlan[]) => void;
+  onClose: () => void;
 }
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({
+  orders,
   productionLines,
   holidays,
   rampUpPlans,
+  onOrdersChange,
   onProductionLinesChange,
   onHolidaysChange,
-  onRampUpPlansChange
+  onRampUpPlansChange,
+  onClose
 }) => {
   const [newLineName, setNewLineName] = useState('');
   const [newLineCapacity, setNewLineCapacity] = useState<number>(100);

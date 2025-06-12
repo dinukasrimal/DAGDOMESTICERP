@@ -9,21 +9,19 @@ import { OrderSlot } from './OrderSlot';
 import { CalendarDays, Plus } from 'lucide-react';
 
 interface SchedulingBoardProps {
+  orders: Order[];
   productionLines: ProductionLine[];
-  scheduledOrders: any[];
   holidays: Holiday[];
   rampUpPlans: RampUpPlan[];
-  onOrderSchedule: (order: Order, lineId: string, startDate: Date, rampUpPlanId: string) => void;
-  onScheduledOrdersChange: (orders: any[]) => void;
+  onOrderScheduled: (order: Order, startDate: Date, endDate: Date) => Promise<void>;
 }
 
 export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
+  orders,
   productionLines,
-  scheduledOrders,
   holidays,
   rampUpPlans,
-  onOrderSchedule,
-  onScheduledOrdersChange
+  onOrderScheduled
 }) => {
   const [draggedOrder, setDraggedOrder] = useState<Order | null>(null);
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
@@ -62,9 +60,13 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     e.dataTransfer.dropEffect = 'move';
   };
 
-  const handleScheduleConfirm = () => {
+  const handleScheduleConfirm = async () => {
     if (draggedOrder && selectedDate && selectedLineId && selectedRampUpPlanId) {
-      onOrderSchedule(draggedOrder, selectedLineId, selectedDate, selectedRampUpPlanId);
+      // Calculate end date based on order requirements
+      const endDate = new Date(selectedDate);
+      endDate.setDate(selectedDate.getDate() + 7); // Default 7 days duration
+      
+      await onOrderScheduled(draggedOrder, selectedDate, endDate);
       setShowScheduleDialog(false);
       setDraggedOrder(null);
       setSelectedRampUpPlanId('');
@@ -80,11 +82,13 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return holidays.some(h => h.date.toDateString() === date.toDateString());
   };
 
-  const getOrdersForLineAndDate = (lineId: string, date: Date) => {
-    return scheduledOrders.filter(order => 
-      order.lineId === lineId &&
-      date >= order.startDate &&
-      date <= order.endDate
+  const getScheduledOrdersForLineAndDate = (lineId: string, date: Date) => {
+    return orders.filter(order => 
+      order.status === 'scheduled' &&
+      order.planStartDate &&
+      order.planEndDate &&
+      date >= order.planStartDate &&
+      date <= order.planEndDate
     );
   };
 
@@ -149,12 +153,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                   )}
                   
                   {/* Render scheduled order slots */}
-                  {getOrdersForLineAndDate(line.id, date).map((scheduledOrder) => (
-                    <OrderSlot
-                      key={scheduledOrder.id}
-                      scheduledOrder={scheduledOrder}
-                      date={date}
-                    />
+                  {getScheduledOrdersForLineAndDate(line.id, date).map((scheduledOrder) => (
+                    <div key={scheduledOrder.id} className="absolute inset-1 bg-primary/20 rounded text-xs p-1 text-primary">
+                      {scheduledOrder.poNumber}
+                    </div>
                   ))}
                 </div>
               ))}
