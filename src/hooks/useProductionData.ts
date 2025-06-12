@@ -18,7 +18,7 @@ export const useProductionData = () => {
     const spreadsheetId = localStorage.getItem('googleSheets_spreadsheetId');
     
     if (apiKey && spreadsheetId) {
-      const range = localStorage.getItem('googleSheets_range') || 'Sheet1!A:J';
+      const range = localStorage.getItem('googleSheets_range') || 'ORDER SECTION!A:H';
       dataService.initializeGoogleSheets(apiKey, spreadsheetId, range);
       setIsGoogleSheetsConfigured(true);
     }
