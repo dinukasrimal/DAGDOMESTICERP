@@ -9,189 +9,16 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
-      holidays: {
-        Row: {
-          created_at: string | null
-          date: string
-          id: string
-          name: string
-        }
-        Insert: {
-          created_at?: string | null
-          date: string
-          id?: string
-          name: string
-        }
-        Update: {
-          created_at?: string | null
-          date?: string
-          id?: string
-          name?: string
-        }
-        Relationships: []
-      }
-      orders: {
-        Row: {
-          actual_production: Json | null
-          assigned_line_id: string | null
-          base_po_number: string | null
-          created_at: string | null
-          cut_quantity: number
-          id: string
-          issue_quantity: number
-          mo_count: number
-          order_quantity: number
-          plan_end_date: string | null
-          plan_start_date: string | null
-          po_number: string
-          smv: number
-          split_number: number | null
-          status: Database["public"]["Enums"]["order_status"] | null
-          style_id: string
-          updated_at: string | null
-        }
-        Insert: {
-          actual_production?: Json | null
-          assigned_line_id?: string | null
-          base_po_number?: string | null
-          created_at?: string | null
-          cut_quantity: number
-          id?: string
-          issue_quantity: number
-          mo_count: number
-          order_quantity: number
-          plan_end_date?: string | null
-          plan_start_date?: string | null
-          po_number: string
-          smv: number
-          split_number?: number | null
-          status?: Database["public"]["Enums"]["order_status"] | null
-          style_id: string
-          updated_at?: string | null
-        }
-        Update: {
-          actual_production?: Json | null
-          assigned_line_id?: string | null
-          base_po_number?: string | null
-          created_at?: string | null
-          cut_quantity?: number
-          id?: string
-          issue_quantity?: number
-          mo_count?: number
-          order_quantity?: number
-          plan_end_date?: string | null
-          plan_start_date?: string | null
-          po_number?: string
-          smv?: number
-          split_number?: number | null
-          status?: Database["public"]["Enums"]["order_status"] | null
-          style_id?: string
-          updated_at?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "orders_assigned_line_id_fkey"
-            columns: ["assigned_line_id"]
-            isOneToOne: false
-            referencedRelation: "production_lines"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      production_lines: {
-        Row: {
-          capacity: number
-          created_at: string | null
-          id: string
-          name: string
-          updated_at: string | null
-        }
-        Insert: {
-          capacity?: number
-          created_at?: string | null
-          id?: string
-          name: string
-          updated_at?: string | null
-        }
-        Update: {
-          capacity?: number
-          created_at?: string | null
-          id?: string
-          name?: string
-          updated_at?: string | null
-        }
-        Relationships: []
-      }
-      profiles: {
-        Row: {
-          created_at: string | null
-          email: string
-          full_name: string | null
-          id: string
-          phone: string | null
-          role: Database["public"]["Enums"]["user_role"] | null
-          updated_at: string | null
-        }
-        Insert: {
-          created_at?: string | null
-          email: string
-          full_name?: string | null
-          id: string
-          phone?: string | null
-          role?: Database["public"]["Enums"]["user_role"] | null
-          updated_at?: string | null
-        }
-        Update: {
-          created_at?: string | null
-          email?: string
-          full_name?: string | null
-          id?: string
-          phone?: string | null
-          role?: Database["public"]["Enums"]["user_role"] | null
-          updated_at?: string | null
-        }
-        Relationships: []
-      }
-      ramp_up_plans: {
-        Row: {
-          created_at: string | null
-          efficiencies: Json
-          final_efficiency: number
-          id: string
-          name: string
-          updated_at: string | null
-        }
-        Insert: {
-          created_at?: string | null
-          efficiencies: Json
-          final_efficiency?: number
-          id?: string
-          name: string
-          updated_at?: string | null
-        }
-        Update: {
-          created_at?: string | null
-          efficiencies?: Json
-          final_efficiency?: number
-          id?: string
-          name?: string
-          updated_at?: string | null
-        }
-        Relationships: []
-      }
+      [_ in never]: never
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      is_superuser: {
-        Args: Record<PropertyKey, never>
-        Returns: boolean
-      }
+      [_ in never]: never
     }
     Enums: {
-      order_status: "pending" | "scheduled" | "in_progress" | "completed"
-      user_role: "superuser" | "planner"
+      [_ in never]: never
     }
     CompositeTypes: {
       [_ in never]: never
@@ -306,9 +133,6 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {
-      order_status: ["pending", "scheduled", "in_progress", "completed"],
-      user_role: ["superuser", "planner"],
-    },
+    Enums: {},
   },
 } as const

@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -51,16 +52,14 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   const dates = generateDateRange();
 
-  // FIXED: Ramp-up calculation to handle overflow properly
+  // Fixed ramp-up calculation to show all days properly
   const calculateDailyProduction = (order: Order, line: ProductionLine, startDate: Date, method: 'capacity' | 'rampup', rampUpPlanId?: string) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
     let currentDate = new Date(startDate);
-    let workingDayNumber = 1;
+    let workingDayNumber = 1; // Track working days only
 
     const rampUpPlan = rampUpPlans.find(p => p.id === rampUpPlanId);
-
-    console.log(`Calculating production for order ${order.poNumber}: ${remainingQty} pieces`);
 
     while (remainingQty > 0) {
       // Only skip holidays (not weekends)
@@ -82,20 +81,16 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           }
           
           dailyCapacity = Math.floor((baseCapacity * efficiency) / 100);
+          console.log(`Day ${workingDayNumber}: Base capacity ${baseCapacity}, Efficiency ${efficiency}%, Daily capacity ${dailyCapacity}`);
         }
 
-        // FIXED: Always plan remaining quantity if less than capacity
         const plannedQty = Math.min(remainingQty, dailyCapacity);
-        
         if (plannedQty > 0) {
-          const dateStr = currentDate.toISOString().split('T')[0];
-          dailyPlan[dateStr] = plannedQty;
+          dailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
           remainingQty -= plannedQty;
-          
-          console.log(`Day ${workingDayNumber} (${dateStr}): Planned ${plannedQty}, Remaining ${remainingQty}, Capacity ${dailyCapacity}`);
+          console.log(`${currentDate.toISOString().split('T')[0]}: Planned ${plannedQty}, Remaining ${remainingQty}`);
         }
-        
-        workingDayNumber++;
+        workingDayNumber++; // Only increment on working days
       }
       
       currentDate.setDate(currentDate.getDate() + 1);
@@ -107,7 +102,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       }
     }
 
-    console.log('Final daily plan:', dailyPlan);
     return dailyPlan;
   };
 
