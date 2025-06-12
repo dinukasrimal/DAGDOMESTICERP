@@ -68,6 +68,21 @@ export const ProductionScheduler: React.FC = () => {
     }
   }, [setOrders, updateOrderSchedule, isGoogleSheetsConfigured]);
 
+  const handleOrderMovedToPending = useCallback((order: Order) => {
+    const updatedOrder = {
+      ...order,
+      planStartDate: null,
+      planEndDate: null,
+      status: 'pending' as const
+    };
+
+    setOrders(prevOrders => 
+      prevOrders.map(o => o.id === order.id ? updatedOrder : o)
+    );
+
+    console.log('Order moved back to pending:', order.poNumber);
+  }, [setOrders]);
+
   const handleOrderSplit = useCallback((orderId: string, splitQuantity: number) => {
     setOrders(prevOrders => {
       const orderToSplit = prevOrders.find(o => o.id === orderId);
@@ -84,7 +99,9 @@ export const ProductionScheduler: React.FC = () => {
         orderQuantity: splitQuantity,
         cutQuantity: Math.round((orderToSplit.cutQuantity / orderToSplit.orderQuantity) * splitQuantity),
         issueQuantity: Math.round((orderToSplit.issueQuantity / orderToSplit.orderQuantity) * splitQuantity),
-        status: 'pending'
+        status: 'pending',
+        planStartDate: null,
+        planEndDate: null
       };
 
       // Update the original order
@@ -159,6 +176,8 @@ export const ProductionScheduler: React.FC = () => {
             holidays={holidays}
             rampUpPlans={rampUpPlans}
             onOrderScheduled={handleOrderScheduled}
+            onOrderMovedToPending={handleOrderMovedToPending}
+            onOrderSplit={handleOrderSplit}
           />
         </div>
       </div>

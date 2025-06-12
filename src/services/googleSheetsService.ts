@@ -62,11 +62,22 @@ export class GoogleSheetsService {
         continue;
       }
 
+      // Fix quantity parsing - handle different formats and ensure proper number conversion
+      const rawQty = row[3];
+      let qty = 0;
+      if (rawQty !== undefined && rawQty !== null && rawQty !== '') {
+        // Remove any commas or spaces and convert to number
+        const cleanQty = String(rawQty).replace(/[,\s]/g, '');
+        qty = parseInt(cleanQty) || 0;
+      }
+
+      console.log(`Order ${row[0]}: Raw QTY = "${rawQty}", Parsed QTY = ${qty}`);
+
       orders.push({
         poNumber: row[0] || '',
         styleName: row[1] || '',
         smv: parseFloat(row[2]) || 0,
-        qty: parseInt(row[3]) || 0,
+        qty: qty,
         moCount: parseInt(row[4]) || 0,
         planStartDate: row[5] || undefined,
         planEndDate: row[6] || undefined,
