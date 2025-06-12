@@ -23,7 +23,7 @@ export class GoogleSheetsService {
   }
 
   async fetchOrders(): Promise<SheetOrder[]> {
-    const range = `'${this.sheetName}'!A:G`;
+    const range = `'${this.sheetName}'!A:Z`; // Get more columns to ensure we capture all data
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.spreadsheetId}/values/${range}?key=${this.apiKey}`;
     
     console.log('Fetching orders from Google Sheets:', url);
@@ -44,49 +44,119 @@ export class GoogleSheetsService {
       return [];
     }
 
+    // Log the header row to understand the structure
+    console.log('Header row:', rows[0]);
+    console.log('Sample data row:', rows[1]);
+
     const orders: SheetOrder[] = [];
     let totalCount = 0;
     let excludedCount = 0;
     
+    // Try to find the correct column indices by examining the header
+    const headerRow = rows[0] || [];
+    
+    // Common column name patterns to look for
+    const findColumnIndex = (patterns: string[]) => {
+      for (let i = 0; i < headerRow.length; i++) {
+        const header = String(headerRow[i]).toLowerCase().trim();
+        if (patterns.some(pattern => header.includes(pattern.toLowerCase()))) {
+          return i;
+        }
+      }
+      return -1;
+    };
+
+    // Try to find column indices
+    const poIndex = findColumnIndex(['po', 'order', 'number']) !== -1 ? findColumnIndex(['po', 'order', 'number']) : 0;
+    const styleIndex = findColumnIndex(['style', 'name', 'description']) !== -1 ? findColumnIndex(['style', 'name', 'description']) : 1;
+    const smvIndex = findColumnIndex(['smv', 'time', 'minute']) !== -1 ? findColumnIndex(['smv', 'time', 'minute']) : 2;
+    const qtyIndex = findColumnIndex(['qty', 'quantity', 'pieces', 'pcs']) !== -1 ? findColumnIndex(['qty', 'quantity', 'pieces', 'pcs']) : 3;
+    const moIndex = findColumnIndex(['mo', 'manufacturing', 'order']) !== -1 ? findColumnIndex(['mo', 'manufacturing', 'order']) : 4;
+    const pedIndex = findColumnIndex(['ped', 'plan', 'end', 'date']) !== -1 ? findColumnIndex(['ped', 'plan', 'end', 'date']) : 6;
+
+    console.log('Column indices:', { poIndex, styleIndex, smvIndex, qtyIndex, moIndex, pedIndex });
+    
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      if (!row[0]) continue;
+      if (!row[poIndex]) continue;
 
       totalCount++;
       
       // Check if PED (Plan End Date) column has a value - if yes, exclude this order
-      const planEndDate = row[6];
+      const planEndDate = row[pedIndex];
       if (planEndDate && planEndDate.trim() !== '') {
         excludedCount++;
-        console.log(`Excluding order ${row[0]} - already has PED: ${planEndDate}`);
+        console.log(`Excluding order ${row[poIndex]} - already has PED: ${planEndDate}`);
         continue;
       }
 
-      // Fix quantity parsing - handle different formats and ensure proper number conversion
-      const rawQty = row[3];
+      // Extract and parse quantity more robustly
+      const rawQty = row[qtyIndex];
       let qty = 0;
+      
       if (rawQty !== undefined && rawQty !== null && rawQty !== '') {
-        // Remove any commas or spaces and convert to number
-        const cleanQty = String(rawQty).replace(/[,\s]/g, '');
+        const qtyStr = String(rawQty).trim();
+        // Remove any non-numeric characters except decimal points
+        const cleanQty = qtyStr.replace(/[^0-9.]/g, '');
         qty = parseInt(cleanQty) || 0;
+        
+        // If still 0, try to extract numbers from the string
+        if (qty === 0) {
+          const numbers = qtyStr.match(/\d+/g);
+          if (numbers && numbers.length > 0) {
+            qty = parseInt(numbers[0]) || 0;
+          }
+        }
       }
 
-      console.log(`Order ${row[0]}: Raw QTY = "${rawQty}", Parsed QTY = ${qty}`);
+      // Extract and parse MO count
+      const rawMo = row[moIndex];
+      let moCount = 0;
+      
+      if (rawMo !== undefined && rawMo !== null && rawMo !== '') {
+        const moStr = String(rawMo).trim();
+        const cleanMo = moStr.replace(/[^0-9.]/g, '');
+        moCount = parseInt(cleanMo) || 0;
+        
+        if (moCount === 0) {
+          const numbers = moStr.match(/\d+/g);
+          if (numbers && numbers.length > 0) {
+            moCount = parseInt(numbers[0]) || 0;
+          }
+        }
+      }
 
-      orders.push({
-        poNumber: row[0] || '',
-        styleName: row[1] || '',
-        smv: parseFloat(row[2]) || 0,
-        qty: qty,
-        moCount: parseInt(row[4]) || 0,
-        planStartDate: row[5] || undefined,
-        planEndDate: row[6] || undefined,
-      });
+      // Extract and parse SMV
+      const rawSmv = row[smvIndex];
+      let smv = 0;
+      
+      if (rawSmv !== undefined && rawSmv !== null && rawSmv !== '') {
+        const smvStr = String(rawSmv).trim();
+        const cleanSmv = smvStr.replace(/[^0-9.]/g, '');
+        smv = parseFloat(cleanSmv) || 0;
+      }
+
+      console.log(`Order ${row[poIndex]}: Raw QTY = "${rawQty}", Parsed QTY = ${qty}, Raw MO = "${rawMo}", Parsed MO = ${moCount}`);
+
+      // Only add orders with valid quantities
+      if (qty > 0) {
+        orders.push({
+          poNumber: row[poIndex] || '',
+          styleName: row[styleIndex] || '',
+          smv: smv,
+          qty: qty,
+          moCount: moCount,
+          planStartDate: row[5] || undefined,
+          planEndDate: row[pedIndex] || undefined,
+        });
+      } else {
+        console.log(`Skipping order ${row[poIndex]} - invalid quantity: ${qty}`);
+      }
     }
 
     console.log(`Total orders in sheet: ${totalCount}`);
     console.log(`Orders excluded (have PED): ${excludedCount}`);
-    console.log(`Orders loaded: ${orders.length}`);
+    console.log(`Orders loaded with valid quantities: ${orders.length}`);
     
     return orders;
   }
