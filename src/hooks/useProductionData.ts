@@ -30,15 +30,24 @@ export const useProductionData = () => {
   }, []);
 
   const fetchOrdersFromGoogleSheets = useCallback(async () => {
-    if (!isGoogleSheetsConfigured) return;
+    if (!isGoogleSheetsConfigured) {
+      console.log('Google Sheets not configured');
+      return;
+    }
 
     setIsLoading(true);
     setError(null);
 
     try {
+      console.log('Starting to fetch orders from Google Sheets...');
       const fetchedOrders = await dataService.fetchOrdersFromSheet();
+      console.log('Fetched orders:', fetchedOrders.length);
+      console.log('Pending orders:', fetchedOrders.filter(o => o.status === 'pending').length);
+      
       setOrders(fetchedOrders);
+      dataService.setOrders(fetchedOrders);
     } catch (err) {
+      console.error('Error in fetchOrdersFromGoogleSheets:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch orders');
     } finally {
       setIsLoading(false);
@@ -67,6 +76,16 @@ export const useProductionData = () => {
     }
   }, [isGoogleSheetsConfigured]);
 
+  const updateOrderStatus = useCallback((orderId: string, status: 'pending' | 'scheduled' | 'in_progress' | 'completed') => {
+    setOrders(prev => {
+      const updated = prev.map(order => 
+        order.id === orderId ? { ...order, status } : order
+      );
+      dataService.setOrders(updated);
+      return updated;
+    });
+  }, []);
+
   return {
     orders,
     productionLines,
@@ -82,6 +101,7 @@ export const useProductionData = () => {
     fetchOrdersFromGoogleSheets,
     configureGoogleSheets,
     updateOrderSchedule,
+    updateOrderStatus,
     clearError: () => setError(null)
   };
 };

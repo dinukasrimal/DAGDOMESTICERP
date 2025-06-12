@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { SchedulingBoard } from './SchedulingBoard';
 import { PendingOrdersSidebar } from './PendingOrdersSidebar';
@@ -25,6 +26,7 @@ export const ProductionScheduler: React.FC = () => {
     fetchOrdersFromGoogleSheets,
     configureGoogleSheets,
     updateOrderSchedule,
+    updateOrderStatus,
     clearError
   } = useProductionData();
 
@@ -81,7 +83,10 @@ export const ProductionScheduler: React.FC = () => {
 
     setScheduledOrders(prev => [...prev, scheduledOrder]);
     
-    // Update order status
+    // Update order status to 'scheduled' and remove from pending list
+    updateOrderStatus(order.id, 'scheduled');
+    
+    // Update order with plan dates
     setOrders(prev => prev.map(o => 
       o.id === order.id 
         ? { ...o, status: 'scheduled', planStartDate: startDate, planEndDate: endDate }
@@ -97,6 +102,8 @@ export const ProductionScheduler: React.FC = () => {
         // Continue with local update even if sheet update fails
       }
     }
+
+    console.log(`Order ${order.poNumber} scheduled. Remaining pending orders: ${orders.filter(o => o.status === 'pending').length - 1}`);
   };
 
   const handleOrderSplit = (orderId: string, splitQuantity: number) => {
@@ -131,6 +138,8 @@ export const ProductionScheduler: React.FC = () => {
       ),
       newOrder
     ]);
+
+    console.log(`Order ${order.poNumber} split. New order: ${newOrder.poNumber} (${splitQuantity}), Remaining: ${remainingQuantity}`);
   };
 
   // Show Google Sheets configuration if not configured
@@ -153,6 +162,9 @@ export const ProductionScheduler: React.FC = () => {
     );
   }
 
+  // Filter pending orders for sidebar
+  const pendingOrders = orders.filter(order => order.status === 'pending');
+  
   return (
     <div className="flex flex-col h-screen bg-background">
       <Header 
@@ -180,6 +192,10 @@ export const ProductionScheduler: React.FC = () => {
               <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
               <span>Sync Orders</span>
             </Button>
+            
+            <div className="text-sm text-muted-foreground">
+              Total: {orders.length} | Pending: {pendingOrders.length} | Scheduled: {orders.filter(o => o.status === 'scheduled').length}
+            </div>
           </div>
           
           {error && (
@@ -204,7 +220,7 @@ export const ProductionScheduler: React.FC = () => {
       ) : (
         <div className="flex flex-1 overflow-hidden">
           <PendingOrdersSidebar 
-            orders={orders.filter(o => o.status === 'pending')}
+            orders={pendingOrders}
             onOrderSplit={handleOrderSplit}
           />
           

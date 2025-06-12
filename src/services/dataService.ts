@@ -1,3 +1,4 @@
+
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { GoogleSheetsService, SheetOrder } from './googleSheetsService';
 
@@ -50,8 +51,12 @@ export class DataService {
   }
 
   private convertSheetOrderToOrder(sheetOrder: SheetOrder): Order {
+    // Always set status to 'pending' for new orders from sheets
+    // Only set to 'scheduled' if both start and end dates are present
+    const hasScheduleDates = sheetOrder.planStartDate && sheetOrder.planEndDate;
+    
     return {
-      id: `sheet-${sheetOrder.poNumber}`,
+      id: `sheet-${sheetOrder.poNumber}-${Date.now()}`,
       poNumber: sheetOrder.poNumber,
       styleId: sheetOrder.styleName,
       orderQuantity: sheetOrder.qty,
@@ -59,7 +64,7 @@ export class DataService {
       moCount: sheetOrder.moCount,
       cutQuantity: sheetOrder.qty,
       issueQuantity: sheetOrder.qty,
-      status: sheetOrder.planStartDate ? 'scheduled' : 'pending',
+      status: hasScheduleDates ? 'scheduled' : 'pending',
       planStartDate: sheetOrder.planStartDate ? new Date(sheetOrder.planStartDate) : null,
       planEndDate: sheetOrder.planEndDate ? new Date(sheetOrder.planEndDate) : null,
       actualProduction: {}
@@ -71,9 +76,15 @@ export class DataService {
       throw new Error('Google Sheets service not initialized');
     }
 
-    const sheetOrders = await this.googleSheetsService.fetchOrders();
-    this.orders = sheetOrders.map(order => this.convertSheetOrderToOrder(order));
-    return this.orders;
+    try {
+      const sheetOrders = await this.googleSheetsService.fetchOrders();
+      this.orders = sheetOrders.map(order => this.convertSheetOrderToOrder(order));
+      console.log(`Converted ${this.orders.length} orders, pending: ${this.orders.filter(o => o.status === 'pending').length}`);
+      return this.orders;
+    } catch (error) {
+      console.error('Error fetching orders from sheet:', error);
+      throw error;
+    }
   }
 
   async updateOrderSchedule(order: Order, startDate: Date, endDate: Date): Promise<void> {
@@ -86,6 +97,10 @@ export class DataService {
 
   getOrders(): Order[] {
     return this.orders;
+  }
+
+  getPendingOrders(): Order[] {
+    return this.orders.filter(order => order.status === 'pending');
   }
 
   getProductionLines(): ProductionLine[] {
