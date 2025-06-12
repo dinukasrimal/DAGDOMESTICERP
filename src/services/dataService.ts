@@ -1,4 +1,3 @@
-
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { GoogleSheetsService, SheetOrder } from './googleSheetsService';
 
@@ -14,7 +13,7 @@ export class DataService {
   }
 
   initializeGoogleSheets(apiKey: string, spreadsheetId: string) {
-    this.googleSheetsService = new GoogleSheetsService(apiKey, spreadsheetId, 'ORDER SECTION');
+    this.googleSheetsService = new GoogleSheetsService(apiKey, spreadsheetId);
   }
 
   private initializeDefaultData() {
@@ -75,6 +74,14 @@ export class DataService {
     const sheetOrders = await this.googleSheetsService.fetchOrders();
     this.orders = sheetOrders.map(order => this.convertSheetOrderToOrder(order));
     return this.orders;
+  }
+
+  async updateOrderSchedule(order: Order, startDate: Date, endDate: Date): Promise<void> {
+    if (!this.googleSheetsService) {
+      throw new Error('Google Sheets service not initialized');
+    }
+
+    await this.googleSheetsService.updateOrderSchedule(order, startDate, endDate);
   }
 
   getOrders(): Order[] {

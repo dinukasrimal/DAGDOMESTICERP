@@ -56,6 +56,17 @@ export const useProductionData = () => {
     }
   }, [fetchOrdersFromGoogleSheets]);
 
+  const updateOrderSchedule = useCallback(async (order: Order, startDate: Date, endDate: Date) => {
+    if (!isGoogleSheetsConfigured) return;
+
+    try {
+      await dataService.updateOrderSchedule(order, startDate, endDate);
+    } catch (err) {
+      console.error('Failed to update order schedule in Google Sheets:', err);
+      throw err;
+    }
+  }, [isGoogleSheetsConfigured]);
+
   return {
     orders,
     productionLines,
@@ -70,6 +81,7 @@ export const useProductionData = () => {
     setRampUpPlans,
     fetchOrdersFromGoogleSheets,
     configureGoogleSheets,
+    updateOrderSchedule,
     clearError: () => setError(null)
   };
 };
