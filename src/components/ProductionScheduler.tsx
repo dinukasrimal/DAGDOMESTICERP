@@ -42,14 +42,15 @@ export const ProductionScheduler: React.FC = () => {
     }
   };
 
-  const handleOrderScheduled = useCallback(async (order: Order, startDate: Date, endDate: Date) => {
+  const handleOrderScheduled = useCallback(async (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => {
     try {
-      // Update the order with schedule dates
+      // Update the order with schedule dates and daily production plan
       const updatedOrder = {
         ...order,
         planStartDate: startDate,
         planEndDate: endDate,
-        status: 'scheduled' as const
+        status: 'scheduled' as const,
+        actualProduction: dailyPlan
       };
 
       // Update the orders list
@@ -73,7 +74,8 @@ export const ProductionScheduler: React.FC = () => {
       ...order,
       planStartDate: null,
       planEndDate: null,
-      status: 'pending' as const
+      status: 'pending' as const,
+      actualProduction: {}
     };
 
     setOrders(prevOrders => 

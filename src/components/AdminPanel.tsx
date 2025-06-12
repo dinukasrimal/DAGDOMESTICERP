@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -6,7 +7,7 @@ import { Badge } from './ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Calendar } from './ui/calendar';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
-import { Plus, Trash2, Edit, Settings, Calendar as CalendarIcon, Target } from 'lucide-react';
+import { Plus, Trash2, Edit, Settings, Calendar as CalendarIcon, Target, ArrowLeft } from 'lucide-react';
 
 interface AdminPanelProps {
   orders: Order[];
@@ -110,9 +111,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   return (
     <div className="flex-1 p-6 bg-background overflow-auto">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-foreground">Admin Panel</h2>
-        <p className="text-muted-foreground">Manage production lines, holidays, and ramp-up plans</p>
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-foreground">Admin Panel</h2>
+          <p className="text-muted-foreground">Manage production lines, holidays, and ramp-up plans</p>
+        </div>
+        <Button onClick={onClose} variant="outline" className="flex items-center space-x-2">
+          <ArrowLeft className="h-4 w-4" />
+          <span>Back to Scheduler</span>
+        </Button>
       </div>
 
       <Tabs defaultValue="lines" className="w-full">
