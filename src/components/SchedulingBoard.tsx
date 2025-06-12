@@ -1,7 +1,13 @@
-import React, { useState, useCallback } from 'react';
-import { Order, ProductionLine, Holiday, RampUpPlan, ScheduledOrder } from '../types/scheduler';
+
+import React, { useState } from 'react';
 import { Button } from './ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
+import { RadioGroup, RadioGroupItem } from './ui/radio-group';
+import { Input } from './ui/input';
+import { Label } from './ui/label';
+import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
+import { CalendarDays, Plus, ArrowLeft, Scissors } from 'lucide-react';
 
 interface SchedulingBoardProps {
   orders: Order[];
@@ -23,88 +29,103 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   onOrderSplit
 }) => {
   const [draggedOrder, setDraggedOrder] = useState<Order | null>(null);
-  const [selectedLineId, setSelectedLineId] = useState<string | null>(null);
-  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
-  const [selectedRampUpPlanId, setSelectedRampUpPlanId] = useState('');
+  const [showSplitDialog, setShowSplitDialog] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
+  const [selectedLineId, setSelectedLineId] = useState<string>('');
+  const [selectedRampUpPlanId, setSelectedRampUpPlanId] = useState<string>('');
+  const [planningMethod, setPlanningMethod] = useState<'capacity' | 'rampup'>('capacity');
+  const [orderToSplit, setOrderToSplit] = useState<Order | null>(null);
+  const [splitQuantity, setSplitQuantity] = useState<number>(0);
 
-  const isWeekend = (date: Date) => {
-    const day = date.getDay();
-    return day === 0 || day === 6; // 0 = Sunday, 6 = Saturday
+  // Generate date range (next 30 days for demo)
+  const generateDateRange = () => {
+    const dates = [];
+    const startDate = new Date();
+    for (let i = 0; i < 30; i++) {
+      const date = new Date(startDate);
+      date.setDate(startDate.getDate() + i);
+      dates.push(date);
+    }
+    return dates;
   };
 
-  const isHoliday = (date: Date) => {
-    return holidays.some(h => h.date.toDateString() === date.toDateString());
-  };
+  const dates = generateDateRange();
 
-  const isNonWorkingDay = (date: Date) => {
-    return isWeekend(date) || isHoliday(date);
-  };
+  const calculateDailyProduction = (order: Order, line: ProductionLine, startDate: Date, method: 'capacity' | 'rampup', rampUpPlanId?: string) => {
+    const dailyPlan: { [date: string]: number } = {};
+    let remainingQty = order.orderQuantity;
+    let currentDate = new Date(startDate);
+    let dayNumber = 1;
 
-  const getScheduledOrdersForLineAndDate = (lineId: string, date: Date): Order[] => {
-    // Find orders that are scheduled on the specified line and date
-    return orders.filter(order =>
-      order.assignedLineId === lineId &&
-      order.planStartDate &&
-      order.planEndDate &&
-      date >= order.planStartDate &&
-      date <= order.planEndDate
-    );
-  };
+    const rampUpPlan = rampUpPlans.find(p => p.id === rampUpPlanId);
 
-  const getDailyPlannedQuantity = (scheduledOrder: Order, date: Date): number => {
-    const dateStr = date.toISOString().split('T')[0];
-    return scheduledOrder.actualProduction[dateStr] || 0;
-  };
-
-  const handleDragOver = (e: React.DragEvent, lineId: string, date: Date) => {
-    e.preventDefault();
-    setSelectedLineId(lineId);
-    setSelectedDate(date);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setSelectedLineId(null);
-    setSelectedDate(null);
-  };
-
-  const handleScheduleOrder = async () => {
-    if (!draggedOrder || !selectedLineId || !selectedDate || !selectedRampUpPlanId) return;
-
-    try {
-      const line = productionLines.find(l => l.id === selectedLineId);
-      const rampUpPlan = rampUpPlans.find(r => r.id === selectedRampUpPlanId);
+    while (remainingQty > 0) {
+      // Skip weekends and holidays
+      const isWeekend = currentDate.getDay() === 0 || currentDate.getDay() === 6;
+      const isHoliday = holidays.some(h => h.date.toDateString() === currentDate.toDateString());
       
-      if (!line || !rampUpPlan) return;
-
-      // Calculate daily production plan
-      const dailyPlan: { [date: string]: number } = {};
-      const totalQuantity = draggedOrder.orderQuantity;
-      const dailyCapacity = line.capacity;
-      
-      let remainingQuantity = totalQuantity;
-      let currentDate = new Date(selectedDate);
-      let dayCount = 1;
-      
-      while (remainingQuantity > 0) {
-        // Skip weekends and holidays
-        if (!isNonWorkingDay(currentDate)) {
-          const efficiency = rampUpPlan.efficiencies.find(e => e.day === dayCount)?.efficiency || rampUpPlan.finalEfficiency;
-          const effectiveCapacity = Math.floor(dailyCapacity * (efficiency / 100));
-          const dailyProduction = Math.min(remainingQuantity, effectiveCapacity);
-          
-          const dateStr = currentDate.toISOString().split('T')[0];
-          dailyPlan[dateStr] = dailyProduction;
-          
-          remainingQuantity -= dailyProduction;
-          dayCount++;
-        }
+      if (!isWeekend && !isHoliday) {
+        let dailyCapacity = 0;
         
-        currentDate.setDate(currentDate.getDate() + 1);
+        if (method === 'capacity') {
+          dailyCapacity = line.capacity;
+        } else if (method === 'rampup' && rampUpPlan) {
+          const baseCapacity = (540 * order.moCount) / order.smv;
+          let efficiency = rampUpPlan.finalEfficiency;
+          
+          const rampUpDay = rampUpPlan.efficiencies.find(e => e.day === dayNumber);
+          if (rampUpDay) {
+            efficiency = rampUpDay.efficiency;
+          }
+          
+          dailyCapacity = Math.floor((baseCapacity * efficiency) / 100);
+        }
+
+        const plannedQty = Math.min(remainingQty, dailyCapacity);
+        dailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
+        remainingQty -= plannedQty;
+        dayNumber++;
       }
       
-      // Find the actual end date (last working day with production)
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    return dailyPlan;
+  };
+
+  const handleDrop = (e: React.DragEvent, lineId: string, date: Date) => {
+    e.preventDefault();
+    const orderData = e.dataTransfer.getData('application/json');
+    if (orderData) {
+      const order = JSON.parse(orderData) as Order;
+      setDraggedOrder(order);
+      setSelectedLineId(lineId);
+      setSelectedDate(date);
+      setShowScheduleDialog(true);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleScheduleConfirm = async () => {
+    if (draggedOrder && selectedDate && selectedLineId) {
+      const selectedLine = productionLines.find(l => l.id === selectedLineId);
+      if (!selectedLine) return;
+
+      // Calculate daily production plan
+      const dailyPlan = calculateDailyProduction(
+        draggedOrder, 
+        selectedLine, 
+        selectedDate, 
+        planningMethod, 
+        selectedRampUpPlanId
+      );
+
+      // Calculate end date from daily plan
       const planDates = Object.keys(dailyPlan);
       const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
       
@@ -118,103 +139,115 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       setShowScheduleDialog(false);
       setDraggedOrder(null);
       setSelectedRampUpPlanId('');
-    } catch (error) {
-      console.error('Failed to schedule order:', error);
+      setPlanningMethod('capacity');
     }
   };
 
-  const handleDrop = (e: React.DragEvent, lineId: string, date: Date) => {
-    e.preventDefault();
-    const orderData = e.dataTransfer.getData('application/json');
-    const order: Order = JSON.parse(orderData);
-
-    setDraggedOrder(order);
-    setSelectedLineId(lineId);
-    setSelectedDate(date);
-    setShowScheduleDialog(true);
+  const handleMoveBackToPending = (order: Order) => {
+    onOrderMovedToPending(order);
   };
 
-  const renderCalendarHeader = () => {
-    const today = new Date();
-    const startDate = new Date(today.getFullYear(), today.getMonth(), 1);
-    const endDate = new Date(today.getFullYear(), today.getMonth() + 2, 0);
-    
-    const dates = [];
-    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-      dates.push(new Date(d));
-    }
+  const handleSplitOrder = (order: Order, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setOrderToSplit(order);
+    setSplitQuantity(Math.floor(order.orderQuantity / 2));
+    setShowSplitDialog(true);
+  };
 
-    return (
-      <div className="flex sticky top-0 z-20 bg-background border-b border-border">
-        <div className="w-48 p-4 border-r border-border bg-card sticky left-0 z-30">
-          {/* Empty div for the line name column */}
-        </div>
-        <div className="flex overflow-x-auto">
-          {dates.map((date) => (
-            <div
-              key={date.toISOString()}
-              className="min-w-[120px] h-12 p-2 border-r border-border sticky top-0 z-10 bg-background"
-            >
-              <div className="text-xs text-muted-foreground">
-                {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {date.toLocaleDateString('en-US', { weekday: 'short' })}
-              </div>
-              {isNonWorkingDay(date) && (
-                <div className="text-xs text-red-600 font-medium">
-                  {isWeekend(date) ? 'Weekend' : 'Holiday'}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
+  const handleSplitConfirm = () => {
+    if (orderToSplit && splitQuantity > 0 && splitQuantity < orderToSplit.orderQuantity) {
+      onOrderSplit(orderToSplit.id, splitQuantity);
+      setShowSplitDialog(false);
+      setOrderToSplit(null);
+      setSplitQuantity(0);
+    }
+  };
+
+  const isWeekend = (date: Date) => {
+    const day = date.getDay();
+    return day === 0 || day === 6;
+  };
+
+  const isHoliday = (date: Date) => {
+    return holidays.some(h => h.date.toDateString() === date.toDateString());
+  };
+
+  // Fixed function: Only get scheduled orders for the SPECIFIC line and date
+  const getScheduledOrdersForLineAndDate = (lineId: string, date: Date) => {
+    const dateStr = date.toISOString().split('T')[0];
+    return orders.filter(order => 
+      order.status === 'scheduled' &&
+      order.planStartDate &&
+      order.planEndDate &&
+      order.assignedLineId === lineId && // KEY FIX: Only show orders assigned to this specific line
+      date >= order.planStartDate &&
+      date <= order.planEndDate &&
+      order.actualProduction[dateStr] > 0
     );
   };
 
-  const renderProductionLine = (line: ProductionLine) => {
-    const today = new Date();
-    const startDate = new Date(today.getFullYear(), today.getMonth(), 1);
-    const endDate = new Date(today.getFullYear(), today.getMonth() + 2, 0);
-    
-    const dates = [];
-    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-      dates.push(new Date(d));
-    }
+  const getDailyPlannedQuantity = (order: Order, date: Date) => {
+    const dateStr = date.toISOString().split('T')[0];
+    return order.actualProduction[dateStr] || 0;
+  };
 
-    return (
-      <div key={line.id} className="border-b border-border">
-        <div className="flex">
-          <div className="w-48 p-4 border-r border-border bg-card sticky left-0 z-10">
-            <h3 className="font-semibold text-foreground">{line.name}</h3>
-            <p className="text-sm text-muted-foreground">Capacity: {line.capacity}/day</p>
-          </div>
-          
-          <div className="flex overflow-x-auto">
+  return (
+    <div className="flex-1 overflow-auto bg-background">
+      <div className="min-w-max">
+        {/* Header with dates */}
+        <div className="sticky top-0 z-10 bg-card border-b border-border">
+          <div className="flex">
+            <div className="w-48 p-4 border-r border-border bg-card">
+              <div className="flex items-center space-x-2">
+                <CalendarDays className="h-5 w-5 text-muted-foreground" />
+                <span className="font-medium">Production Lines</span>
+              </div>
+            </div>
             {dates.map((date) => (
               <div
                 key={date.toISOString()}
-                className={`min-w-[120px] h-24 border-r border-border relative
-                  ${isNonWorkingDay(date) ? 'bg-red-50' : 'bg-background'}
-                  hover:bg-accent/50 transition-colors`}
-                onDragOver={(e) => handleDragOver(e, line.id, date)}
-                onDragLeave={handleDragLeave}
-                onDrop={(e) => handleDrop(e, line.id, date)}
+                className={`w-32 p-2 border-r border-border text-center ${
+                  isWeekend(date) || isHoliday(date) ? 'bg-muted' : 'bg-card'
+                }`}
               >
-                <div className="p-2">
-                  <div className="text-xs text-muted-foreground">
-                    {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {date.toLocaleDateString('en-US', { weekday: 'short' })}
-                  </div>
-                  
-                  {isNonWorkingDay(date) && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="text-xs text-red-600 font-medium">
-                        {isWeekend(date) ? 'Weekend' : 'Holiday'}
-                      </span>
+                <div className="text-xs font-medium">
+                  {date.toLocaleDateString('en-US', { weekday: 'short' })}
+                </div>
+                <div className="text-sm">
+                  {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </div>
+                {isHoliday(date) && (
+                  <div className="text-xs text-destructive">Holiday</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Production lines and timeline */}
+        <div className="divide-y divide-border">
+          {productionLines.map((line) => (
+            <div key={line.id} className="flex">
+              <div className="w-48 p-4 border-r border-border bg-card">
+                <div className="font-medium">{line.name}</div>
+                <div className="text-sm text-muted-foreground">
+                  Capacity: {line.capacity}
+                </div>
+              </div>
+              {dates.map((date) => (
+                <div
+                  key={`${line.id}-${date.toISOString()}`}
+                  className={`w-32 h-20 border-r border-border relative ${
+                    isWeekend(date) || isHoliday(date) 
+                      ? 'bg-muted/50' 
+                      : 'bg-background hover:bg-muted/20'
+                  }`}
+                  onDrop={(e) => handleDrop(e, line.id, date)}
+                  onDragOver={handleDragOver}
+                >
+                  {!isWeekend(date) && !isHoliday(date) && (
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
+                      <Plus className="h-4 w-4 text-muted-foreground" />
                     </div>
                   )}
                   
@@ -222,42 +255,45 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                   {getScheduledOrdersForLineAndDate(line.id, date).map((scheduledOrder) => {
                     const dailyQty = getDailyPlannedQuantity(scheduledOrder, date);
                     return (
-                      <div
-                        key={`${scheduledOrder.id}-${date.toISOString()}`}
-                        className="absolute inset-1 bg-blue-100 border border-blue-300 rounded p-1 cursor-pointer hover:bg-blue-200 transition-colors"
-                        onClick={() => {
-                          console.log('Order clicked:', scheduledOrder.poNumber);
-                          // Add context menu or modal for order details
-                        }}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          onOrderMovedToPending(scheduledOrder);
-                        }}
+                      <div 
+                        key={scheduledOrder.id} 
+                        className="absolute inset-1 bg-primary/20 rounded text-xs p-1 text-primary group cursor-pointer hover:bg-primary/30"
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        <div className="text-xs font-medium text-blue-800 truncate">
-                          {scheduledOrder.poNumber}
+                        <div className="flex items-center justify-between">
+                          <span className="truncate">{scheduledOrder.poNumber}</span>
+                          <div className="opacity-0 group-hover:opacity-100 flex space-x-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-4 w-4 p-0"
+                              onClick={() => handleMoveBackToPending(scheduledOrder)}
+                              title="Move back to pending"
+                            >
+                              <ArrowLeft className="h-3 w-3" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-4 w-4 p-0"
+                              onClick={(e) => handleSplitOrder(scheduledOrder, e)}
+                              title="Split order"
+                            >
+                              <Scissors className="h-3 w-3" />
+                            </Button>
+                          </div>
                         </div>
-                        <div className="text-xs text-blue-600">
-                          {dailyQty.toLocaleString()}
+                        <div className="text-xs opacity-60">
+                          Qty: {dailyQty.toLocaleString()}
                         </div>
                       </div>
                     );
                   })}
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ))}
         </div>
-      </div>
-    );
-  };
-
-  return (
-    <div className="flex-1 bg-background">
-      {renderCalendarHeader()}
-      
-      <div className="border border-border rounded-lg overflow-hidden">
-        {productionLines.map(renderProductionLine)}
       </div>
 
       {/* Schedule Order Dialog */}
@@ -266,41 +302,126 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           <DialogHeader>
             <DialogTitle>Schedule Order</DialogTitle>
           </DialogHeader>
-          
           {draggedOrder && (
             <div className="space-y-4">
               <div>
-                <h4 className="font-medium">Order Details</h4>
-                <p>PO Number: {draggedOrder.poNumber}</p>
-                <p>Style: {draggedOrder.styleId}</p>
-                <p>Quantity: {draggedOrder.orderQuantity.toLocaleString()}</p>
-                <p>SMV: {draggedOrder.smv}</p>
+                <h3 className="font-medium">{draggedOrder.poNumber}</h3>
+                <p className="text-sm text-muted-foreground">
+                  Quantity: {draggedOrder.orderQuantity.toLocaleString()} | SMV: {draggedOrder.smv} | MO: {draggedOrder.moCount}
+                </p>
               </div>
               
               <div>
-                <label className="block text-sm font-medium mb-2">
-                  Select Ramp-up Plan:
-                </label>
-                <select
-                  value={selectedRampUpPlanId}
-                  onChange={(e) => setSelectedRampUpPlanId(e.target.value)}
-                  className="w-full p-2 border border-border rounded-md bg-background"
-                >
-                  <option value="">Select a plan...</option>
-                  {rampUpPlans.map((plan) => (
-                    <option key={plan.id} value={plan.id}>
-                      {plan.name} (Final: {plan.finalEfficiency}%)
-                    </option>
-                  ))}
-                </select>
+                <label className="text-sm font-medium">Start Date:</label>
+                <div className="text-sm">
+                  {selectedDate?.toLocaleDateString()}
+                </div>
               </div>
               
-              <div className="flex justify-end space-x-2">
-                <Button variant="outline" onClick={() => setShowScheduleDialog(false)}>
+              <div>
+                <label className="text-sm font-medium">Production Line:</label>
+                <div className="text-sm">
+                  {productionLines.find(l => l.id === selectedLineId)?.name}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium">Planning Method:</label>
+                <RadioGroup value={planningMethod} onValueChange={(value: 'capacity' | 'rampup') => setPlanningMethod(value)}>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="capacity" id="capacity" />
+                    <Label htmlFor="capacity">Based on Line Capacity</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="rampup" id="rampup" />
+                    <Label htmlFor="rampup">Based on Ramp-Up Plan</Label>
+                  </div>
+                </RadioGroup>
+              </div>
+              
+              {planningMethod === 'rampup' && (
+                <div>
+                  <label className="text-sm font-medium">Ramp-Up Plan:</label>
+                  <Select value={selectedRampUpPlanId} onValueChange={setSelectedRampUpPlanId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a ramp-up plan" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {rampUpPlans.map((plan) => (
+                        <SelectItem key={plan.id} value={plan.id}>
+                          {plan.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              
+              <div className="flex space-x-2">
+                <Button
+                  onClick={handleScheduleConfirm}
+                  disabled={planningMethod === 'rampup' && !selectedRampUpPlanId}
+                  className="flex-1"
+                >
+                  Schedule Order
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowScheduleDialog(false)}
+                  className="flex-1"
+                >
                   Cancel
                 </Button>
-                <Button onClick={handleScheduleOrder} disabled={!selectedRampUpPlanId}>
-                  Schedule Order
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Split Order Dialog */}
+      <Dialog open={showSplitDialog} onOpenChange={setShowSplitDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Split Order</DialogTitle>
+          </DialogHeader>
+          {orderToSplit && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="font-medium">{orderToSplit.poNumber}</h3>
+                <p className="text-sm text-muted-foreground">
+                  Total Quantity: {orderToSplit.orderQuantity.toLocaleString()}
+                </p>
+              </div>
+              
+              <div>
+                <Label htmlFor="splitQty">Split Quantity</Label>
+                <Input
+                  id="splitQty"
+                  type="number"
+                  value={splitQuantity}
+                  onChange={(e) => setSplitQuantity(parseInt(e.target.value) || 0)}
+                  min={1}
+                  max={orderToSplit.orderQuantity - 1}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Remaining: {orderToSplit.orderQuantity - splitQuantity}
+                </p>
+              </div>
+              
+              <div className="flex space-x-2">
+                <Button
+                  onClick={handleSplitConfirm}
+                  disabled={splitQuantity <= 0 || splitQuantity >= orderToSplit.orderQuantity}
+                  className="flex-1"
+                >
+                  Split Order
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowSplitDialog(false)}
+                  className="flex-1"
+                >
+                  Cancel
                 </Button>
               </div>
             </div>
