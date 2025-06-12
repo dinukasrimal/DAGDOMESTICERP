@@ -97,16 +97,26 @@ export const ProductionScheduler: React.FC = () => {
 
       const remainingQuantity = orderToSplit.orderQuantity - splitQuantity;
       
-      // Create the split order
+      // Count existing splits for this order to determine split number
+      const existingSplits = prevOrders.filter(o => 
+        o.poNumber.includes(orderToSplit.poNumber) && o.poNumber.includes('Split')
+      ).length;
+      
+      const splitNumber = existingSplits + 1;
+      
+      // Create the split order with numbered naming
       const splitOrder: Order = {
         ...orderToSplit,
         id: `${orderId}-split-${Date.now()}`,
+        poNumber: `${orderToSplit.poNumber} Split ${splitNumber}`,
         orderQuantity: splitQuantity,
         cutQuantity: Math.round((orderToSplit.cutQuantity / orderToSplit.orderQuantity) * splitQuantity),
         issueQuantity: Math.round((orderToSplit.issueQuantity / orderToSplit.orderQuantity) * splitQuantity),
         status: 'pending',
         planStartDate: null,
-        planEndDate: null
+        planEndDate: null,
+        actualProduction: {},
+        assignedLineId: undefined
       };
 
       // Update the original order

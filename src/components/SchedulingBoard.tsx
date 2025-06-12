@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -109,6 +110,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     e.dataTransfer.dropEffect = 'move';
   };
 
+  const handleDragStart = (e: React.DragEvent, order: Order) => {
+    e.dataTransfer.setData('application/json', JSON.stringify(order));
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
   const handleScheduleConfirm = async () => {
     if (draggedOrder && selectedDate && selectedLineId) {
       const selectedLine = productionLines.find(l => l.id === selectedLineId);
@@ -130,7 +136,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       // Create updated order with line assignment
       const updatedOrder = {
         ...draggedOrder,
-        assignedLineId: selectedLineId  // Store which line this order is assigned to
+        assignedLineId: selectedLineId
       };
       
       await onOrderScheduled(updatedOrder, selectedDate, endDate, dailyPlan);
@@ -161,11 +167,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   };
 
-  const isWeekend = (date: Date) => {
-    const day = date.getDay();
-    return day === 0 || day === 6;
-  };
-
   const isHoliday = (date: Date) => {
     return holidays.some(h => h.date.toDateString() === date.toDateString());
   };
@@ -177,7 +178,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       order.status === 'scheduled' &&
       order.planStartDate &&
       order.planEndDate &&
-      order.assignedLineId === lineId && // KEY FIX: Only show orders assigned to this specific line
+      order.assignedLineId === lineId &&
       date >= order.planStartDate &&
       date <= order.planEndDate &&
       order.actualProduction[dateStr] > 0
@@ -187,6 +188,19 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const getDailyPlannedQuantity = (order: Order, date: Date) => {
     const dateStr = date.toISOString().split('T')[0];
     return order.actualProduction[dateStr] || 0;
+  };
+
+  // Calculate capacity utilization percentage for visual representation
+  const getCapacityUtilization = (lineId: string, date: Date) => {
+    const line = productionLines.find(l => l.id === lineId);
+    if (!line) return 0;
+    
+    const scheduledOrders = getScheduledOrdersForLineAndDate(lineId, date);
+    const totalPlanned = scheduledOrders.reduce((sum, order) => 
+      sum + getDailyPlannedQuantity(order, date), 0
+    );
+    
+    return Math.min((totalPlanned / line.capacity) * 100, 100);
   };
 
   return (
@@ -232,63 +246,81 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                   Capacity: {line.capacity}
                 </div>
               </div>
-              {dates.map((date) => (
-                <div
-                  key={`${line.id}-${date.toISOString()}`}
-                  className={`w-32 h-20 border-r border-border relative ${
-                    isHoliday(date) 
-                      ? 'bg-muted/50' 
-                      : 'bg-background hover:bg-muted/20'
-                  }`}
-                  onDrop={(e) => handleDrop(e, line.id, date)}
-                  onDragOver={handleDragOver}
-                >
-                  {!isHoliday(date) && (
-                    <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
-                      <Plus className="h-4 w-4 text-muted-foreground" />
-                    </div>
-                  )}
-                  
-                  {/* Render scheduled order slots - ONLY for this specific line */}
-                  {getScheduledOrdersForLineAndDate(line.id, date).map((scheduledOrder) => {
-                    const dailyQty = getDailyPlannedQuantity(scheduledOrder, date);
-                    return (
+              {dates.map((date) => {
+                const utilizationPercent = getCapacityUtilization(line.id, date);
+                return (
+                  <div
+                    key={`${line.id}-${date.toISOString()}`}
+                    className={`w-32 h-20 border-r border-border relative ${
+                      isHoliday(date) 
+                        ? 'bg-muted/50' 
+                        : 'bg-background hover:bg-muted/20'
+                    }`}
+                    onDrop={(e) => handleDrop(e, line.id, date)}
+                    onDragOver={handleDragOver}
+                  >
+                    {/* Capacity utilization visual indicator */}
+                    {utilizationPercent > 0 && (
                       <div 
-                        key={scheduledOrder.id} 
-                        className="absolute inset-1 bg-primary/20 rounded text-xs p-1 text-primary group cursor-pointer hover:bg-primary/30"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="truncate">{scheduledOrder.poNumber}</span>
-                          <div className="opacity-0 group-hover:opacity-100 flex space-x-1">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-4 w-4 p-0"
-                              onClick={() => handleMoveBackToPending(scheduledOrder)}
-                              title="Move back to pending"
-                            >
-                              <ArrowLeft className="h-3 w-3" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-4 w-4 p-0"
-                              onClick={(e) => handleSplitOrder(scheduledOrder, e)}
-                              title="Split order"
-                            >
-                              <Scissors className="h-3 w-3" />
-                            </Button>
+                        className="absolute bottom-0 left-0 right-0 bg-primary/30 transition-all duration-300"
+                        style={{ height: `${utilizationPercent}%` }}
+                      />
+                    )}
+                    
+                    {!isHoliday(date) && (
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
+                        <Plus className="h-4 w-4 text-muted-foreground" />
+                      </div>
+                    )}
+                    
+                    {/* Render scheduled order slots - ONLY for this specific line */}
+                    {getScheduledOrdersForLineAndDate(line.id, date).map((scheduledOrder) => {
+                      const dailyQty = getDailyPlannedQuantity(scheduledOrder, date);
+                      return (
+                        <div 
+                          key={scheduledOrder.id} 
+                          className="absolute inset-1 bg-primary/20 rounded text-xs p-1 text-primary group cursor-pointer hover:bg-primary/30"
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, scheduledOrder)}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="truncate">{scheduledOrder.poNumber}</span>
+                            <div className="opacity-0 group-hover:opacity-100 flex space-x-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-4 w-4 p-0"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleMoveBackToPending(scheduledOrder);
+                                }}
+                                title="Move back to pending"
+                              >
+                                <ArrowLeft className="h-3 w-3" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-4 w-4 p-0"
+                                onClick={(e) => handleSplitOrder(scheduledOrder, e)}
+                                title="Split order"
+                              >
+                                <Scissors className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="text-xs opacity-60">
+                            Qty: {dailyQty.toLocaleString()}
+                          </div>
+                          <div className="text-xs opacity-60">
+                            {utilizationPercent.toFixed(0)}% used
                           </div>
                         </div>
-                        <div className="text-xs opacity-60">
-                          Qty: {dailyQty.toLocaleString()}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ))}
+                      );
+                    })}
+                  </div>
+                );
+              })}
             </div>
           ))}
         </div>
