@@ -12,19 +12,16 @@ export const useProductionData = () => {
   const [error, setError] = useState<string | null>(null);
   const [isGoogleSheetsConfigured, setIsGoogleSheetsConfigured] = useState(false);
 
-  // Check if Google Sheets is configured
   useEffect(() => {
     const apiKey = localStorage.getItem('googleSheets_apiKey');
     const spreadsheetId = localStorage.getItem('googleSheets_spreadsheetId');
     
     if (apiKey && spreadsheetId) {
-      const range = localStorage.getItem('googleSheets_range') || 'ORDER SECTION!A:H';
-      dataService.initializeGoogleSheets(apiKey, spreadsheetId, range);
+      dataService.initializeGoogleSheets(apiKey, spreadsheetId);
       setIsGoogleSheetsConfigured(true);
     }
   }, []);
 
-  // Initialize with default data
   useEffect(() => {
     setProductionLines(dataService.getProductionLines());
     setHolidays(dataService.getHolidays());
@@ -53,25 +50,11 @@ export const useProductionData = () => {
     const spreadsheetId = localStorage.getItem('googleSheets_spreadsheetId');
     
     if (apiKey && spreadsheetId) {
-      const range = localStorage.getItem('googleSheets_range') || 'Sheet1!A:J';
-      dataService.initializeGoogleSheets(apiKey, spreadsheetId, range);
+      dataService.initializeGoogleSheets(apiKey, spreadsheetId);
       setIsGoogleSheetsConfigured(true);
       fetchOrdersFromGoogleSheets();
     }
   }, [fetchOrdersFromGoogleSheets]);
-
-  const updateOrderSchedule = useCallback(async (order: Order, startDate: Date, endDate: Date) => {
-    if (!isGoogleSheetsConfigured) return;
-
-    try {
-      await dataService.updateOrderSchedule(order, startDate, endDate);
-      // Refresh orders after update
-      await fetchOrdersFromGoogleSheets();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update order schedule');
-      throw err;
-    }
-  }, [isGoogleSheetsConfigured, fetchOrdersFromGoogleSheets]);
 
   return {
     orders,
@@ -87,7 +70,6 @@ export const useProductionData = () => {
     setRampUpPlans,
     fetchOrdersFromGoogleSheets,
     configureGoogleSheets,
-    updateOrderSchedule,
     clearError: () => setError(null)
   };
 };
