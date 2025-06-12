@@ -1,4 +1,3 @@
-
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { GoogleSheetsService, SheetOrder } from './googleSheetsService';
 
@@ -14,7 +13,9 @@ export class DataService {
   }
 
   initializeGoogleSheets(apiKey: string, spreadsheetId: string, range?: string) {
-    this.googleSheetsService = new GoogleSheetsService(apiKey, spreadsheetId, range);
+    // Default to ORDER SECTION tab with columns A to H
+    const defaultRange = range || 'ORDER SECTION!A:H';
+    this.googleSheetsService = new GoogleSheetsService(apiKey, spreadsheetId, defaultRange);
   }
 
   private initializeDefaultData() {
@@ -55,12 +56,12 @@ export class DataService {
     return {
       id: `sheet-${sheetOrder.PO_Number}`,
       poNumber: sheetOrder.PO_Number,
-      styleId: sheetOrder.Style_ID,
-      orderQuantity: sheetOrder.Order_Quantity,
+      styleId: sheetOrder.Style_Name,
+      orderQuantity: sheetOrder.QTY,
       smv: sheetOrder.SMV,
       moCount: sheetOrder.MO_Count,
-      cutQuantity: sheetOrder.Cut_Quantity,
-      issueQuantity: sheetOrder.Issue_Quantity,
+      cutQuantity: sheetOrder.QTY, // Using QTY as default cut quantity
+      issueQuantity: sheetOrder.QTY, // Using QTY as default issue quantity
       status: sheetOrder.Plan_Start_Date ? 'scheduled' : 'pending',
       planStartDate: sheetOrder.Plan_Start_Date ? new Date(sheetOrder.Plan_Start_Date) : null,
       planEndDate: sheetOrder.Plan_End_Date ? new Date(sheetOrder.Plan_End_Date) : null,

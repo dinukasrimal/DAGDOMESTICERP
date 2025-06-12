@@ -4,7 +4,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
-import { Sheet, CheckCircle, AlertCircle } from 'lucide-react';
+import { Sheet, CheckCircle, AlertCircle, ExternalLink } from 'lucide-react';
 
 interface GoogleSheetsConfigProps {
   onConfigured: () => void;
@@ -17,7 +17,7 @@ export const GoogleSheetsConfig: React.FC<GoogleSheetsConfigProps> = ({
 }) => {
   const [apiKey, setApiKey] = useState('');
   const [spreadsheetId, setSpreadsheetId] = useState('');
-  const [range, setRange] = useState('Sheet1!A:J');
+  const [range, setRange] = useState('ORDER SECTION!A:H');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,7 +59,7 @@ export const GoogleSheetsConfig: React.FC<GoogleSheetsConfigProps> = ({
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            Google Sheets integration is active. Orders will be synced automatically.
+            Google Sheets integration is active. Orders will be synced from the "ORDER SECTION" tab.
           </p>
         </CardContent>
       </Card>
@@ -75,6 +75,25 @@ export const GoogleSheetsConfig: React.FC<GoogleSheetsConfigProps> = ({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="p-3 bg-yellow-50 border-l-4 border-yellow-400 text-sm">
+          <p className="font-medium text-yellow-800 mb-2">Setup Requirements:</p>
+          <ul className="text-yellow-700 space-y-1 text-xs">
+            <li>1. Enable Google Sheets API in Google Cloud Console</li>
+            <li>2. Create an API key with Sheets API access</li>
+            <li>3. Make your sheet publicly viewable (anyone with link can view)</li>
+            <li>4. Ensure your sheet has an "ORDER SECTION" tab</li>
+          </ul>
+          <a 
+            href="https://console.cloud.google.com/apis/library/sheets.googleapis.com" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="inline-flex items-center mt-2 text-blue-600 hover:text-blue-800"
+          >
+            <ExternalLink className="h-3 w-3 mr-1" />
+            Enable Google Sheets API
+          </a>
+        </div>
+        
         <div>
           <label className="text-sm font-medium">Google Sheets API Key</label>
           <Input
@@ -92,12 +111,15 @@ export const GoogleSheetsConfig: React.FC<GoogleSheetsConfigProps> = ({
             value={spreadsheetId}
             onChange={(e) => setSpreadsheetId(e.target.value)}
           />
+          <p className="text-xs text-muted-foreground mt-1">
+            Found in the URL: docs.google.com/spreadsheets/d/[SPREADSHEET_ID]/edit
+          </p>
         </div>
         
         <div>
-          <label className="text-sm font-medium">Range (optional)</label>
+          <label className="text-sm font-medium">Sheet Tab & Range</label>
           <Input
-            placeholder="Sheet1!A:J"
+            placeholder="ORDER SECTION!A:H"
             value={range}
             onChange={(e) => setRange(e.target.value)}
           />
@@ -115,7 +137,7 @@ export const GoogleSheetsConfig: React.FC<GoogleSheetsConfigProps> = ({
         </Button>
         
         <p className="text-xs text-muted-foreground">
-          Make sure your Google Sheet has columns: PO_Number, Style_ID, Order_Quantity, SMV, MO_Count, Cut_Quantity, Issue_Quantity
+          Expected columns in ORDER SECTION tab: PO Number, Style Name, SMV, QTY, MO Count
         </p>
       </CardContent>
     </Card>
