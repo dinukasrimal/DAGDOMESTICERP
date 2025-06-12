@@ -33,7 +33,7 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
   };
 
   return (
-    <div className="w-80 bg-card border-r border-border overflow-y-auto">
+    <div className="h-full flex flex-col">
       <div className="p-4 border-b border-border">
         <h2 className="text-lg font-semibold text-foreground">Pending Orders</h2>
         <p className="text-sm text-muted-foreground">
@@ -41,7 +41,7 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
         </p>
       </div>
       
-      <div className="p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {orders.map((order) => (
           <Card
             key={order.id}

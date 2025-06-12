@@ -41,13 +41,17 @@ export const useProductionData = () => {
     try {
       console.log('Starting to fetch orders from Google Sheets...');
       const fetchedOrders = await dataService.fetchOrdersFromSheet();
-      console.log('Fetched orders:', fetchedOrders.length);
-      console.log('Pending orders:', fetchedOrders.filter(o => o.status === 'pending').length);
+      console.log(`✅ Successfully synced ${fetchedOrders.length} orders`);
+      
+      const pendingCount = fetchedOrders.filter(o => o.status === 'pending').length;
+      const scheduledCount = fetchedOrders.filter(o => o.status === 'scheduled').length;
+      
+      console.log(`📊 Sync Summary: ${pendingCount} pending, ${scheduledCount} scheduled orders`);
       
       setOrders(fetchedOrders);
       dataService.setOrders(fetchedOrders);
     } catch (err) {
-      console.error('Error in fetchOrdersFromGoogleSheets:', err);
+      console.error('❌ Error in fetchOrdersFromGoogleSheets:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch orders');
     } finally {
       setIsLoading(false);

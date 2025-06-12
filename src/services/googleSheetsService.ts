@@ -45,9 +45,22 @@ export class GoogleSheetsService {
     }
 
     const orders: SheetOrder[] = [];
+    let totalCount = 0;
+    let excludedCount = 0;
+    
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       if (!row[0]) continue;
+
+      totalCount++;
+      
+      // Check if PED (Plan End Date) column has a value - if yes, exclude this order
+      const planEndDate = row[6];
+      if (planEndDate && planEndDate.trim() !== '') {
+        excludedCount++;
+        console.log(`Excluding order ${row[0]} - already has PED: ${planEndDate}`);
+        continue;
+      }
 
       orders.push({
         poNumber: row[0] || '',
@@ -60,7 +73,10 @@ export class GoogleSheetsService {
       });
     }
 
-    console.log(`Fetched ${orders.length} orders from Google Sheets`);
+    console.log(`Total orders in sheet: ${totalCount}`);
+    console.log(`Orders excluded (have PED): ${excludedCount}`);
+    console.log(`Orders loaded: ${orders.length}`);
+    
     return orders;
   }
 

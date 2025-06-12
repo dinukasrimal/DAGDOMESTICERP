@@ -131,12 +131,8 @@ export const ProductionScheduler: React.FC = () => {
       />
       
       <div className="flex-1 flex overflow-hidden">
-        <PendingOrdersSidebar
-          orders={pendingOrders}
-          onOrderSplit={handleOrderSplit}
-        />
-        
-        <div className="flex-1 flex flex-col">
+        {/* Simple sidebar - always visible */}
+        <div className="w-80 border-r border-border bg-card flex flex-col">
           <div className="p-4 border-b border-border">
             <GoogleSheetsConfig
               isLoading={isLoading}
@@ -148,15 +144,22 @@ export const ProductionScheduler: React.FC = () => {
             />
           </div>
           
-          <div className="flex-1 overflow-auto">
-            <SchedulingBoard
-              orders={orders}
-              productionLines={productionLines}
-              holidays={holidays}
-              rampUpPlans={rampUpPlans}
-              onOrderScheduled={handleOrderScheduled}
+          <div className="flex-1 overflow-hidden">
+            <PendingOrdersSidebar
+              orders={pendingOrders}
+              onOrderSplit={handleOrderSplit}
             />
           </div>
+        </div>
+        
+        <div className="flex-1 overflow-auto">
+          <SchedulingBoard
+            orders={orders}
+            productionLines={productionLines}
+            holidays={holidays}
+            rampUpPlans={rampUpPlans}
+            onOrderScheduled={handleOrderScheduled}
+          />
         </div>
       </div>
     </div>
