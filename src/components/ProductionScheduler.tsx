@@ -6,6 +6,7 @@ import { PendingOrdersSidebar } from './PendingOrdersSidebar';
 import { AdminPanel } from './AdminPanel';
 import { GoogleSheetsConfig } from './GoogleSheetsConfig';
 import { Header } from './Header';
+import { TooltipProvider } from './ui/tooltip';
 import { Order } from '../types/scheduler';
 
 export const ProductionScheduler: React.FC = () => {
@@ -127,62 +128,66 @@ export const ProductionScheduler: React.FC = () => {
 
   if (showAdminPanel) {
     return (
-      <AdminPanel
-        orders={orders}
-        productionLines={productionLines}
-        holidays={holidays}
-        rampUpPlans={rampUpPlans}
-        onOrdersChange={setOrders}
-        onProductionLinesChange={setProductionLines}
-        onHolidaysChange={setHolidays}
-        onRampUpPlansChange={setRampUpPlans}
-        onClose={() => setShowAdminPanel(false)}
-      />
+      <TooltipProvider>
+        <AdminPanel
+          orders={orders}
+          productionLines={productionLines}
+          holidays={holidays}
+          rampUpPlans={rampUpPlans}
+          onOrdersChange={setOrders}
+          onProductionLinesChange={setProductionLines}
+          onHolidaysChange={setHolidays}
+          onRampUpPlansChange={setRampUpPlans}
+          onClose={() => setShowAdminPanel(false)}
+        />
+      </TooltipProvider>
     );
   }
 
   return (
-    <div className="flex flex-col h-screen bg-background">
-      <Header
-        userRole={userRole}
-        onToggleAdmin={handleToggleAdmin}
-        onRoleChange={handleRoleChange}
-      />
-      
-      <div className="flex-1 flex overflow-hidden">
-        {/* Simple sidebar - always visible */}
-        <div className="w-80 border-r border-border bg-card flex flex-col">
-          <div className="p-4 border-b border-border">
-            <GoogleSheetsConfig
-              isLoading={isLoading}
-              error={error}
-              isConfigured={isGoogleSheetsConfigured}
-              onSync={fetchOrdersFromGoogleSheets}
-              onConfigure={configureGoogleSheets}
-              onClearError={clearError}
-            />
+    <TooltipProvider>
+      <div className="flex flex-col h-screen bg-background">
+        <Header
+          userRole={userRole}
+          onToggleAdmin={handleToggleAdmin}
+          onRoleChange={handleRoleChange}
+        />
+        
+        <div className="flex-1 flex overflow-hidden">
+          {/* Simple sidebar - always visible */}
+          <div className="w-80 border-r border-border bg-card flex flex-col">
+            <div className="p-4 border-b border-border">
+              <GoogleSheetsConfig
+                isLoading={isLoading}
+                error={error}
+                isConfigured={isGoogleSheetsConfigured}
+                onSync={fetchOrdersFromGoogleSheets}
+                onConfigure={configureGoogleSheets}
+                onClearError={clearError}
+              />
+            </div>
+            
+            <div className="flex-1 overflow-hidden">
+              <PendingOrdersSidebar
+                orders={pendingOrders}
+                onOrderSplit={handleOrderSplit}
+              />
+            </div>
           </div>
           
-          <div className="flex-1 overflow-hidden">
-            <PendingOrdersSidebar
-              orders={pendingOrders}
+          <div className="flex-1 overflow-auto">
+            <SchedulingBoard
+              orders={orders}
+              productionLines={productionLines}
+              holidays={holidays}
+              rampUpPlans={rampUpPlans}
+              onOrderScheduled={handleOrderScheduled}
+              onOrderMovedToPending={handleOrderMovedToPending}
               onOrderSplit={handleOrderSplit}
             />
           </div>
         </div>
-        
-        <div className="flex-1 overflow-auto">
-          <SchedulingBoard
-            orders={orders}
-            productionLines={productionLines}
-            holidays={holidays}
-            rampUpPlans={rampUpPlans}
-            onOrderScheduled={handleOrderScheduled}
-            onOrderMovedToPending={handleOrderMovedToPending}
-            onOrderSplit={handleOrderSplit}
-          />
-        </div>
       </div>
-    </div>
+    </TooltipProvider>
   );
 };
