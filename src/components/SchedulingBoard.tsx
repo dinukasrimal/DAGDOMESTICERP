@@ -123,6 +123,66 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return overlappingOrders;
   }, [orders, productionLines]);
 
+  const moveOrdersForPlacement = useCallback(async (newOrder: Order, targetLineId: string, targetDate: Date, placement: 'before' | 'after', overlappingOrders: Order[]) => {
+    const line = productionLines.find(l => l.id === targetLineId);
+    if (!line) return;
+
+    // Calculate new order duration
+    const dailyCapacity = line.capacity;
+    const newOrderDuration = Math.ceil(newOrder.orderQuantity / dailyCapacity);
+
+    if (placement === 'before') {
+      // New order starts at target date, move overlapping orders after it
+      const newOrderEndDate = new Date(targetDate);
+      newOrderEndDate.setDate(newOrderEndDate.getDate() + newOrderDuration - 1);
+      
+      // Sort overlapping orders by their current start date
+      const sortedOverlapping = [...overlappingOrders].sort((a, b) => 
+        (a.planStartDate?.getTime() || 0) - (b.planStartDate?.getTime() || 0)
+      );
+
+      // Move each overlapping order to start after the previous one ends
+      let nextStartDate = new Date(newOrderEndDate);
+      nextStartDate.setDate(nextStartDate.getDate() + 1);
+
+      for (const order of sortedOverlapping) {
+        // Move to pending first
+        await onOrderMovedToPending(order);
+        
+        // Calculate new end date for this order
+        const orderDuration = Math.ceil(order.orderQuantity / dailyCapacity);
+        const orderEndDate = new Date(nextStartDate);
+        orderEndDate.setDate(orderEndDate.getDate() + orderDuration - 1);
+        
+        // Calculate daily production plan
+        const dailyPlan = calculateDailyProduction(order, line, nextStartDate);
+        
+        // Reschedule the order
+        await onOrderScheduled(order, nextStartDate, orderEndDate, dailyPlan);
+        
+        // Set next start date for the following order
+        nextStartDate = new Date(orderEndDate);
+        nextStartDate.setDate(nextStartDate.getDate() + 1);
+      }
+    } else {
+      // New order starts after existing orders
+      // Find the latest end date among overlapping orders
+      let latestEndDate = targetDate;
+      overlappingOrders.forEach(order => {
+        if (order.planEndDate && order.planEndDate > latestEndDate) {
+          latestEndDate = order.planEndDate;
+        }
+      });
+      
+      // Schedule new order to start the day after the latest ending order
+      const newStartDate = new Date(latestEndDate);
+      newStartDate.setDate(newStartDate.getDate() + 1);
+      
+      // Update the pending schedule with the new start date
+      setPendingSchedule(prev => ({ ...prev, date: newStartDate }));
+    }
+  }, [productionLines, onOrderMovedToPending, onOrderScheduled, calculateDailyProduction]);
+
   const calculateDailyProduction = useCallback((order: Order, line: ProductionLine, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
@@ -265,27 +325,25 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [pendingSchedule, productionLines, planningMethod, selectedRampUpPlanId, calculateDailyProduction, onOrderScheduled]);
 
-  const handleOverlapConfirm = useCallback(async () => {
+  const handleOverlapConfirm = useCallback(async (placement: 'before' | 'after') => {
     const { newOrder, overlappingOrders, targetDate, targetLine } = overlapDialog;
     
     if (!newOrder || !targetDate) return;
 
     try {
-      // First, move overlapping orders back to pending
-      for (const overlappingOrder of overlappingOrders) {
-        await onOrderMovedToPending(overlappingOrder);
-      }
-      
-      // Then proceed with scheduling the new order
       const lineId = productionLines.find(l => l.name === targetLine)?.id;
-      if (lineId) {
-        setPendingSchedule({
-          order: newOrder,
-          lineId,
-          date: targetDate,
-          showDialog: true
-        });
-      }
+      if (!lineId) return;
+
+      // Handle the placement logic
+      await moveOrdersForPlacement(newOrder, lineId, targetDate, placement, overlappingOrders);
+      
+      // Set up the new order for scheduling
+      setPendingSchedule({
+        order: newOrder,
+        lineId,
+        date: placement === 'before' ? targetDate : pendingSchedule.date,
+        showDialog: true
+      });
       
       setOverlapDialog({
         isOpen: false,
@@ -297,7 +355,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     } catch (error) {
       console.error('❌ Failed to handle overlap:', error);
     }
-  }, [overlapDialog, onOrderMovedToPending, productionLines]);
+  }, [overlapDialog, productionLines, moveOrdersForPlacement, pendingSchedule.date]);
 
   const handleDialogClose = useCallback(() => {
     setPendingSchedule({ order: null, lineId: '', date: null, showDialog: false });
@@ -411,7 +469,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                       </div>
                     )}
                     
-                    {/* Scheduled orders - now draggable */}
+                    {/* Scheduled orders - now draggable with style names */}
                     <div className="p-1 space-y-1 relative z-10">
                       {scheduledOrders.map((scheduledOrder) => {
                         const dateStr = date.toISOString().split('T')[0];
@@ -456,6 +514,9 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                                   <Scissors className="h-3 w-3" />
                                 </Button>
                               </div>
+                            </div>
+                            <div className="text-xs opacity-75 truncate">
+                              Style: {scheduledOrder.styleId}
                             </div>
                             <div className="text-xs opacity-75">
                               Qty: {dailyQty.toLocaleString()}
