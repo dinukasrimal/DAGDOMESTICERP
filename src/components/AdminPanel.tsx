@@ -110,15 +110,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
       setIsLoading(true);
       try {
-        // Create a new date object that preserves the local date without timezone conversion
-        const localDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+        // Create date in local timezone - use the exact date selected without any timezone conversion
+        const year = selectedDate.getFullYear();
+        const month = selectedDate.getMonth();
+        const day = selectedDate.getDate();
         
-        console.log('Selected date from calendar:', selectedDate);
-        console.log('Local date being saved:', localDate);
-        console.log('Local date string:', localDate.toLocaleDateString());
+        // Create a new date at midnight in local timezone
+        const localHolidayDate = new Date(year, month, day, 0, 0, 0, 0);
+        
+        console.log('Original selected date:', selectedDate);
+        console.log('Local holiday date being saved:', localHolidayDate);
+        console.log('Holiday date string:', localHolidayDate.toDateString());
         
         const newHoliday = await supabaseDataService.createHoliday({
-          date: localDate,
+          date: localHolidayDate,
           name: newHolidayName.trim(),
           isGlobal: isGlobalHoliday,
           affectedLineIds: isGlobalHoliday ? [] : selectedLineIds
@@ -129,7 +134,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         setSelectedLineIds([]);
         toast({
           title: "Success",
-          description: `Holiday created for ${localDate.toLocaleDateString()}`
+          description: `Holiday "${newHolidayName.trim()}" created for ${localHolidayDate.toDateString()}`
         });
       } catch (error) {
         console.error('Error creating holiday:', error);
@@ -345,16 +350,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     mode="single"
                     selected={selectedDate}
                     onSelect={(date) => {
-                      console.log('Calendar date selected:', date);
-                      setSelectedDate(date);
+                      if (date) {
+                        // Ensure we keep the exact date selected without timezone issues
+                        const localDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+                        console.log('Calendar date selected:', date);
+                        console.log('Setting local date:', localDate);
+                        setSelectedDate(localDate);
+                      } else {
+                        setSelectedDate(undefined);
+                      }
                     }}
                     className="rounded-md border"
                     disabled={isLoading}
                   />
                   {selectedDate && (
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Selected: {selectedDate.toLocaleDateString()}
-                    </p>
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      <p>Selected: {selectedDate.toDateString()}</p>
+                      <p>Day: {selectedDate.getDate()}</p>
+                    </div>
                   )}
                 </div>
                 <div className="space-y-4">
@@ -431,7 +444,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <div key={holiday.id} className="flex items-center justify-between p-3 border rounded-lg">
                     <div>
                       <div className="font-medium">{holiday.name}</div>
-                      <div className="text-sm text-muted-foreground">{holiday.date.toLocaleDateString()}</div>
+                      <div className="text-sm text-muted-foreground">{holiday.date.toDateString()}</div>
                       <div className="flex items-center gap-2 mt-1">
                         <Badge variant={holiday.isGlobal ? "default" : "secondary"}>
                           {holiday.isGlobal ? "Global" : "Line-specific"}
