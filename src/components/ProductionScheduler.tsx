@@ -1,5 +1,6 @@
+
 import React, { useState, useCallback } from 'react';
-import { useProductionData } from '../hooks/useProductionData';
+import { useSupabaseProductionData } from '../hooks/useSupabaseProductionData';
 import { SchedulingBoard } from './SchedulingBoard';
 import { PendingOrdersSidebar } from './PendingOrdersSidebar';
 import { AdminPanel } from './AdminPanel';
@@ -27,9 +28,10 @@ export const ProductionScheduler: React.FC = () => {
     fetchOrdersFromGoogleSheets,
     configureGoogleSheets,
     updateOrderSchedule,
-    updateOrderStatus,
+    updateOrderInDatabase,
+    createOrderInDatabase,
     clearError
-  } = useProductionData();
+  } = useSupabaseProductionData();
 
   const handleToggleAdmin = () => {
     setShowAdminPanel(!showAdminPanel);
@@ -54,10 +56,8 @@ export const ProductionScheduler: React.FC = () => {
         assignedLineId: order.assignedLineId // Preserve the line assignment
       };
 
-      // Update the orders list
-      setOrders(prevOrders => 
-        prevOrders.map(o => o.id === order.id ? updatedOrder : o)
-      );
+      // Update in database
+      await updateOrderInDatabase(order.id, updatedOrder);
 
       // Update the schedule in Google Sheets if configured
       if (isGoogleSheetsConfigured) {
@@ -68,31 +68,31 @@ export const ProductionScheduler: React.FC = () => {
     } catch (error) {
       console.error('Failed to schedule order:', error);
     }
-  }, [setOrders, updateOrderSchedule, isGoogleSheetsConfigured]);
+  }, [updateOrderInDatabase, updateOrderSchedule, isGoogleSheetsConfigured]);
 
-  const handleOrderMovedToPending = useCallback((order: Order) => {
-    const updatedOrder = {
-      ...order,
-      planStartDate: null,
-      planEndDate: null,
-      status: 'pending' as const,
-      actualProduction: {},
-      assignedLineId: undefined // Clear the line assignment when moving back to pending
-    };
+  const handleOrderMovedToPending = useCallback(async (order: Order) => {
+    try {
+      const updatedOrder = {
+        planStartDate: null,
+        planEndDate: null,
+        status: 'pending' as const,
+        actualProduction: {},
+        assignedLineId: undefined // Clear the line assignment when moving back to pending
+      };
 
-    setOrders(prevOrders => 
-      prevOrders.map(o => o.id === order.id ? updatedOrder : o)
-    );
-
-    console.log('Order moved back to pending:', order.poNumber);
-  }, [setOrders]);
+      await updateOrderInDatabase(order.id, updatedOrder);
+      console.log('Order moved back to pending:', order.poNumber);
+    } catch (error) {
+      console.error('Failed to move order to pending:', error);
+    }
+  }, [updateOrderInDatabase]);
 
   // Completely redone split functionality with proper numbering
-  const handleOrderSplit = useCallback((orderId: string, splitQuantity: number) => {
-    setOrders(prevOrders => {
-      const orderToSplit = prevOrders.find(o => o.id === orderId);
+  const handleOrderSplit = useCallback(async (orderId: string, splitQuantity: number) => {
+    try {
+      const orderToSplit = orders.find(o => o.id === orderId);
       if (!orderToSplit || splitQuantity >= orderToSplit.orderQuantity) {
-        return prevOrders;
+        return;
       }
 
       const remainingQuantity = orderToSplit.orderQuantity - splitQuantity;
@@ -104,7 +104,7 @@ export const ProductionScheduler: React.FC = () => {
       }
       
       // Find all orders that share the same base PO number to determine next split number
-      const relatedOrders = prevOrders.filter(o => {
+      const relatedOrders = orders.filter(o => {
         const orderBasePO = o.poNumber.includes(' Split ') ? o.poNumber.split(' Split ')[0] : o.poNumber;
         return orderBasePO === basePONumber;
       });
@@ -122,11 +122,12 @@ export const ProductionScheduler: React.FC = () => {
       const nextSplitNumber = existingSplitNumbers.length > 0 ? Math.max(...existingSplitNumbers) + 1 : 1;
       
       // Create the split order with proper numbering
-      const splitOrder: Order = {
-        ...orderToSplit,
-        id: `${orderId}-split-${Date.now()}`,
+      const splitOrderData: Omit<Order, 'id'> = {
         poNumber: `${basePONumber} Split ${nextSplitNumber}`,
+        styleId: orderToSplit.styleId,
         orderQuantity: splitQuantity,
+        smv: orderToSplit.smv,
+        moCount: orderToSplit.moCount,
         cutQuantity: Math.round((orderToSplit.cutQuantity / orderToSplit.orderQuantity) * splitQuantity),
         issueQuantity: Math.round((orderToSplit.issueQuantity / orderToSplit.orderQuantity) * splitQuantity),
         status: 'pending',
@@ -138,13 +139,14 @@ export const ProductionScheduler: React.FC = () => {
         splitNumber: nextSplitNumber
       };
 
+      // Create the split order in database
+      await createOrderInDatabase(splitOrderData);
+
       // Update the original order
-      const updatedOriginalOrder: Order = {
-        ...orderToSplit,
+      const updatedOriginalOrder: Partial<Order> = {
         orderQuantity: remainingQuantity,
-        cutQuantity: orderToSplit.cutQuantity - splitOrder.cutQuantity,
-        issueQuantity: orderToSplit.issueQuantity - splitOrder.issueQuantity,
-        // If original was not a split, make it Split 0 (or keep existing split number)
+        cutQuantity: orderToSplit.cutQuantity - splitOrderData.cutQuantity,
+        issueQuantity: orderToSplit.issueQuantity - splitOrderData.issueQuantity,
         basePONumber: basePONumber,
         splitNumber: orderToSplit.splitNumber || 0
       };
@@ -155,14 +157,14 @@ export const ProductionScheduler: React.FC = () => {
         updatedOriginalOrder.splitNumber = 0;
       }
 
-      console.log(`Split order created: ${splitOrder.poNumber} (qty: ${splitQuantity})`);
-      console.log(`Original order updated: ${updatedOriginalOrder.poNumber} (qty: ${remainingQuantity})`);
+      await updateOrderInDatabase(orderId, updatedOriginalOrder);
 
-      return prevOrders.map(o => 
-        o.id === orderId ? updatedOriginalOrder : o
-      ).concat(splitOrder);
-    });
-  }, [setOrders]);
+      console.log(`Split order created: ${splitOrderData.poNumber} (qty: ${splitQuantity})`);
+      console.log(`Original order updated: ${updatedOriginalOrder.poNumber} (qty: ${remainingQuantity})`);
+    } catch (error) {
+      console.error('Failed to split order:', error);
+    }
+  }, [orders, createOrderInDatabase, updateOrderInDatabase]);
 
   // Filter pending orders - exclude orders that have plan dates (are scheduled)
   const pendingOrders = orders.filter(order => 
