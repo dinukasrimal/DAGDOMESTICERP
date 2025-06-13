@@ -13,6 +13,7 @@ export class DataService {
   }
 
   initializeGoogleSheets(apiKey: string, spreadsheetId: string) {
+    console.log('🔧 Initializing Google Sheets service');
     this.googleSheetsService = new GoogleSheetsService(apiKey, spreadsheetId);
   }
 
@@ -50,18 +51,23 @@ export class DataService {
   }
 
   private convertSheetOrderToOrder(sheetOrder: SheetOrder): Order {
+    // Generate a unique ID for the order
+    const uniqueId = `sheet-${sheetOrder.poNumber}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
     // Check if this order has schedule dates - if so, it's already scheduled
     const hasScheduleDates = sheetOrder.planStartDate && sheetOrder.planEndDate;
     
+    console.log(`🔄 Converting sheet order: ${sheetOrder.poNumber} (Qty: ${sheetOrder.qty}, SMV: ${sheetOrder.smv})`);
+    
     return {
-      id: `sheet-${sheetOrder.poNumber}-${Date.now()}`,
+      id: uniqueId,
       poNumber: sheetOrder.poNumber,
       styleId: sheetOrder.styleName,
       orderQuantity: sheetOrder.qty,
       smv: sheetOrder.smv,
       moCount: sheetOrder.moCount,
-      cutQuantity: sheetOrder.qty,
-      issueQuantity: sheetOrder.qty,
+      cutQuantity: sheetOrder.qty, // Default to same as order quantity
+      issueQuantity: sheetOrder.qty, // Default to same as order quantity
       status: hasScheduleDates ? 'scheduled' : 'pending',
       planStartDate: sheetOrder.planStartDate ? new Date(sheetOrder.planStartDate) : null,
       planEndDate: sheetOrder.planEndDate ? new Date(sheetOrder.planEndDate) : null,
@@ -75,16 +81,24 @@ export class DataService {
     }
 
     try {
+      console.log('📡 Fetching orders from Google Sheets...');
       const sheetOrders = await this.googleSheetsService.fetchOrders();
+      
+      if (!sheetOrders || sheetOrders.length === 0) {
+        console.log('📭 No orders found in Google Sheets');
+        return [];
+      }
+      
+      console.log(`📋 Processing ${sheetOrders.length} orders from sheet`);
       this.orders = sheetOrders.map(order => this.convertSheetOrderToOrder(order));
       
       const pendingCount = this.orders.filter(o => o.status === 'pending').length;
       const scheduledCount = this.orders.filter(o => o.status === 'scheduled').length;
       
-      console.log(`Converted ${this.orders.length} orders: ${pendingCount} pending, ${scheduledCount} scheduled`);
+      console.log(`✅ Converted ${this.orders.length} orders: ${pendingCount} pending, ${scheduledCount} scheduled`);
       return this.orders;
     } catch (error) {
-      console.error('Error fetching orders from sheet:', error);
+      console.error('❌ Error fetching orders from sheet:', error);
       throw error;
     }
   }

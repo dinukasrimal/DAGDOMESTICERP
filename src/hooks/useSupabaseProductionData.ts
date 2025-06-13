@@ -51,11 +51,51 @@ export const useSupabaseProductionData = () => {
       setOrders(fetchedOrders);
       
       console.log('✅ Successfully loaded all data from Supabase');
+      console.log(`📊 Loaded ${fetchedOrders.length} orders from database`);
     } catch (err) {
       console.error('❌ Error loading data from Supabase:', err);
       setError(err instanceof Error ? err.message : 'Failed to load data');
     } finally {
       setIsLoading(false);
+    }
+  }, []);
+
+  const syncOrderToDatabase = useCallback(async (order: Order) => {
+    try {
+      // Check if order already exists in database by PO number
+      const existingOrders = await supabaseDataService.getOrders();
+      const existingOrder = existingOrders.find(o => o.poNumber === order.poNumber);
+      
+      if (existingOrder) {
+        console.log(`📝 Updating existing order: ${order.poNumber}`);
+        return await supabaseDataService.updateOrder(existingOrder.id, {
+          styleId: order.styleId,
+          orderQuantity: order.orderQuantity,
+          smv: order.smv,
+          moCount: order.moCount,
+          cutQuantity: order.cutQuantity,
+          issueQuantity: order.issueQuantity,
+          status: order.status
+        });
+      } else {
+        console.log(`➕ Creating new order: ${order.poNumber}`);
+        return await supabaseDataService.createOrder({
+          poNumber: order.poNumber,
+          styleId: order.styleId,
+          orderQuantity: order.orderQuantity,
+          smv: order.smv,
+          moCount: order.moCount,
+          cutQuantity: order.cutQuantity,
+          issueQuantity: order.issueQuantity,
+          status: order.status,
+          planStartDate: order.planStartDate,
+          planEndDate: order.planEndDate,
+          actualProduction: order.actualProduction || {}
+        });
+      }
+    } catch (error) {
+      console.error(`❌ Failed to sync order ${order.poNumber} to database:`, error);
+      throw error;
     }
   }, []);
 
@@ -69,23 +109,51 @@ export const useSupabaseProductionData = () => {
     setError(null);
 
     try {
-      console.log('Starting to fetch orders from Google Sheets...');
+      console.log('🔄 Starting to fetch orders from Google Sheets...');
       const fetchedOrders = await dataService.fetchOrdersFromSheet();
-      console.log(`✅ Successfully synced ${fetchedOrders.length} orders`);
+      console.log(`📥 Fetched ${fetchedOrders.length} orders from Google Sheets`);
       
-      const pendingCount = fetchedOrders.filter(o => o.status === 'pending').length;
-      const scheduledCount = fetchedOrders.filter(o => o.status === 'scheduled').length;
+      if (fetchedOrders.length === 0) {
+        console.log('⚠️ No orders fetched from Google Sheets');
+        setOrders([]);
+        return;
+      }
+
+      // Sync each order to Supabase database
+      console.log('💾 Syncing orders to Supabase database...');
+      const syncedOrders: Order[] = [];
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (const order of fetchedOrders) {
+        try {
+          const syncedOrder = await syncOrderToDatabase(order);
+          syncedOrders.push(syncedOrder);
+          successCount++;
+        } catch (error) {
+          console.error(`Failed to sync order ${order.poNumber}:`, error);
+          errorCount++;
+        }
+      }
+
+      console.log(`✅ Sync complete: ${successCount} successful, ${errorCount} failed`);
       
-      console.log(`📊 Sync Summary: ${pendingCount} pending, ${scheduledCount} scheduled orders`);
+      // Reload all orders from database to get the latest state
+      const allOrders = await supabaseDataService.getOrders();
+      setOrders(allOrders);
       
-      setOrders(fetchedOrders);
+      const pendingCount = allOrders.filter(o => o.status === 'pending').length;
+      const scheduledCount = allOrders.filter(o => o.status === 'scheduled').length;
+      
+      console.log(`📊 Final state: ${allOrders.length} total orders (${pendingCount} pending, ${scheduledCount} scheduled)`);
+      
     } catch (err) {
       console.error('❌ Error in fetchOrdersFromGoogleSheets:', err);
-      setError(err instanceof Error ? err.message : 'Failed to fetch orders');
+      setError(err instanceof Error ? err.message : 'Failed to fetch and sync orders');
     } finally {
       setIsLoading(false);
     }
-  }, [isGoogleSheetsConfigured]);
+  }, [isGoogleSheetsConfigured, syncOrderToDatabase]);
 
   const configureGoogleSheets = useCallback(() => {
     const apiKey = localStorage.getItem('googleSheets_apiKey');
@@ -111,10 +179,12 @@ export const useSupabaseProductionData = () => {
 
   const updateOrderInDatabase = useCallback(async (orderId: string, updates: Partial<Order>) => {
     try {
+      console.log(`📝 Updating order ${orderId} in database with:`, updates);
       const updatedOrder = await supabaseDataService.updateOrder(orderId, updates);
       setOrders(prev => prev.map(order => 
         order.id === orderId ? updatedOrder : order
       ));
+      console.log(`✅ Successfully updated order ${orderId}`);
       return updatedOrder;
     } catch (err) {
       console.error('Failed to update order in database:', err);
@@ -124,8 +194,10 @@ export const useSupabaseProductionData = () => {
 
   const createOrderInDatabase = useCallback(async (orderData: Omit<Order, 'id'>) => {
     try {
+      console.log(`➕ Creating new order in database:`, orderData.poNumber);
       const newOrder = await supabaseDataService.createOrder(orderData);
       setOrders(prev => [newOrder, ...prev]);
+      console.log(`✅ Successfully created order ${newOrder.poNumber}`);
       return newOrder;
     } catch (err) {
       console.error('Failed to create order in database:', err);
@@ -149,8 +221,6 @@ export const useSupabaseProductionData = () => {
 
   const updateProductionLinesInDatabase = useCallback(async (lines: ProductionLine[]) => {
     try {
-      // For simplicity, we'll just update the local state
-      // In a real app, you might want to sync each line individually
       setProductionLines(lines);
     } catch (err) {
       console.error('Failed to update production lines:', err);
