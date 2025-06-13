@@ -12,24 +12,25 @@ function Calendar({
   className,
   classNames,
   showOutsideDays = true,
+  onSelect,
   ...props
 }: CalendarProps) {
   // Create a custom handler that ensures dates are in local timezone
   const handleSelect = React.useCallback((value: any) => {
-    if (props.onSelect) {
+    if (onSelect) {
       if (value instanceof Date) {
         // For single date selection, create a local date at noon to avoid timezone issues
         const localDate = new Date(value.getFullYear(), value.getMonth(), value.getDate(), 12, 0, 0, 0);
         console.log('Calendar original date:', value);
         console.log('Calendar local date created:', localDate);
         console.log('Local date string:', localDate.toDateString());
-        (props.onSelect as any)(localDate);
+        (onSelect as any)(localDate);
       } else {
         // For other selection modes (range, multiple), pass through as-is
-        (props.onSelect as any)(value);
+        (onSelect as any)(value);
       }
     }
-  }, [props.onSelect]);
+  }, [onSelect]);
 
   return (
     <DayPicker
