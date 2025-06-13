@@ -28,16 +28,16 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   onOrderMovedToPending,
   onOrderSplit
 }) => {
-  const [pendingSchedule, setPendingSchedule] = useState<{
+  const [scheduleDialog, setScheduleDialog] = useState<{
+    isOpen: boolean;
     order: Order | null;
     lineId: string;
-    date: Date | null;
-    showDialog: boolean;
+    startDate: Date | null;
   }>({
+    isOpen: false,
     order: null,
     lineId: '',
-    date: null,
-    showDialog: false
+    startDate: null
   });
   
   const [overlapDialog, setOverlapDialog] = useState<{
@@ -70,7 +70,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return holidays.some(h => h.date.toDateString() === date.toDateString());
   }, [holidays]);
 
-  const getScheduledOrdersForCell = useCallback((lineId: string, date: Date) => {
+  const getOrdersForCell = useCallback((lineId: string, date: Date) => {
     const dateStr = date.toISOString().split('T')[0];
     return orders.filter(order => 
       order.status === 'scheduled' &&
@@ -79,18 +79,31 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     );
   }, [orders]);
 
-  const calculateCapacityUtilization = useCallback((lineId: string, date: Date) => {
+  const calculateTotalUtilization = useCallback((lineId: string, date: Date) => {
     const line = productionLines.find(l => l.id === lineId);
     if (!line) return 0;
     
     const dateStr = date.toISOString().split('T')[0];
-    const scheduledOrders = getScheduledOrdersForCell(lineId, date);
-    const totalPlanned = scheduledOrders.reduce((sum, order) => 
+    const ordersInCell = getOrdersForCell(lineId, date);
+    const totalPlanned = ordersInCell.reduce((sum, order) => 
       sum + (order.actualProduction?.[dateStr] || 0), 0
     );
     
     return Math.min((totalPlanned / line.capacity) * 100, 100);
-  }, [productionLines, getScheduledOrdersForCell]);
+  }, [productionLines, getOrdersForCell]);
+
+  const getAvailableCapacity = useCallback((lineId: string, date: Date) => {
+    const line = productionLines.find(l => l.id === lineId);
+    if (!line) return 0;
+    
+    const dateStr = date.toISOString().split('T')[0];
+    const ordersInCell = getOrdersForCell(lineId, date);
+    const totalUsed = ordersInCell.reduce((sum, order) => 
+      sum + (order.actualProduction?.[dateStr] || 0), 0
+    );
+    
+    return line.capacity - totalUsed;
+  }, [productionLines, getOrdersForCell]);
 
   const checkForOverlaps = useCallback((newOrder: Order, targetLineId: string, targetDate: Date) => {
     const line = productionLines.find(l => l.id === targetLineId);
@@ -124,8 +137,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return overlappingOrders;
   }, [orders, productionLines]);
 
-  // Calculate daily production function
-  const calculateDailyProduction = useCallback((order: Order, line: ProductionLine, startDate: Date) => {
+  // Calculate daily production with capacity sharing
+  const calculateDailyProductionWithSharing = useCallback((order: Order, line: ProductionLine, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
     let currentDate = new Date(startDate);
@@ -137,10 +150,13 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const isWorkingDay = !isHoliday(currentDate);
       
       if (isWorkingDay) {
+        // Get available capacity for this date
+        const availableCapacity = getAvailableCapacity(line.id, currentDate);
+        
         let dailyCapacity = 0;
         
         if (planningMethod === 'capacity') {
-          dailyCapacity = line.capacity;
+          dailyCapacity = Math.min(availableCapacity, line.capacity);
         } else if (planningMethod === 'rampup' && rampUpPlan) {
           const baseCapacity = (540 * order.moCount) / order.smv;
           let efficiency = rampUpPlan.finalEfficiency;
@@ -150,7 +166,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             efficiency = rampUpDay.efficiency;
           }
           
-          dailyCapacity = Math.floor((baseCapacity * efficiency) / 100);
+          const calculatedCapacity = Math.floor((baseCapacity * efficiency) / 100);
+          dailyCapacity = Math.min(availableCapacity, calculatedCapacity);
         }
 
         const plannedQty = Math.min(remainingQty, dailyCapacity);
@@ -169,52 +186,27 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
 
     return dailyPlan;
-  }, [isHoliday, planningMethod, selectedRampUpPlanId, rampUpPlans]);
+  }, [isHoliday, planningMethod, selectedRampUpPlanId, rampUpPlans, getAvailableCapacity]);
 
   // Move orders for placement function
   const moveOrdersForPlacement = useCallback(async (newOrder: Order, targetLineId: string, targetDate: Date, placement: 'before' | 'after', overlappingOrders: Order[]) => {
-    const line = productionLines.find(l => l.id === targetLineId);
-    if (!line) return;
-
-    // Calculate new order duration
-    const dailyCapacity = line.capacity;
-    const newOrderDuration = Math.ceil(newOrder.orderQuantity / dailyCapacity);
-
+    console.log(`📋 Moving orders for ${placement} placement`);
+    
     if (placement === 'before') {
-      // New order starts at target date, move overlapping orders after it
-      const newOrderEndDate = new Date(targetDate);
-      newOrderEndDate.setDate(newOrderEndDate.getDate() + newOrderDuration - 1);
-      
-      // Sort overlapping orders by their current start date
-      const sortedOverlapping = [...overlappingOrders].sort((a, b) => 
-        (a.planStartDate?.getTime() || 0) - (b.planStartDate?.getTime() || 0)
-      );
-
-      // Move each overlapping order to start after the previous one ends
-      let nextStartDate = new Date(newOrderEndDate);
-      nextStartDate.setDate(nextStartDate.getDate() + 1);
-
-      for (const order of sortedOverlapping) {
-        // Move to pending first
+      // Move overlapping orders to pending, they'll be rescheduled after new order
+      for (const order of overlappingOrders) {
         await onOrderMovedToPending(order);
-        
-        // Calculate new end date for this order
-        const orderDuration = Math.ceil(order.orderQuantity / dailyCapacity);
-        const orderEndDate = new Date(nextStartDate);
-        orderEndDate.setDate(orderEndDate.getDate() + orderDuration - 1);
-        
-        // Calculate daily production plan
-        const dailyPlan = calculateDailyProduction(order, line, nextStartDate);
-        
-        // Reschedule the order
-        await onOrderScheduled(order, nextStartDate, orderEndDate, dailyPlan);
-        
-        // Set next start date for the following order
-        nextStartDate = new Date(orderEndDate);
-        nextStartDate.setDate(nextStartDate.getDate() + 1);
       }
+      
+      // Set up new order for immediate scheduling
+      setScheduleDialog({
+        isOpen: true,
+        order: newOrder,
+        lineId: targetLineId,
+        startDate: targetDate
+      });
+      
     } else {
-      // New order starts after existing orders
       // Find the latest end date among overlapping orders
       let latestEndDate = targetDate;
       overlappingOrders.forEach(order => {
@@ -223,30 +215,34 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         }
       });
       
-      // Schedule new order to start the day after the latest ending order
+      // Schedule new order to start the day after
       const newStartDate = new Date(latestEndDate);
       newStartDate.setDate(newStartDate.getDate() + 1);
       
-      // Update the pending schedule with the new start date
-      setPendingSchedule(prev => ({ ...prev, date: newStartDate }));
+      setScheduleDialog({
+        isOpen: true,
+        order: newOrder,
+        lineId: targetLineId,
+        startDate: newStartDate
+      });
     }
-  }, [productionLines, onOrderMovedToPending, onOrderScheduled, calculateDailyProduction]);
+  }, [onOrderMovedToPending]);
 
   // Helper function to check if a date is in the current week
   const isCurrentWeek = useCallback((date: Date) => {
     const now = new Date();
     const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() - now.getDay()); // Start of current week (Sunday)
+    startOfWeek.setDate(now.getDate() - now.getDay());
     startOfWeek.setHours(0, 0, 0, 0);
     
     const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 6); // End of current week (Saturday)
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
     endOfWeek.setHours(23, 59, 59, 999);
     
     return date >= startOfWeek && date <= endOfWeek;
   }, []);
 
-  // Check if order should be highlighted in red (cut qty is 0 and plan start date is in current week)
+  // Check if order should be highlighted in red
   const shouldHighlightRed = useCallback((order: Order, date: Date) => {
     return order.cutQuantity === 0 && 
            order.planStartDate && 
@@ -298,11 +294,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             targetLine: lineName
           });
         } else {
-          setPendingSchedule({
+          setScheduleDialog({
+            isOpen: true,
             order: orderData,
             lineId,
-            date,
-            showDialog: true
+            startDate: date
           });
         }
       }
@@ -312,9 +308,9 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   }, [isHoliday, checkForOverlaps, productionLines]);
 
   const handleScheduleConfirm = useCallback(async () => {
-    const { order, lineId, date } = pendingSchedule;
+    const { order, lineId, startDate } = scheduleDialog;
     
-    if (!order || !lineId || !date) {
+    if (!order || !lineId || !startDate) {
       console.log('⚠️ Missing required scheduling data');
       return;
     }
@@ -333,22 +329,22 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     try {
       console.log('✅ Confirming schedule for:', order.poNumber);
       
-      const dailyPlan = calculateDailyProduction(order, selectedLine, date);
+      const dailyPlan = calculateDailyProductionWithSharing(order, selectedLine, startDate);
       const planDates = Object.keys(dailyPlan);
       const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
       
       const updatedOrder = { ...order, assignedLineId: lineId };
       
-      await onOrderScheduled(updatedOrder, date, endDate, dailyPlan);
+      await onOrderScheduled(updatedOrder, startDate, endDate, dailyPlan);
       
-      setPendingSchedule({ order: null, lineId: '', date: null, showDialog: false });
+      setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
       setPlanningMethod('capacity');
       setSelectedRampUpPlanId('');
       
     } catch (error) {
       console.error('❌ Failed to schedule order:', error);
     }
-  }, [pendingSchedule, productionLines, planningMethod, selectedRampUpPlanId, calculateDailyProduction, onOrderScheduled]);
+  }, [scheduleDialog, productionLines, planningMethod, selectedRampUpPlanId, calculateDailyProductionWithSharing, onOrderScheduled]);
 
   const handleOverlapConfirm = useCallback(async (placement: 'before' | 'after') => {
     const { newOrder, overlappingOrders, targetDate, targetLine } = overlapDialog;
@@ -359,16 +355,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const lineId = productionLines.find(l => l.name === targetLine)?.id;
       if (!lineId) return;
 
-      // Handle the placement logic
       await moveOrdersForPlacement(newOrder, lineId, targetDate, placement, overlappingOrders);
-      
-      // Set up the new order for scheduling
-      setPendingSchedule({
-        order: newOrder,
-        lineId,
-        date: placement === 'before' ? targetDate : pendingSchedule.date,
-        showDialog: true
-      });
       
       setOverlapDialog({
         isOpen: false,
@@ -380,10 +367,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     } catch (error) {
       console.error('❌ Failed to handle overlap:', error);
     }
-  }, [overlapDialog, productionLines, moveOrdersForPlacement, pendingSchedule.date]);
+  }, [overlapDialog, productionLines, moveOrdersForPlacement]);
 
   const handleDialogClose = useCallback(() => {
-    setPendingSchedule({ order: null, lineId: '', date: null, showDialog: false });
+    setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
     setPlanningMethod('capacity');
     setSelectedRampUpPlanId('');
   }, []);
@@ -451,14 +438,15 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
               {dates.map((date) => {
                 const cellKey = `${line.id}-${date.toISOString().split('T')[0]}`;
                 const isHighlighted = dragHighlight === cellKey;
-                const utilizationPercent = calculateCapacityUtilization(line.id, date);
-                const scheduledOrders = getScheduledOrdersForCell(line.id, date);
+                const utilizationPercent = calculateTotalUtilization(line.id, date);
+                const ordersInCell = getOrdersForCell(line.id, date);
                 const isHolidayCell = isHoliday(date);
+                const availableCapacity = getAvailableCapacity(line.id, date);
                 
                 return (
                   <div
                     key={cellKey}
-                    className={`w-32 min-h-[80px] border-r border-border relative transition-all duration-200 ${
+                    className={`w-32 min-h-[120px] border-r border-border relative transition-all duration-200 ${
                       isHolidayCell 
                         ? 'bg-muted/50' 
                         : isHighlighted 
@@ -479,9 +467,16 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                     )}
                     
                     {/* Drop zone indicator */}
-                    {!isHolidayCell && !scheduledOrders.length && (
+                    {!isHolidayCell && ordersInCell.length === 0 && (
                       <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
                         <Plus className="h-4 w-4 text-muted-foreground" />
+                      </div>
+                    )}
+                    
+                    {/* Available capacity indicator */}
+                    {!isHolidayCell && availableCapacity > 0 && ordersInCell.length > 0 && (
+                      <div className="absolute top-1 right-1 text-xs bg-green-100 text-green-800 px-1 rounded">
+                        {availableCapacity}
                       </div>
                     )}
                     
@@ -494,28 +489,35 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                       </div>
                     )}
                     
-                    {/* Scheduled orders - now draggable with style names and cut/issue quantities */}
-                    <div className="p-1 space-y-1 relative z-10">
-                      {scheduledOrders.map((scheduledOrder) => {
+                    {/* Multiple orders in same cell - stacked vertically */}
+                    <div className="p-1 space-y-1 relative z-10 h-full flex flex-col">
+                      {ordersInCell.map((scheduledOrder, index) => {
                         const dateStr = date.toISOString().split('T')[0];
                         const dailyQty = scheduledOrder.actualProduction?.[dateStr] || 0;
                         const shouldHighlight = shouldHighlightRed(scheduledOrder, date);
+                        const orderUtilization = (dailyQty / line.capacity) * 100;
                         
                         return (
                           <div 
                             key={`${scheduledOrder.id}-${dateStr}`}
-                            className={`rounded text-xs p-2 group cursor-move transition-colors ${
+                            className={`rounded text-xs p-1 group cursor-move transition-colors flex-1 min-h-[60px] ${
                               shouldHighlight 
                                 ? 'bg-red-100 border-2 border-red-500 text-red-800' 
-                                : 'bg-primary/20 text-primary hover:bg-primary/30'
+                                : index % 2 === 0
+                                  ? 'bg-blue-100 border border-blue-300 text-blue-800'
+                                  : 'bg-green-100 border border-green-300 text-green-800'
                             }`}
                             draggable
                             onDragStart={(e) => handleOrderDragStart(e, scheduledOrder)}
                             onDragEnd={handleOrderDragEnd}
+                            style={{ 
+                              height: `${Math.max(orderUtilization, 20)}%`,
+                              minHeight: '60px'
+                            }}
                           >
                             <div className="flex items-center justify-between mb-1">
                               <div className="flex items-center space-x-1">
-                                <GripVertical className="h-3 w-3 text-primary/60" />
+                                <GripVertical className="h-3 w-3 opacity-60" />
                                 <span className="truncate font-medium text-xs">{scheduledOrder.poNumber}</span>
                               </div>
                               <div className="opacity-0 group-hover:opacity-100 flex space-x-1">
@@ -558,7 +560,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                               Issue: {scheduledOrder.issueQuantity.toLocaleString()}
                             </div>
                             <div className="text-xs opacity-75">
-                              {utilizationPercent.toFixed(0)}% capacity
+                              {orderUtilization.toFixed(1)}% used
                             </div>
                           </div>
                         );
@@ -573,34 +575,34 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       </div>
 
       {/* Schedule Dialog */}
-      <Dialog open={pendingSchedule.showDialog} onOpenChange={(open) => !open && handleDialogClose()}>
+      <Dialog open={scheduleDialog.isOpen} onOpenChange={(open) => !open && handleDialogClose()}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Schedule Order</DialogTitle>
           </DialogHeader>
-          {pendingSchedule.order && (
+          {scheduleDialog.order && (
             <div className="space-y-4">
               <div className="bg-muted/50 p-3 rounded">
-                <h3 className="font-medium">{pendingSchedule.order.poNumber}</h3>
+                <h3 className="font-medium">{scheduleDialog.order.poNumber}</h3>
                 <p className="text-sm text-muted-foreground">
-                  Style: {pendingSchedule.order.styleId}
+                  Style: {scheduleDialog.order.styleId}
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  Quantity: {pendingSchedule.order.orderQuantity.toLocaleString()} | SMV: {pendingSchedule.order.smv} | MO: {pendingSchedule.order.moCount}
+                  Quantity: {scheduleDialog.order.orderQuantity.toLocaleString()} | SMV: {scheduleDialog.order.smv} | MO: {scheduleDialog.order.moCount}
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  Cut: {pendingSchedule.order.cutQuantity.toLocaleString()} | Issue: {pendingSchedule.order.issueQuantity.toLocaleString()}
+                  Cut: {scheduleDialog.order.cutQuantity.toLocaleString()} | Issue: {scheduleDialog.order.issueQuantity.toLocaleString()}
                 </p>
               </div>
               
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
                   <label className="font-medium">Start Date:</label>
-                  <div>{pendingSchedule.date?.toLocaleDateString()}</div>
+                  <div>{scheduleDialog.startDate?.toLocaleDateString()}</div>
                 </div>
                 <div>
                   <label className="font-medium">Production Line:</label>
-                  <div>{productionLines.find(l => l.id === pendingSchedule.lineId)?.name}</div>
+                  <div>{productionLines.find(l => l.id === scheduleDialog.lineId)?.name}</div>
                 </div>
               </div>
 
