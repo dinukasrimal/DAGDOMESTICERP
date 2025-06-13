@@ -1,3 +1,4 @@
+
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { GoogleSheetsService, SheetOrder } from './googleSheetsService';
 
@@ -57,7 +58,7 @@ export class DataService {
     // Check if this order has schedule dates - if so, it's already scheduled
     const hasScheduleDates = sheetOrder.planStartDate && sheetOrder.planEndDate;
     
-    console.log(`🔄 Converting sheet order: ${sheetOrder.poNumber} (Qty: ${sheetOrder.qty}, SMV: ${sheetOrder.smv})`);
+    console.log(`🔄 Converting sheet order: ${sheetOrder.poNumber} (Qty: ${sheetOrder.qty}, Cut: ${sheetOrder.cutQty || 0}, Issue: ${sheetOrder.issueQty || 0})`);
     
     return {
       id: uniqueId,
@@ -66,8 +67,8 @@ export class DataService {
       orderQuantity: sheetOrder.qty,
       smv: sheetOrder.smv,
       moCount: sheetOrder.moCount,
-      cutQuantity: sheetOrder.qty, // Default to same as order quantity
-      issueQuantity: sheetOrder.qty, // Default to same as order quantity
+      cutQuantity: sheetOrder.cutQty || 0,
+      issueQuantity: sheetOrder.issueQty || 0,
       status: hasScheduleDates ? 'scheduled' : 'pending',
       planStartDate: sheetOrder.planStartDate ? new Date(sheetOrder.planStartDate) : null,
       planEndDate: sheetOrder.planEndDate ? new Date(sheetOrder.planEndDate) : null,
