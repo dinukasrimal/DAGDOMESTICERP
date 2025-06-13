@@ -37,8 +37,9 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const [planningMethod, setPlanningMethod] = useState<'capacity' | 'rampup'>('capacity');
   const [orderToSplit, setOrderToSplit] = useState<Order | null>(null);
   const [splitQuantity, setSplitQuantity] = useState<number>(0);
+  const [dragOverCell, setDragOverCell] = useState<string | null>(null);
 
-  // Generate date range (next 30 days for demo)
+  // Generate date range (next 30 days)
   const generateDateRange = () => {
     const dates = [];
     const startDate = new Date();
@@ -52,17 +53,15 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   const dates = generateDateRange();
 
-  // Fixed ramp-up calculation to show all days properly
   const calculateDailyProduction = (order: Order, line: ProductionLine, startDate: Date, method: 'capacity' | 'rampup', rampUpPlanId?: string) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
     let currentDate = new Date(startDate);
-    let workingDayNumber = 1; // Track working days only
+    let workingDayNumber = 1;
 
     const rampUpPlan = rampUpPlans.find(p => p.id === rampUpPlanId);
 
     while (remainingQty > 0) {
-      // Only skip holidays (not weekends)
       const isHoliday = holidays.some(h => h.date.toDateString() === currentDate.toDateString());
       
       if (!isHoliday) {
@@ -74,30 +73,25 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           const baseCapacity = (540 * order.moCount) / order.smv;
           let efficiency = rampUpPlan.finalEfficiency;
           
-          // Find efficiency for current working day
           const rampUpDay = rampUpPlan.efficiencies.find(e => e.day === workingDayNumber);
           if (rampUpDay) {
             efficiency = rampUpDay.efficiency;
           }
           
           dailyCapacity = Math.floor((baseCapacity * efficiency) / 100);
-          console.log(`Day ${workingDayNumber}: Base capacity ${baseCapacity}, Efficiency ${efficiency}%, Daily capacity ${dailyCapacity}`);
         }
 
         const plannedQty = Math.min(remainingQty, dailyCapacity);
         if (plannedQty > 0) {
           dailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
           remainingQty -= plannedQty;
-          console.log(`${currentDate.toISOString().split('T')[0]}: Planned ${plannedQty}, Remaining ${remainingQty}`);
         }
-        workingDayNumber++; // Only increment on working days
+        workingDayNumber++;
       }
       
       currentDate.setDate(currentDate.getDate() + 1);
       
-      // Safety check to prevent infinite loop
       if (currentDate.getTime() - startDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
-        console.warn('Breaking loop after 365 days to prevent infinite loop');
         break;
       }
     }
@@ -105,16 +99,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return dailyPlan;
   };
 
-  const handleDrop = (e: React.DragEvent, lineId: string, date: Date) => {
-    e.preventDefault();
-    const orderData = e.dataTransfer.getData('application/json');
-    if (orderData) {
-      const order = JSON.parse(orderData) as Order;
-      setDraggedOrder(order);
-      setSelectedLineId(lineId);
-      setSelectedDate(date);
-      setShowScheduleDialog(true);
-    }
+  const handleDragStart = (e: React.DragEvent, order: Order) => {
+    console.log('Drag started for order:', order.poNumber);
+    setDraggedOrder(order);
+    e.dataTransfer.setData('application/json', JSON.stringify(order));
+    e.dataTransfer.effectAllowed = 'move';
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -122,9 +111,28 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     e.dataTransfer.dropEffect = 'move';
   };
 
-  const handleDragStart = (e: React.DragEvent, order: Order) => {
-    e.dataTransfer.setData('application/json', JSON.stringify(order));
-    e.dataTransfer.effectAllowed = 'move';
+  const handleDragEnter = (e: React.DragEvent, lineId: string, date: Date) => {
+    e.preventDefault();
+    const cellKey = `${lineId}-${date.toISOString().split('T')[0]}`;
+    setDragOverCell(cellKey);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOverCell(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, lineId: string, date: Date) => {
+    e.preventDefault();
+    console.log('Drop event triggered for line:', lineId, 'date:', date);
+    setDragOverCell(null);
+    
+    if (draggedOrder) {
+      console.log('Opening schedule dialog for order:', draggedOrder.poNumber);
+      setSelectedLineId(lineId);
+      setSelectedDate(date);
+      setShowScheduleDialog(true);
+    }
   };
 
   const handleScheduleConfirm = async () => {
@@ -132,7 +140,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const selectedLine = productionLines.find(l => l.id === selectedLineId);
       if (!selectedLine) return;
 
-      // Calculate daily production plan
+      console.log('Confirming schedule for order:', draggedOrder.poNumber);
+
       const dailyPlan = calculateDailyProduction(
         draggedOrder, 
         selectedLine, 
@@ -141,11 +150,9 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         selectedRampUpPlanId
       );
 
-      // Calculate end date from daily plan
       const planDates = Object.keys(dailyPlan);
       const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
       
-      // Create updated order with line assignment
       const updatedOrder = {
         ...draggedOrder,
         assignedLineId: selectedLineId
@@ -183,7 +190,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return holidays.some(h => h.date.toDateString() === date.toDateString());
   };
 
-  // Fixed function: Only get scheduled orders for the SPECIFIC line and date
   const getScheduledOrdersForLineAndDate = (lineId: string, date: Date) => {
     const dateStr = date.toISOString().split('T')[0];
     return orders.filter(order => 
@@ -202,7 +208,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return order.actualProduction[dateStr] || 0;
   };
 
-  // Calculate capacity utilization percentage for visual representation
   const getCapacityUtilization = (lineId: string, date: Date) => {
     const line = productionLines.find(l => l.id === lineId);
     if (!line) return 0;
@@ -260,16 +265,23 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
               </div>
               {dates.map((date) => {
                 const utilizationPercent = getCapacityUtilization(line.id, date);
+                const cellKey = `${line.id}-${date.toISOString().split('T')[0]}`;
+                const isDragOver = dragOverCell === cellKey;
+                
                 return (
                   <div
-                    key={`${line.id}-${date.toISOString()}`}
-                    className={`w-32 h-20 border-r border-border relative ${
+                    key={cellKey}
+                    className={`w-32 h-20 border-r border-border relative transition-colors ${
                       isHoliday(date) 
                         ? 'bg-muted/50' 
-                        : 'bg-background hover:bg-muted/20'
+                        : isDragOver 
+                          ? 'bg-primary/20 border-primary border-2' 
+                          : 'bg-background hover:bg-muted/20'
                     }`}
                     onDrop={(e) => handleDrop(e, line.id, date)}
                     onDragOver={handleDragOver}
+                    onDragEnter={(e) => handleDragEnter(e, line.id, date)}
+                    onDragLeave={handleDragLeave}
                   >
                     {/* Capacity utilization visual indicator */}
                     {utilizationPercent > 0 && (
@@ -279,13 +291,19 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                       />
                     )}
                     
-                    {!isHoliday(date) && (
+                    {!isHoliday(date) && !isDragOver && (
                       <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
                         <Plus className="h-4 w-4 text-muted-foreground" />
                       </div>
                     )}
                     
-                    {/* Render scheduled order slots - ONLY for this specific line */}
+                    {isDragOver && (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="text-xs font-medium text-primary">Drop Here</div>
+                      </div>
+                    )}
+                    
+                    {/* Render scheduled orders */}
                     {getScheduledOrdersForLineAndDate(line.id, date).map((scheduledOrder) => {
                       const dailyQty = getDailyPlannedQuantity(scheduledOrder, date);
                       return (
