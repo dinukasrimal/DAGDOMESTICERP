@@ -110,9 +110,22 @@ export const SchedulerCell: React.FC<SchedulerCellProps> = ({
            date.toDateString() === order.planStartDate.toDateString();
   }, [date, isCurrentWeek]);
 
+  // Check if this order is using partial/remaining capacity
+  const isUsingRemainingCapacity = useCallback((order: Order) => {
+    const dateStr = date.toISOString().split('T')[0];
+    const dailyQty = order.actualProduction?.[dateStr] || 0;
+    const otherOrdersQty = orders
+      .filter(o => o.id !== order.id)
+      .reduce((sum, o) => sum + (o.actualProduction?.[dateStr] || 0), 0);
+    
+    // If this order's quantity + other orders < line capacity, it's using remaining capacity
+    return (dailyQty + otherOrdersQty) < line.capacity && otherOrdersQty > 0;
+  }, [orders, line.capacity, date]);
+
   const getOrderColorClasses = useCallback((order: Order, index: number) => {
     const isSelected = selectedOrders.has(order.id);
     const shouldHighlight = shouldHighlightRed(order);
+    const usingRemainingCapacity = isUsingRemainingCapacity(order);
     
     if (shouldHighlight) {
       return 'bg-red-100 border-red-400 text-red-800';
@@ -120,6 +133,11 @@ export const SchedulerCell: React.FC<SchedulerCellProps> = ({
     
     if (isSelected) {
       return 'bg-blue-200 border-blue-500 text-blue-900 ring-2 ring-blue-400';
+    }
+    
+    // Visual distinction for orders using remaining capacity
+    if (usingRemainingCapacity) {
+      return 'bg-amber-100 border-amber-300 text-amber-800 border-dashed';
     }
     
     const colors = [
@@ -130,7 +148,7 @@ export const SchedulerCell: React.FC<SchedulerCellProps> = ({
     ];
     
     return colors[index % colors.length];
-  }, [selectedOrders, shouldHighlightRed]);
+  }, [selectedOrders, shouldHighlightRed, isUsingRemainingCapacity]);
 
   return (
     <div
@@ -211,6 +229,7 @@ export const SchedulerCell: React.FC<SchedulerCellProps> = ({
           const dailyQty = order.actualProduction?.[dateStr] || 0;
           const orderUtilization = (dailyQty / line.capacity) * 100;
           const isSelected = selectedOrders.has(order.id);
+          const usingRemainingCapacity = isUsingRemainingCapacity(order);
           
           return (
             <div 
@@ -277,6 +296,11 @@ export const SchedulerCell: React.FC<SchedulerCellProps> = ({
                 <div className="text-xs opacity-80">
                   {orderUtilization.toFixed(1)}% of line
                 </div>
+                {usingRemainingCapacity && (
+                  <div className="text-xs font-medium text-amber-700">
+                    Remaining Cap.
+                  </div>
+                )}
               </div>
             </div>
           );

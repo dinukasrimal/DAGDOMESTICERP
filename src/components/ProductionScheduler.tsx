@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback } from 'react';
 import { useSupabaseProductionData } from '../hooks/useSupabaseProductionData';
 import { SchedulerBoard } from './scheduler/SchedulerBoard';
@@ -47,11 +46,11 @@ export const ProductionScheduler: React.FC = () => {
     }
   };
 
-  // Enhanced refresh plan with strict capacity constraints and magnetic behavior
+  // Modified refresh plan without magnetic behavior for holiday removal
   const refreshPlan = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      console.log('🔄 Starting enhanced magnetic refresh plan...');
+      console.log('🔄 Starting refresh plan without magnetic snapping...');
       
       const scheduledOrders = orders.filter(order => 
         order.status === 'scheduled' && 
@@ -68,7 +67,7 @@ export const ProductionScheduler: React.FC = () => {
         return acc;
       }, {} as { [lineId: string]: Order[] });
 
-      // Process each line with magnetic snapping and capacity constraints
+      // Process each line WITHOUT magnetic behavior for holiday removal
       for (const [lineId, lineOrders] of Object.entries(ordersByLine)) {
         const line = productionLines.find(l => l.id === lineId);
         if (!line) continue;
@@ -82,45 +81,49 @@ export const ProductionScheduler: React.FC = () => {
           return dateA - dateB;
         });
 
-        // Reschedule orders with magnetic behavior and strict capacity limits
-        let currentDate = sortedOrders[0]?.planStartDate ? new Date(sortedOrders[0].planStartDate) : new Date();
-        
-        // Skip holidays for starting date
-        while (isHoliday(currentDate)) {
-          currentDate.setDate(currentDate.getDate() + 1);
-        }
-        
+        // Simple reschedule without magnetic snapping - just move orders off holidays
         for (const order of sortedOrders) {
-          const newDailyPlan = await rescheduleOrderWithCapacityConstraints(order, line, currentDate);
+          let needsReschedule = false;
+          const currentPlan = order.actualProduction || {};
           
-          if (Object.keys(newDailyPlan).length > 0) {
-            const planDates = Object.keys(newDailyPlan);
-            const newEndDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
-            
-            await updateOrderInDatabase(order.id, {
-              planStartDate: currentDate,
-              planEndDate: newEndDate,
-              actualProduction: newDailyPlan
-            });
-
-            // Next order starts immediately after this one (magnetic behavior)
-            currentDate = new Date(newEndDate);
-            currentDate.setDate(currentDate.getDate() + 1);
-            
-            // Skip holidays
-            while (isHoliday(currentDate)) {
-              currentDate.setDate(currentDate.getDate() + 1);
+          // Check if any planned dates are now holidays
+          for (const dateStr of Object.keys(currentPlan)) {
+            const date = new Date(dateStr);
+            if (isHoliday(date)) {
+              needsReschedule = true;
+              break;
+            }
+          }
+          
+          if (needsReschedule) {
+            // Find the first available date from the original start date
+            let startDate = order.planStartDate ? new Date(order.planStartDate) : new Date();
+            while (isHoliday(startDate)) {
+              startDate.setDate(startDate.getDate() + 1);
             }
             
-            console.log(`✅ Rescheduled ${order.poNumber}: ${currentDate.toDateString()} - ${newEndDate.toDateString()}`);
+            const newDailyPlan = await rescheduleOrderSimple(order, line, startDate);
+            
+            if (Object.keys(newDailyPlan).length > 0) {
+              const planDates = Object.keys(newDailyPlan);
+              const newEndDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
+              
+              await updateOrderInDatabase(order.id, {
+                planStartDate: startDate,
+                planEndDate: newEndDate,
+                actualProduction: newDailyPlan
+              });
+
+              console.log(`✅ Rescheduled ${order.poNumber}: ${startDate.toDateString()} - ${newEndDate.toDateString()}`);
+            }
           }
         }
       }
       
-      console.log('✅ Enhanced magnetic refresh completed');
+      console.log('✅ Refresh completed without magnetic snapping');
       
     } catch (error) {
-      console.error('❌ Error during enhanced magnetic refresh:', error);
+      console.error('❌ Error during refresh:', error);
     } finally {
       setIsRefreshing(false);
     }
@@ -131,30 +134,15 @@ export const ProductionScheduler: React.FC = () => {
     return holidays.some(h => h.date.toDateString() === date.toDateString());
   }, [holidays]);
 
-  // Enhanced rescheduling with strict capacity constraints
-  const rescheduleOrderWithCapacityConstraints = useCallback(async (order: Order, line: any, startDate: Date) => {
+  // Simple rescheduling without magnetic behavior
+  const rescheduleOrderSimple = useCallback(async (order: Order, line: any, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
     let currentDate = new Date(startDate);
 
-    // Get existing capacity usage for other orders (excluding this order)
-    const getExistingCapacity = (date: Date) => {
-      const dateStr = date.toISOString().split('T')[0];
-      return orders
-        .filter(o => 
-          o.status === 'scheduled' && 
-          o.assignedLineId === line.id && 
-          o.id !== order.id &&
-          o.actualProduction?.[dateStr] > 0
-        )
-        .reduce((sum, o) => sum + (o.actualProduction?.[dateStr] || 0), 0);
-    };
-
     while (remainingQty > 0) {
       if (!isHoliday(currentDate)) {
-        const existingCapacity = getExistingCapacity(currentDate);
-        const availableCapacity = Math.max(0, line.capacity - existingCapacity);
-        const plannedQty = Math.min(remainingQty, availableCapacity);
+        const plannedQty = Math.min(remainingQty, line.capacity);
         
         if (plannedQty > 0) {
           dailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
@@ -172,7 +160,7 @@ export const ProductionScheduler: React.FC = () => {
     }
 
     return dailyPlan;
-  }, [orders, holidays]);
+  }, [holidays]);
 
   const handleOrderScheduled = useCallback(async (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => {
     try {

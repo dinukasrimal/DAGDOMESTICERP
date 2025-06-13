@@ -224,7 +224,7 @@ export const SchedulerBoard: React.FC<SchedulerBoardProps> = ({
       try {
         await onOrderScheduled(updatedOrder, startDate, endDate, dailyPlan);
         
-        // Update start date for next order
+        // Next order starts immediately after this one
         startDate = new Date(endDate);
         startDate.setDate(startDate.getDate() + 1);
       } catch (error) {
@@ -233,7 +233,7 @@ export const SchedulerBoard: React.FC<SchedulerBoardProps> = ({
     }
   }, [productionLines, onOrderScheduled]);
 
-  // Calculate daily plan with capacity constraints
+  // Calculate daily plan with capacity constraints and remaining capacity allocation
   const calculateDailyPlan = useCallback(async (order: Order, line: ProductionLine, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
@@ -262,20 +262,22 @@ export const SchedulerBoard: React.FC<SchedulerBoardProps> = ({
     return dailyPlan;
   }, [isHoliday, getAvailableCapacity]);
 
-  // Magnetic placement logic
+  // Enhanced placement logic with capacity-aware "After" behavior
   const handlePlacementChoice = useCallback(async (placement: 'before' | 'after') => {
     const { draggedOrders, targetLine, targetDate, overlappingOrders } = placementDialog;
     
     if (!draggedOrders.length || !targetDate) return;
 
     if (placement === 'before') {
-      // Place dragged orders before overlapping orders
+      // Place dragged orders BEFORE overlapping orders at the exact target date
+      console.log('🔄 Placing orders BEFORE overlapping orders at target date');
+      
       // First move overlapping orders to pending to clear space
       for (const order of overlappingOrders) {
         await onOrderMovedToPending(order);
       }
       
-      // Schedule dragged orders at target date
+      // Schedule dragged orders at the exact target date
       await scheduleOrdersDirectly(draggedOrders, targetLine, targetDate);
       
       // Reschedule overlapping orders after dragged orders with magnetic snapping
@@ -292,38 +294,74 @@ export const SchedulerBoard: React.FC<SchedulerBoardProps> = ({
         }
       }
     } else {
-      // Place dragged orders after overlapping orders with magnetic snapping
+      // Place dragged orders AFTER overlapping orders with capacity-aware allocation
+      console.log('🔄 Placing orders AFTER overlapping orders with capacity awareness');
+      
       const latestEndDate = overlappingOrders.reduce((latest, order) => {
         const endDate = order.planEndDate ? new Date(order.planEndDate) : latest;
         return endDate > latest ? endDate : latest;
       }, targetDate);
       
-      // Check for remaining capacity on the last day
       const line = productionLines.find(l => l.id === targetLine);
       if (line) {
+        // Check remaining capacity on the last day of overlapping orders
         const lastDayCapacity = getAvailableCapacity(targetLine, latestEndDate);
-        let scheduleDate = latestEndDate;
         
-        if (lastDayCapacity > 0) {
-          // Try to fit in remaining capacity first
-          const firstOrderQty = draggedOrders[0]?.orderQuantity || 0;
-          if (firstOrderQty <= lastDayCapacity) {
-            scheduleDate = latestEndDate;
-          } else {
-            scheduleDate = new Date(latestEndDate);
-            scheduleDate.setDate(scheduleDate.getDate() + 1);
+        // Schedule each dragged order with capacity-aware allocation
+        for (const order of draggedOrders) {
+          let remainingQty = order.orderQuantity;
+          let currentDate = new Date(latestEndDate);
+          const dailyPlan: { [date: string]: number } = {};
+          
+          // First, try to fill remaining capacity of the last day
+          if (lastDayCapacity > 0 && remainingQty > 0) {
+            const allocateToLastDay = Math.min(remainingQty, lastDayCapacity);
+            dailyPlan[currentDate.toISOString().split('T')[0]] = allocateToLastDay;
+            remainingQty -= allocateToLastDay;
           }
-        } else {
-          scheduleDate = new Date(latestEndDate);
-          scheduleDate.setDate(scheduleDate.getDate() + 1);
+          
+          // Then allocate remaining quantity to subsequent days
+          if (remainingQty > 0) {
+            currentDate.setDate(currentDate.getDate() + 1);
+            
+            while (remainingQty > 0) {
+              if (!isHoliday(currentDate)) {
+                const availableCapacity = getAvailableCapacity(targetLine, currentDate);
+                const plannedQty = Math.min(remainingQty, availableCapacity);
+                
+                if (plannedQty > 0) {
+                  dailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
+                  remainingQty -= plannedQty;
+                }
+              }
+              
+              currentDate.setDate(currentDate.getDate() + 1);
+              
+              // Safety check
+              if (currentDate.getTime() - latestEndDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
+                console.error('Scheduling took too long, breaking');
+                break;
+              }
+            }
+          }
+          
+          if (Object.keys(dailyPlan).length > 0) {
+            const planDates = Object.keys(dailyPlan);
+            const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
+            const updatedOrder = { ...order, assignedLineId: targetLine };
+            
+            await onOrderScheduled(updatedOrder, latestEndDate, endDate, dailyPlan);
+            
+            // Update latest end date for next order
+            latestEndDate = new Date(endDate);
+            latestEndDate.setDate(latestEndDate.getDate() + 1);
+          }
         }
-        
-        await scheduleOrdersDirectly(draggedOrders, targetLine, scheduleDate);
       }
     }
     
     setPlacementDialog(prev => ({ ...prev, isOpen: false }));
-  }, [placementDialog, onOrderMovedToPending, scheduleOrdersDirectly, productionLines, getAvailableCapacity]);
+  }, [placementDialog, onOrderMovedToPending, scheduleOrdersDirectly, productionLines, getAvailableCapacity, onOrderScheduled, isHoliday]);
 
   // Cell highlighting for drag feedback
   const handleCellHighlight = useCallback((cellKey: string | null) => {
