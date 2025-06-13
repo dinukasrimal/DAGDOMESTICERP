@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -31,9 +32,8 @@ export const AdminPanel = () => {
   const {
     productionLines,
     holidays,
-    setProductionLines,
-    setHolidays,
-    createHolidayWithImpactCheck
+    createHolidayWithImpactCheck,
+    createProductionLine
   } = useSupabaseProductionData();
 
   const handleCreateLine = async () => {
@@ -44,8 +44,7 @@ export const AdminPanel = () => {
 
     try {
       const capacity = parseInt(newProductionLine.capacity.toString(), 10);
-      const newLine = { name: newProductionLine.name, capacity: capacity };
-      setProductionLines([...productionLines, newLine]);
+      await createProductionLine({ name: newProductionLine.name, capacity: capacity });
       setNewProductionLine({ name: '', capacity: 0 });
       toast({
         title: 'Success',
@@ -84,6 +83,7 @@ export const AdminPanel = () => {
         isGlobal: true,
         affectedLineIds: []
       });
+      setSelectedLinesForHoliday([]);
       
       console.log('✅ Holiday created successfully');
       
@@ -138,6 +138,18 @@ export const AdminPanel = () => {
             <Button onClick={handleCreateLine}>Create Line</Button>
           </div>
         </div>
+
+        {/* Display existing production lines */}
+        <div className="mt-4">
+          <h3 className="text-lg font-medium mb-2">Existing Production Lines</h3>
+          <div className="grid gap-2">
+            {productionLines.map((line) => (
+              <div key={line.id} className="flex items-center justify-between p-2 border rounded">
+                <span>{line.name} (Capacity: {line.capacity})</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Holiday Management */}
@@ -185,7 +197,8 @@ export const AdminPanel = () => {
               id="isGlobal"
               checked={newHoliday.isGlobal}
               onCheckedChange={(checked) => {
-                setNewHoliday({ ...newHoliday, isGlobal: checked, affectedLineIds: [] });
+                const isChecked = checked === true;
+                setNewHoliday({ ...newHoliday, isGlobal: isChecked, affectedLineIds: [] });
                 setSelectedLinesForHoliday([]);
               }}
             />
@@ -209,6 +222,32 @@ export const AdminPanel = () => {
             </div>
           )}
           <Button onClick={handleCreateHoliday}>Create Holiday</Button>
+        </div>
+
+        {/* Display existing holidays */}
+        <div className="mt-6">
+          <h3 className="text-lg font-medium mb-2">Existing Holidays</h3>
+          <div className="grid gap-2">
+            {holidays.map((holiday) => (
+              <div key={holiday.id} className="flex items-center justify-between p-2 border rounded">
+                <div>
+                  <span className="font-medium">{holiday.name}</span>
+                  <span className="text-sm text-gray-500 ml-2">
+                    {format(holiday.date, 'PPP')}
+                  </span>
+                  {holiday.isGlobal ? (
+                    <span className="ml-2 px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded">
+                      Global
+                    </span>
+                  ) : (
+                    <span className="ml-2 px-2 py-1 bg-green-100 text-green-800 text-xs rounded">
+                      Lines: {holiday.affectedLineIds?.length || 0}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>
