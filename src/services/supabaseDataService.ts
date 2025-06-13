@@ -101,9 +101,10 @@ export class SupabaseDataService {
   }
 
   async updateHoliday(id: string, updates: Partial<Holiday>): Promise<Holiday> {
-    const updateData = updates.date 
-      ? { ...updates, date: updates.date.toISOString().split('T')[0] }
-      : updates;
+    const updateData: any = { ...updates };
+    if (updates.date) {
+      updateData.date = updates.date.toISOString().split('T')[0];
+    }
     
     const { data, error } = await supabase
       .from('holidays')
@@ -147,13 +148,19 @@ export class SupabaseDataService {
       throw error;
     }
     
-    return data || [];
+    return (data || []).map(plan => ({
+      ...plan,
+      finalEfficiency: plan.final_efficiency
+    }));
   }
 
   async createRampUpPlan(plan: Omit<RampUpPlan, 'id'>): Promise<RampUpPlan> {
     const { data, error } = await supabase
       .from('ramp_up_plans')
-      .insert([plan])
+      .insert([{
+        ...plan,
+        final_efficiency: plan.finalEfficiency
+      }])
       .select()
       .single();
     
@@ -162,13 +169,22 @@ export class SupabaseDataService {
       throw error;
     }
     
-    return data;
+    return {
+      ...data,
+      finalEfficiency: data.final_efficiency
+    };
   }
 
   async updateRampUpPlan(id: string, updates: Partial<RampUpPlan>): Promise<RampUpPlan> {
+    const updateData: any = { ...updates };
+    if (updates.finalEfficiency !== undefined) {
+      updateData.final_efficiency = updates.finalEfficiency;
+      delete updateData.finalEfficiency;
+    }
+    
     const { data, error } = await supabase
       .from('ramp_up_plans')
-      .update(updates)
+      .update(updateData)
       .eq('id', id)
       .select()
       .single();
@@ -178,7 +194,10 @@ export class SupabaseDataService {
       throw error;
     }
     
-    return data;
+    return {
+      ...data,
+      finalEfficiency: data.final_efficiency
+    };
   }
 
   async deleteRampUpPlan(id: string): Promise<void> {
@@ -206,10 +225,18 @@ export class SupabaseDataService {
     }
     
     return (data || []).map(order => ({
-      ...order,
+      id: order.id,
+      poNumber: order.po_number,
+      styleId: order.style_id,
+      orderQuantity: order.order_quantity,
+      smv: order.smv,
+      moCount: order.mo_count,
+      cutQuantity: order.cut_quantity,
+      issueQuantity: order.issue_quantity,
+      status: order.status,
       planStartDate: order.plan_start_date ? new Date(order.plan_start_date) : null,
       planEndDate: order.plan_end_date ? new Date(order.plan_end_date) : null,
-      actualProduction: order.actual_production || {},
+      actualProduction: (order.actual_production || {}) as { [date: string]: number },
       assignedLineId: order.assigned_line_id || undefined,
       basePONumber: order.base_po_number || undefined,
       splitNumber: order.split_number || undefined
@@ -244,16 +271,18 @@ export class SupabaseDataService {
     }
     
     return {
-      ...data,
+      id: data.id,
       poNumber: data.po_number,
       styleId: data.style_id,
       orderQuantity: data.order_quantity,
+      smv: data.smv,
       moCount: data.mo_count,
       cutQuantity: data.cut_quantity,
       issueQuantity: data.issue_quantity,
+      status: data.status,
       planStartDate: data.plan_start_date ? new Date(data.plan_start_date) : null,
       planEndDate: data.plan_end_date ? new Date(data.plan_end_date) : null,
-      actualProduction: data.actual_production || {},
+      actualProduction: (data.actual_production || {}) as { [date: string]: number },
       assignedLineId: data.assigned_line_id || undefined,
       basePONumber: data.base_po_number || undefined,
       splitNumber: data.split_number || undefined
@@ -295,16 +324,18 @@ export class SupabaseDataService {
     }
     
     return {
-      ...data,
+      id: data.id,
       poNumber: data.po_number,
       styleId: data.style_id,
       orderQuantity: data.order_quantity,
+      smv: data.smv,
       moCount: data.mo_count,
       cutQuantity: data.cut_quantity,
       issueQuantity: data.issue_quantity,
+      status: data.status,
       planStartDate: data.plan_start_date ? new Date(data.plan_start_date) : null,
       planEndDate: data.plan_end_date ? new Date(data.plan_end_date) : null,
-      actualProduction: data.actual_production || {},
+      actualProduction: (data.actual_production || {}) as { [date: string]: number },
       assignedLineId: data.assigned_line_id || undefined,
       basePONumber: data.base_po_number || undefined,
       splitNumber: data.split_number || undefined
