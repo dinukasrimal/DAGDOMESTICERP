@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -198,7 +197,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
     try {
       const orderData = JSON.parse(e.dataTransfer.getData('text/plain'));
-      if (orderData && orderData.id) {
+      if (orderData && orderData.id && orderData.poNumber) {
         console.log('📋 Scheduling order:', orderData.poNumber, 'on line:', lineId, 'date:', date.toDateString());
         
         // Check for overlaps
@@ -563,9 +562,9 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         isOpen={overlapDialog.isOpen}
         onClose={() => setOverlapDialog(prev => ({ ...prev, isOpen: false }))}
         onConfirm={handleOverlapConfirm}
-        newOrder={overlapDialog.newOrder!}
+        newOrder={overlapDialog.newOrder}
         overlappingOrders={overlapDialog.overlappingOrders}
-        targetDate={overlapDialog.targetDate!}
+        targetDate={overlapDialog.targetDate}
         targetLine={overlapDialog.targetLine}
       />
     </div>

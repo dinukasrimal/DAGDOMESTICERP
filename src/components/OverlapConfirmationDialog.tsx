@@ -7,9 +7,9 @@ interface OverlapConfirmationDialogProps {
   isOpen: boolean;
   onClose: () => void;
   onConfirm: () => void;
-  newOrder: Order;
+  newOrder: Order | null;
   overlappingOrders: Order[];
-  targetDate: Date;
+  targetDate: Date | null;
   targetLine: string;
 }
 
@@ -22,6 +22,11 @@ export const OverlapConfirmationDialog: React.FC<OverlapConfirmationDialogProps>
   targetDate,
   targetLine
 }) => {
+  // Don't render if newOrder is null
+  if (!newOrder || !targetDate) {
+    return null;
+  }
+
   return (
     <AlertDialog open={isOpen} onOpenChange={onClose}>
       <AlertDialogContent>
