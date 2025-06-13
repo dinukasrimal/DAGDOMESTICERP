@@ -297,7 +297,7 @@ export const SchedulerBoard: React.FC<SchedulerBoardProps> = ({
       // Place dragged orders AFTER overlapping orders with capacity-aware allocation
       console.log('🔄 Placing orders AFTER overlapping orders with capacity awareness');
       
-      const latestEndDate = overlappingOrders.reduce((latest, order) => {
+      let latestEndDate = overlappingOrders.reduce((latest, order) => {
         const endDate = order.planEndDate ? new Date(order.planEndDate) : latest;
         return endDate > latest ? endDate : latest;
       }, targetDate);
