@@ -123,6 +123,54 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return overlappingOrders;
   }, [orders, productionLines]);
 
+  // Move calculateDailyProduction BEFORE moveOrdersForPlacement
+  const calculateDailyProduction = useCallback((order: Order, line: ProductionLine, startDate: Date) => {
+    const dailyPlan: { [date: string]: number } = {};
+    let remainingQty = order.orderQuantity;
+    let currentDate = new Date(startDate);
+    let workingDayNumber = 1;
+
+    const rampUpPlan = rampUpPlans.find(p => p.id === selectedRampUpPlanId);
+
+    while (remainingQty > 0) {
+      const isWorkingDay = !isHoliday(currentDate);
+      
+      if (isWorkingDay) {
+        let dailyCapacity = 0;
+        
+        if (planningMethod === 'capacity') {
+          dailyCapacity = line.capacity;
+        } else if (planningMethod === 'rampup' && rampUpPlan) {
+          const baseCapacity = (540 * order.moCount) / order.smv;
+          let efficiency = rampUpPlan.finalEfficiency;
+          
+          const rampUpDay = rampUpPlan.efficiencies.find(e => e.day === workingDayNumber);
+          if (rampUpDay) {
+            efficiency = rampUpDay.efficiency;
+          }
+          
+          dailyCapacity = Math.floor((baseCapacity * efficiency) / 100);
+        }
+
+        const plannedQty = Math.min(remainingQty, dailyCapacity);
+        if (plannedQty > 0) {
+          dailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
+          remainingQty -= plannedQty;
+        }
+        workingDayNumber++;
+      }
+      
+      currentDate.setDate(currentDate.getDate() + 1);
+      
+      if (currentDate.getTime() - startDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
+        break;
+      }
+    }
+
+    return dailyPlan;
+  }, [isHoliday, planningMethod, selectedRampUpPlanId, rampUpPlans]);
+
+  // Now moveOrdersForPlacement can safely reference calculateDailyProduction
   const moveOrdersForPlacement = useCallback(async (newOrder: Order, targetLineId: string, targetDate: Date, placement: 'before' | 'after', overlappingOrders: Order[]) => {
     const line = productionLines.find(l => l.id === targetLineId);
     if (!line) return;
@@ -182,52 +230,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       setPendingSchedule(prev => ({ ...prev, date: newStartDate }));
     }
   }, [productionLines, onOrderMovedToPending, onOrderScheduled, calculateDailyProduction]);
-
-  const calculateDailyProduction = useCallback((order: Order, line: ProductionLine, startDate: Date) => {
-    const dailyPlan: { [date: string]: number } = {};
-    let remainingQty = order.orderQuantity;
-    let currentDate = new Date(startDate);
-    let workingDayNumber = 1;
-
-    const rampUpPlan = rampUpPlans.find(p => p.id === selectedRampUpPlanId);
-
-    while (remainingQty > 0) {
-      const isWorkingDay = !isHoliday(currentDate);
-      
-      if (isWorkingDay) {
-        let dailyCapacity = 0;
-        
-        if (planningMethod === 'capacity') {
-          dailyCapacity = line.capacity;
-        } else if (planningMethod === 'rampup' && rampUpPlan) {
-          const baseCapacity = (540 * order.moCount) / order.smv;
-          let efficiency = rampUpPlan.finalEfficiency;
-          
-          const rampUpDay = rampUpPlan.efficiencies.find(e => e.day === workingDayNumber);
-          if (rampUpDay) {
-            efficiency = rampUpDay.efficiency;
-          }
-          
-          dailyCapacity = Math.floor((baseCapacity * efficiency) / 100);
-        }
-
-        const plannedQty = Math.min(remainingQty, dailyCapacity);
-        if (plannedQty > 0) {
-          dailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
-          remainingQty -= plannedQty;
-        }
-        workingDayNumber++;
-      }
-      
-      currentDate.setDate(currentDate.getDate() + 1);
-      
-      if (currentDate.getTime() - startDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
-        break;
-      }
-    }
-
-    return dailyPlan;
-  }, [isHoliday, planningMethod, selectedRampUpPlanId, rampUpPlans]);
 
   // Drag and drop handlers
   const handleDragOver = useCallback((e: React.DragEvent) => {
