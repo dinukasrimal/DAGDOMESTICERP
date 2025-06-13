@@ -64,28 +64,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return date;
   });
 
-  // Helper function to check if it's current week
-  const isCurrentWeek = useCallback((date: Date) => {
-    const now = new Date();
-    const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() - now.getDay());
-    startOfWeek.setHours(0, 0, 0, 0);
-    
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 6);
-    endOfWeek.setHours(23, 59, 59, 999);
-    
-    return date >= startOfWeek && date <= endOfWeek;
-  }, []);
-
-  // Helper function to check if order should be highlighted red
-  const shouldHighlightRed = useCallback((order: Order, date: Date) => {
-    return order.cutQuantity === 0 && 
-           order.planStartDate && 
-           date.toDateString() === order.planStartDate.toDateString() && 
-           isCurrentWeek(date);
-  }, [isCurrentWeek]);
-
   // Helper functions
   const isHoliday = useCallback((date: Date) => {
     return holidays.some(h => h.date.toDateString() === date.toDateString());
@@ -493,29 +471,24 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                       </div>
                     )}
                     
-                    {/* Scheduled orders - now with cut/issue quantities and red highlighting */}
+                    {/* Scheduled orders - now draggable with style names */}
                     <div className="p-1 space-y-1 relative z-10">
                       {scheduledOrders.map((scheduledOrder) => {
                         const dateStr = date.toISOString().split('T')[0];
                         const dailyQty = scheduledOrder.actualProduction?.[dateStr] || 0;
-                        const shouldHighlight = shouldHighlightRed(scheduledOrder, date);
                         
                         return (
                           <div 
                             key={`${scheduledOrder.id}-${dateStr}`}
-                            className={`rounded text-xs p-2 group cursor-move hover:shadow-md transition-all ${
-                              shouldHighlight 
-                                ? 'bg-red-100 border-2 border-red-500 text-red-900' 
-                                : 'bg-primary/20 border-2 border-primary/30 text-primary hover:bg-primary/30'
-                            }`}
+                            className="bg-primary/20 rounded text-xs p-2 text-primary group cursor-move hover:bg-primary/30 transition-colors"
                             draggable
                             onDragStart={(e) => handleOrderDragStart(e, scheduledOrder)}
                             onDragEnd={handleOrderDragEnd}
                           >
                             <div className="flex items-center justify-between mb-1">
                               <div className="flex items-center space-x-1">
-                                <GripVertical className="h-3 w-3 opacity-60" />
-                                <span className="truncate font-medium text-xs">{scheduledOrder.poNumber}</span>
+                                <GripVertical className="h-3 w-3 text-primary/60" />
+                                <span className="truncate font-medium">{scheduledOrder.poNumber}</span>
                               </div>
                               <div className="opacity-0 group-hover:opacity-100 flex space-x-1">
                                 <Button
@@ -544,14 +517,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                                 </Button>
                               </div>
                             </div>
-                            <div className="text-xs opacity-75 truncate mb-1">
+                            <div className="text-xs opacity-75 truncate">
                               Style: {scheduledOrder.styleId}
                             </div>
-                            <div className="text-xs opacity-75 mb-1">
+                            <div className="text-xs opacity-75">
                               Qty: {dailyQty.toLocaleString()}
-                            </div>
-                            <div className="text-xs opacity-75 mb-1">
-                              Cut: {scheduledOrder.cutQuantity.toLocaleString()} | Issue: {scheduledOrder.issueQuantity.toLocaleString()}
                             </div>
                             <div className="text-xs opacity-75">
                               {utilizationPercent.toFixed(0)}% capacity
@@ -583,9 +553,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                 </p>
                 <p className="text-sm text-muted-foreground">
                   Quantity: {pendingSchedule.order.orderQuantity.toLocaleString()} | SMV: {pendingSchedule.order.smv} | MO: {pendingSchedule.order.moCount}
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  Cut: {pendingSchedule.order.cutQuantity.toLocaleString()} | Issue: {pendingSchedule.order.issueQuantity.toLocaleString()}
                 </p>
               </div>
               

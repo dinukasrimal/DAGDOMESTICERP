@@ -1,3 +1,4 @@
+
 import { useState, useEffect, useCallback } from 'react';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { supabaseDataService } from '../services/supabaseDataService';
@@ -118,33 +119,13 @@ export const useSupabaseProductionData = () => {
         return;
       }
 
-      // Get existing orders from database
-      const existingOrders = await supabaseDataService.getOrders();
-      const existingPOs = new Set(existingOrders.map(o => o.poNumber));
-      const assignedPOs = new Set(existingOrders.filter(o => o.status === 'scheduled' || o.assignedLineId).map(o => o.poNumber));
-
-      // Filter out duplicates and already assigned orders
-      const newOrders = fetchedOrders.filter(order => {
-        if (existingPOs.has(order.poNumber)) {
-          if (assignedPOs.has(order.poNumber)) {
-            console.log(`⏭️ Skipping already assigned order: ${order.poNumber}`);
-            return false;
-          }
-          console.log(`🔄 Order ${order.poNumber} exists but not assigned, will update`);
-          return true;
-        }
-        return true;
-      });
-
-      console.log(`📊 Processing ${newOrders.length} new/updated orders (filtered ${fetchedOrders.length - newOrders.length} duplicates/assigned)`);
-
-      // Sync new orders to Supabase database
+      // Sync each order to Supabase database
       console.log('💾 Syncing orders to Supabase database...');
       const syncedOrders: Order[] = [];
       let successCount = 0;
       let errorCount = 0;
 
-      for (const order of newOrders) {
+      for (const order of fetchedOrders) {
         try {
           const syncedOrder = await syncOrderToDatabase(order);
           syncedOrders.push(syncedOrder);
