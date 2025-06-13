@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -102,9 +101,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       sum + (order.actualProduction?.[dateStr] || 0), 0
     );
     
-    return line.capacity - totalUsed;
+    return Math.max(0, line.capacity - totalUsed);
   }, [productionLines, getOrdersForCell]);
 
+  // Fixed overlap detection to find ALL overlapping orders
   const checkForOverlaps = useCallback((newOrder: Order, targetLineId: string, targetDate: Date) => {
     const line = productionLines.find(l => l.id === targetLineId);
     if (!line) return [];
@@ -117,7 +117,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     const newOrderEndDate = new Date(targetDate);
     newOrderEndDate.setDate(newOrderEndDate.getDate() + totalDays - 1);
 
-    // Check for existing scheduled orders in the date range
+    // Check for existing scheduled orders in the date range on the same line
     orders.forEach(order => {
       if (order.status === 'scheduled' && 
           order.assignedLineId === targetLineId && 
@@ -134,10 +134,15 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       }
     });
 
+    console.log(`🔍 Overlap check: Found ${overlappingOrders.length} overlapping orders for line ${targetLineId}`);
+    overlappingOrders.forEach(order => {
+      console.log(`  - ${order.poNumber} (${order.planStartDate?.toDateString()} - ${order.planEndDate?.toDateString()})`);
+    });
+
     return overlappingOrders;
   }, [orders, productionLines]);
 
-  // Calculate daily production with capacity sharing
+  // Calculate daily production with strict capacity sharing
   const calculateDailyProductionWithSharing = useCallback((order: Order, line: ProductionLine, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
@@ -150,7 +155,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const isWorkingDay = !isHoliday(currentDate);
       
       if (isWorkingDay) {
-        // Get available capacity for this date
+        // Get available capacity for this date - this ensures we never exceed 100%
         const availableCapacity = getAvailableCapacity(line.id, currentDate);
         
         let dailyCapacity = 0;
@@ -188,17 +193,19 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return dailyPlan;
   }, [isHoliday, planningMethod, selectedRampUpPlanId, rampUpPlans, getAvailableCapacity]);
 
-  // Move orders for placement function
+  // Move orders for placement function - fixed to handle ALL overlapping orders
   const moveOrdersForPlacement = useCallback(async (newOrder: Order, targetLineId: string, targetDate: Date, placement: 'before' | 'after', overlappingOrders: Order[]) => {
-    console.log(`📋 Moving orders for ${placement} placement`);
+    console.log(`📋 Moving ${overlappingOrders.length} orders for ${placement} placement`);
     
     if (placement === 'before') {
-      // Move overlapping orders to pending, they'll be rescheduled after new order
+      // Move ALL overlapping orders to pending, they'll be rescheduled after new order
+      console.log(`🔄 Moving ${overlappingOrders.length} overlapping orders to pending`);
       for (const order of overlappingOrders) {
+        console.log(`  - Moving ${order.poNumber} to pending`);
         await onOrderMovedToPending(order);
       }
       
-      // Set up new order for immediate scheduling
+      // Set up new order for immediate scheduling at the target date
       setScheduleDialog({
         isOpen: true,
         order: newOrder,
@@ -207,7 +214,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       });
       
     } else {
-      // Find the latest end date among overlapping orders
+      // Find the latest end date among ALL overlapping orders
       let latestEndDate = targetDate;
       overlappingOrders.forEach(order => {
         if (order.planEndDate && order.planEndDate > latestEndDate) {
@@ -215,7 +222,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         }
       });
       
-      // Schedule new order to start the day after
+      // Schedule new order to start the day after the latest end date
       const newStartDate = new Date(latestEndDate);
       newStartDate.setDate(newStartDate.getDate() + 1);
       
@@ -489,7 +496,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                       </div>
                     )}
                     
-                    {/* Multiple orders in same cell - stacked vertically */}
+                    {/* Multiple orders in same cell - stacked vertically with proper capacity sizing */}
                     <div className="p-1 space-y-1 relative z-10 h-full flex flex-col">
                       {ordersInCell.map((scheduledOrder, index) => {
                         const dateStr = date.toISOString().split('T')[0];

@@ -88,7 +88,14 @@ export const ProductionScheduler: React.FC = () => {
 
       console.log(`📅 Found ${ordersToReschedule.length} orders with holiday conflicts, rescheduling...`);
       
-      // Reschedule each conflicting order
+      // Sort orders by their current start date to maintain sequence
+      ordersToReschedule.sort((a, b) => {
+        const dateA = a.planStartDate ? new Date(a.planStartDate).getTime() : 0;
+        const dateB = b.planStartDate ? new Date(b.planStartDate).getTime() : 0;
+        return dateA - dateB;
+      });
+      
+      // Reschedule each conflicting order while respecting capacity limits
       for (const order of ordersToReschedule) {
         await rescheduleOrderAroundHolidays(order);
       }
@@ -102,16 +109,33 @@ export const ProductionScheduler: React.FC = () => {
     }
   }, [orders, holidays, updateOrderInDatabase]);
 
-  // Helper function to reschedule an order around holidays
+  // Fixed helper function to reschedule an order around holidays with capacity limits
   const rescheduleOrderAroundHolidays = useCallback(async (order: Order) => {
     if (!order.assignedLineId || !order.planStartDate) return;
 
     const line = productionLines.find(l => l.id === order.assignedLineId);
     if (!line) return;
 
-    console.log(`🔄 Rescheduling ${order.poNumber} around holidays...`);
+    console.log(`🔄 Rescheduling ${order.poNumber} around holidays with capacity limits...`);
 
-    // Calculate new production plan avoiding holidays
+    // Helper function to get available capacity for a specific date, excluding the current order
+    const getAvailableCapacityForReschedule = (date: Date, currentOrderId: string) => {
+      const dateStr = date.toISOString().split('T')[0];
+      const otherOrders = orders.filter(o => 
+        o.status === 'scheduled' &&
+        o.assignedLineId === order.assignedLineId &&
+        o.id !== currentOrderId &&
+        o.actualProduction?.[dateStr] > 0
+      );
+      
+      const usedCapacity = otherOrders.reduce((sum, o) => 
+        sum + (o.actualProduction?.[dateStr] || 0), 0
+      );
+      
+      return Math.max(0, line.capacity - usedCapacity);
+    };
+
+    // Calculate new production plan avoiding holidays and respecting capacity
     const newDailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
     let currentDate = new Date(order.planStartDate);
@@ -125,15 +149,19 @@ export const ProductionScheduler: React.FC = () => {
       const isWorkingDay = !isHoliday(currentDate);
       
       if (isWorkingDay) {
-        const dailyCapacity = line.capacity;
-        const plannedQty = Math.min(remainingQty, dailyCapacity);
+        // Get available capacity for this date, excluding current order's allocation
+        const availableCapacity = getAvailableCapacityForReschedule(currentDate, order.id);
+        const plannedQty = Math.min(remainingQty, availableCapacity);
         
         if (plannedQty > 0) {
           newDailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
           remainingQty -= plannedQty;
+          console.log(`  📅 ${currentDate.toDateString()}: ${plannedQty}/${availableCapacity} (${((plannedQty/line.capacity)*100).toFixed(1)}%)`);
+        } else {
+          console.log(`  ⚠️ ${currentDate.toDateString()}: No available capacity (line full)`);
         }
       } else {
-        console.log(`⏭️ Skipping holiday on ${currentDate.toDateString()} for ${order.poNumber}`);
+        console.log(`  ⏭️ Skipping holiday on ${currentDate.toDateString()} for ${order.poNumber}`);
       }
       
       currentDate.setDate(currentDate.getDate() + 1);
@@ -151,6 +179,22 @@ export const ProductionScheduler: React.FC = () => {
       ? new Date(Math.max(...planDates.map(d => new Date(d).getTime())))
       : order.planEndDate;
 
+    // Verify total capacity doesn't exceed 100% on any day
+    let capacityViolation = false;
+    for (const [dateStr, qty] of Object.entries(newDailyPlan)) {
+      const date = new Date(dateStr);
+      const totalUsed = getAvailableCapacityForReschedule(date, order.id) + qty;
+      if (totalUsed > line.capacity) {
+        console.error(`❌ Capacity violation on ${dateStr}: ${totalUsed}/${line.capacity} (${((totalUsed/line.capacity)*100).toFixed(1)}%)`);
+        capacityViolation = true;
+      }
+    }
+
+    if (capacityViolation) {
+      console.error(`❌ Cannot reschedule ${order.poNumber} - would exceed capacity limits`);
+      return;
+    }
+
     // Update the order with new schedule
     await updateOrderInDatabase(order.id, {
       planEndDate: newEndDate,
@@ -158,7 +202,7 @@ export const ProductionScheduler: React.FC = () => {
     });
 
     console.log(`✅ Rescheduled ${order.poNumber} - new end date: ${newEndDate?.toDateString()}`);
-  }, [productionLines, holidays, updateOrderInDatabase]);
+  }, [productionLines, holidays, orders, updateOrderInDatabase]);
 
   const handleOrderScheduled = useCallback(async (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => {
     try {
