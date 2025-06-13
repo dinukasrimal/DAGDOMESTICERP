@@ -12,25 +12,37 @@ function Calendar({
   className,
   classNames,
   showOutsideDays = true,
-  onSelect,
   ...props
 }: CalendarProps) {
   // Create a custom handler that ensures dates are in local timezone
   const handleSelect = React.useCallback((value: any) => {
-    if (onSelect) {
+    // Check if onSelect exists in props (it won't exist for default mode)
+    if ('onSelect' in props && props.onSelect) {
       if (value instanceof Date) {
         // For single date selection, create a local date at noon to avoid timezone issues
         const localDate = new Date(value.getFullYear(), value.getMonth(), value.getDate(), 12, 0, 0, 0);
         console.log('Calendar original date:', value);
         console.log('Calendar local date created:', localDate);
         console.log('Local date string:', localDate.toDateString());
-        (onSelect as any)(localDate);
+        (props.onSelect as any)(localDate);
       } else {
         // For other selection modes (range, multiple), pass through as-is
-        (onSelect as any)(value);
+        (props.onSelect as any)(value);
       }
     }
-  }, [onSelect]);
+  }, [props]);
+
+  // Create new props object with our custom handler if onSelect exists
+  const dayPickerProps = React.useMemo(() => {
+    if ('onSelect' in props && props.onSelect) {
+      const { onSelect, ...restProps } = props as any;
+      return {
+        ...restProps,
+        onSelect: handleSelect
+      };
+    }
+    return props;
+  }, [props, handleSelect]);
 
   return (
     <DayPicker
@@ -74,8 +86,7 @@ function Calendar({
         IconLeft: ({ ..._props }) => <ChevronLeft className="h-4 w-4" />,
         IconRight: ({ ..._props }) => <ChevronRight className="h-4 w-4" />,
       }}
-      {...props}
-      onSelect={handleSelect}
+      {...dayPickerProps}
     />
   );
 }
