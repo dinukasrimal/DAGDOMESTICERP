@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { useSupabaseProductionData } from '../hooks/useSupabaseProductionData';
-import { SchedulingBoard } from './SchedulingBoard';
+import { SchedulerBoard } from './scheduler/SchedulerBoard';
 import { PendingOrdersSidebar } from './PendingOrdersSidebar';
 import { AdminPanel } from './AdminPanel';
 import { GoogleSheetsConfig } from './GoogleSheetsConfig';
@@ -46,12 +46,12 @@ export const ProductionScheduler: React.FC = () => {
     }
   };
 
+  // Enhanced refresh plan with magnetic behavior
   const refreshPlan = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      console.log('🔄 Refreshing plan to reschedule around holidays...');
+      console.log('🔄 Starting magnetic refresh plan...');
       
-      // Get all scheduled orders
       const scheduledOrders = orders.filter(order => 
         order.status === 'scheduled' && 
         order.planStartDate && 
@@ -59,157 +59,95 @@ export const ProductionScheduler: React.FC = () => {
         order.assignedLineId
       );
 
-      // Check each scheduled order against holidays and reschedule if needed
-      const ordersToReschedule: Order[] = [];
-      
-      for (const order of scheduledOrders) {
-        if (!order.planStartDate || !order.planEndDate || !order.assignedLineId) continue;
-        
-        // Check if any production day falls on a holiday
-        const hasHolidayConflict = Object.keys(order.actualProduction || {}).some(dateStr => {
-          const productionQty = order.actualProduction?.[dateStr] || 0;
-          if (productionQty === 0) return false; // Skip days with no production
-          
-          const productionDate = new Date(dateStr);
-          return holidays.some(holiday => 
-            holiday.date.toDateString() === productionDate.toDateString()
-          );
+      // Group orders by line
+      const ordersByLine = scheduledOrders.reduce((acc, order) => {
+        const lineId = order.assignedLineId!;
+        if (!acc[lineId]) acc[lineId] = [];
+        acc[lineId].push(order);
+        return acc;
+      }, {} as { [lineId: string]: Order[] });
+
+      // Process each line
+      for (const [lineId, lineOrders] of Object.entries(ordersByLine)) {
+        const line = productionLines.find(l => l.id === lineId);
+        if (!line) continue;
+
+        console.log(`🔧 Processing line ${line.name} with ${lineOrders.length} orders`);
+
+        // Sort orders by start date
+        const sortedOrders = lineOrders.sort((a, b) => {
+          const dateA = a.planStartDate ? new Date(a.planStartDate).getTime() : 0;
+          const dateB = b.planStartDate ? new Date(b.planStartDate).getTime() : 0;
+          return dateA - dateB;
         });
+
+        // Reschedule orders with magnetic behavior
+        let currentDate = sortedOrders[0]?.planStartDate ? new Date(sortedOrders[0].planStartDate) : new Date();
         
-        if (hasHolidayConflict) {
-          ordersToReschedule.push(order);
+        for (const order of sortedOrders) {
+          const newDailyPlan = await rescheduleOrderMagnetically(order, line, currentDate);
+          
+          if (Object.keys(newDailyPlan).length > 0) {
+            const planDates = Object.keys(newDailyPlan);
+            const newEndDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
+            
+            await updateOrderInDatabase(order.id, {
+              planStartDate: currentDate,
+              planEndDate: newEndDate,
+              actualProduction: newDailyPlan
+            });
+
+            // Next order starts the day after this one ends
+            currentDate = new Date(newEndDate);
+            currentDate.setDate(currentDate.getDate() + 1);
+            
+            console.log(`✅ Rescheduled ${order.poNumber}: ${currentDate.toDateString()} - ${newEndDate.toDateString()}`);
+          }
         }
       }
-
-      if (ordersToReschedule.length === 0) {
-        console.log('✅ No orders need rescheduling - no holiday conflicts found');
-        return;
-      }
-
-      console.log(`📅 Found ${ordersToReschedule.length} orders with holiday conflicts, rescheduling...`);
       
-      // Sort orders by their current start date to maintain sequence
-      ordersToReschedule.sort((a, b) => {
-        const dateA = a.planStartDate ? new Date(a.planStartDate).getTime() : 0;
-        const dateB = b.planStartDate ? new Date(b.planStartDate).getTime() : 0;
-        return dateA - dateB;
-      });
-      
-      // Reschedule each conflicting order while respecting capacity limits
-      for (const order of ordersToReschedule) {
-        await rescheduleOrderAroundHolidays(order);
-      }
-      
-      console.log('✅ Plan refresh completed successfully');
+      console.log('✅ Magnetic refresh completed');
       
     } catch (error) {
-      console.error('❌ Error refreshing plan:', error);
+      console.error('❌ Error during magnetic refresh:', error);
     } finally {
       setIsRefreshing(false);
     }
-  }, [orders, holidays, updateOrderInDatabase]);
+  }, [orders, productionLines, holidays, updateOrderInDatabase]);
 
-  // Fixed helper function to reschedule an order around holidays with capacity limits
-  const rescheduleOrderAroundHolidays = useCallback(async (order: Order) => {
-    if (!order.assignedLineId || !order.planStartDate) return;
-
-    const line = productionLines.find(l => l.id === order.assignedLineId);
-    if (!line) return;
-
-    console.log(`🔄 Rescheduling ${order.poNumber} around holidays with capacity limits...`);
-
-    // Helper function to get available capacity for a specific date, excluding the current order
-    const getAvailableCapacityForReschedule = (date: Date, currentOrderId: string) => {
-      const dateStr = date.toISOString().split('T')[0];
-      const otherOrders = orders.filter(o => 
-        o.status === 'scheduled' &&
-        o.assignedLineId === order.assignedLineId &&
-        o.id !== currentOrderId &&
-        o.actualProduction?.[dateStr] > 0
-      );
-      
-      const usedCapacity = otherOrders.reduce((sum, o) => 
-        sum + (o.actualProduction?.[dateStr] || 0), 0
-      );
-      
-      return Math.max(0, line.capacity - usedCapacity);
-    };
-
-    // Calculate new production plan avoiding holidays and respecting capacity
-    const newDailyPlan: { [date: string]: number } = {};
+  // Magnetic rescheduling helper
+  const rescheduleOrderMagnetically = useCallback(async (order: Order, line: any, startDate: Date) => {
+    const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
-    let currentDate = new Date(order.planStartDate);
-    
-    // Helper function to check if a date is a holiday
+    let currentDate = new Date(startDate);
+
     const isHoliday = (date: Date) => {
       return holidays.some(h => h.date.toDateString() === date.toDateString());
     };
 
     while (remainingQty > 0) {
-      const isWorkingDay = !isHoliday(currentDate);
-      
-      if (isWorkingDay) {
-        // Get available capacity for this date, excluding current order's allocation
-        const availableCapacity = getAvailableCapacityForReschedule(currentDate, order.id);
-        const plannedQty = Math.min(remainingQty, availableCapacity);
-        
+      if (!isHoliday(currentDate)) {
+        const plannedQty = Math.min(remainingQty, line.capacity);
         if (plannedQty > 0) {
-          newDailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
+          dailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
           remainingQty -= plannedQty;
-          console.log(`  📅 ${currentDate.toDateString()}: ${plannedQty}/${availableCapacity} (${((plannedQty/line.capacity)*100).toFixed(1)}%)`);
-        } else {
-          console.log(`  ⚠️ ${currentDate.toDateString()}: No available capacity (line full)`);
         }
-      } else {
-        console.log(`  ⏭️ Skipping holiday on ${currentDate.toDateString()} for ${order.poNumber}`);
       }
       
       currentDate.setDate(currentDate.getDate() + 1);
       
-      // Safety check to prevent infinite loops
-      if (currentDate.getTime() - order.planStartDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
-        console.error('❌ Rescheduling took too long, breaking loop');
+      if (currentDate.getTime() - startDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
         break;
       }
     }
 
-    // Calculate new end date
-    const planDates = Object.keys(newDailyPlan);
-    const newEndDate = planDates.length > 0 
-      ? new Date(Math.max(...planDates.map(d => new Date(d).getTime())))
-      : order.planEndDate;
-
-    // Verify total capacity doesn't exceed 100% on any day
-    let capacityViolation = false;
-    for (const [dateStr, qty] of Object.entries(newDailyPlan)) {
-      const date = new Date(dateStr);
-      const totalUsed = getAvailableCapacityForReschedule(date, order.id) + qty;
-      if (totalUsed > line.capacity) {
-        console.error(`❌ Capacity violation on ${dateStr}: ${totalUsed}/${line.capacity} (${((totalUsed/line.capacity)*100).toFixed(1)}%)`);
-        capacityViolation = true;
-      }
-    }
-
-    if (capacityViolation) {
-      console.error(`❌ Cannot reschedule ${order.poNumber} - would exceed capacity limits`);
-      return;
-    }
-
-    // Update the order with new schedule
-    await updateOrderInDatabase(order.id, {
-      planEndDate: newEndDate,
-      actualProduction: newDailyPlan
-    });
-
-    console.log(`✅ Rescheduled ${order.poNumber} - new end date: ${newEndDate?.toDateString()}`);
-  }, [productionLines, holidays, orders, updateOrderInDatabase]);
+    return dailyPlan;
+  }, [holidays]);
 
   const handleOrderScheduled = useCallback(async (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => {
     try {
-      console.log('Scheduling order:', order.poNumber, 'from', startDate, 'to', endDate);
-      console.log('Daily plan:', dailyPlan);
+      console.log('✅ Scheduling order:', order.poNumber, 'from', startDate, 'to', endDate);
       
-      // Update the order with schedule dates, daily production plan, and line assignment
       const updatedOrderData: Partial<Order> = {
         planStartDate: startDate,
         planEndDate: endDate,
@@ -218,24 +156,22 @@ export const ProductionScheduler: React.FC = () => {
         assignedLineId: order.assignedLineId
       };
 
-      // Update in database
       await updateOrderInDatabase(order.id, updatedOrderData);
 
-      // Update the schedule in Google Sheets if configured
       if (isGoogleSheetsConfigured) {
         const updatedOrder = { ...order, ...updatedOrderData };
         await updateOrderSchedule(updatedOrder, startDate, endDate);
       }
 
-      console.log('Order scheduled successfully:', order.poNumber, 'on line:', order.assignedLineId);
+      console.log('✅ Order scheduled successfully:', order.poNumber);
     } catch (error) {
-      console.error('Failed to schedule order:', error);
+      console.error('❌ Failed to schedule order:', error);
     }
   }, [updateOrderInDatabase, updateOrderSchedule, isGoogleSheetsConfigured]);
 
   const handleOrderMovedToPending = useCallback(async (order: Order) => {
     try {
-      console.log('Moving order back to pending:', order.poNumber);
+      console.log('🔄 Moving order to pending:', order.poNumber);
       
       const updatedOrder: Partial<Order> = {
         planStartDate: null,
@@ -246,9 +182,9 @@ export const ProductionScheduler: React.FC = () => {
       };
 
       await updateOrderInDatabase(order.id, updatedOrder);
-      console.log('Order moved back to pending:', order.poNumber);
+      console.log('✅ Order moved to pending:', order.poNumber);
     } catch (error) {
-      console.error('Failed to move order to pending:', error);
+      console.error('❌ Failed to move order to pending:', error);
     }
   }, [updateOrderInDatabase]);
 
@@ -261,19 +197,16 @@ export const ProductionScheduler: React.FC = () => {
 
       const remainingQuantity = orderToSplit.orderQuantity - splitQuantity;
       
-      // Get the base PO number (without any existing "Split X" suffix)
       let basePONumber = orderToSplit.poNumber;
       if (basePONumber.includes(' Split ')) {
         basePONumber = basePONumber.split(' Split ')[0];
       }
       
-      // Find all orders that share the same base PO number to determine next split number
       const relatedOrders = orders.filter(o => {
         const orderBasePO = o.poNumber.includes(' Split ') ? o.poNumber.split(' Split ')[0] : o.poNumber;
         return orderBasePO === basePONumber;
       });
       
-      // Count existing splits to determine the next split number
       const existingSplitNumbers = relatedOrders
         .filter(o => o.poNumber.includes(' Split '))
         .map(o => {
@@ -282,10 +215,8 @@ export const ProductionScheduler: React.FC = () => {
         })
         .filter(num => num > 0);
       
-      // Find the next available split number
       const nextSplitNumber = existingSplitNumbers.length > 0 ? Math.max(...existingSplitNumbers) + 1 : 1;
       
-      // Create the split order with proper numbering
       const splitOrderData: Omit<Order, 'id'> = {
         poNumber: `${basePONumber} Split ${nextSplitNumber}`,
         styleId: orderToSplit.styleId,
@@ -303,10 +234,8 @@ export const ProductionScheduler: React.FC = () => {
         splitNumber: nextSplitNumber
       };
 
-      // Create the split order in database
       await createOrderInDatabase(splitOrderData);
 
-      // Update the original order
       const updatedOriginalOrder: Partial<Order> = {
         orderQuantity: remainingQuantity,
         cutQuantity: orderToSplit.cutQuantity - splitOrderData.cutQuantity,
@@ -315,7 +244,6 @@ export const ProductionScheduler: React.FC = () => {
         splitNumber: orderToSplit.splitNumber || 0
       };
 
-      // If the original order doesn't have a split number and we're creating splits, mark it as the base
       if (!orderToSplit.poNumber.includes(' Split ')) {
         updatedOriginalOrder.poNumber = `${basePONumber} Split 0`;
         updatedOriginalOrder.splitNumber = 0;
@@ -323,14 +251,12 @@ export const ProductionScheduler: React.FC = () => {
 
       await updateOrderInDatabase(orderId, updatedOriginalOrder);
 
-      console.log(`Split order created: ${splitOrderData.poNumber} (qty: ${splitQuantity})`);
-      console.log(`Original order updated: ${updatedOriginalOrder.poNumber} (qty: ${remainingQuantity})`);
+      console.log(`✅ Split order created: ${splitOrderData.poNumber} (qty: ${splitQuantity})`);
     } catch (error) {
-      console.error('Failed to split order:', error);
+      console.error('❌ Failed to split order:', error);
     }
   }, [orders, createOrderInDatabase, updateOrderInDatabase]);
 
-  // Filter pending orders - exclude orders that have plan dates (are scheduled)
   const pendingOrders = orders.filter(order => 
     order.status === 'pending' && !order.planStartDate && !order.planEndDate
   );
@@ -363,7 +289,6 @@ export const ProductionScheduler: React.FC = () => {
         />
         
         <div className="flex-1 flex overflow-hidden">
-          {/* Simple sidebar - always visible */}
           <div className="w-80 border-r border-border bg-card flex flex-col">
             <div className="p-4 border-b border-border space-y-4">
               <GoogleSheetsConfig
@@ -375,7 +300,6 @@ export const ProductionScheduler: React.FC = () => {
                 onClearError={clearError}
               />
               
-              {/* Refresh Plan Button */}
               <Button
                 onClick={refreshPlan}
                 disabled={isRefreshing || isLoading}
@@ -396,11 +320,10 @@ export const ProductionScheduler: React.FC = () => {
           </div>
           
           <div className="flex-1 overflow-auto">
-            <SchedulingBoard
+            <SchedulerBoard
               orders={orders}
               productionLines={productionLines}
               holidays={holidays}
-              rampUpPlans={rampUpPlans}
               onOrderScheduled={handleOrderScheduled}
               onOrderMovedToPending={handleOrderMovedToPending}
               onOrderSplit={handleOrderSplit}
