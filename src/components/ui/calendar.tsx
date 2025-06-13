@@ -12,27 +12,29 @@ function Calendar({
   className,
   classNames,
   showOutsideDays = true,
-  onSelect,
   ...props
 }: CalendarProps) {
-  const handleSelect = (date: Date | undefined) => {
-    if (date && onSelect) {
-      // Create a new date in local timezone without any offset
-      const localDate = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0, 0, 0);
-      console.log('Calendar original date:', date);
-      console.log('Calendar local date created:', localDate);
-      console.log('Local date string:', localDate.toDateString());
-      onSelect(localDate);
-    } else if (onSelect) {
-      onSelect(date);
+  // Create a custom handler that ensures dates are in local timezone
+  const handleSelect = React.useCallback((value: any) => {
+    if (props.onSelect) {
+      if (value instanceof Date) {
+        // For single date selection, create a local date at noon to avoid timezone issues
+        const localDate = new Date(value.getFullYear(), value.getMonth(), value.getDate(), 12, 0, 0, 0);
+        console.log('Calendar original date:', value);
+        console.log('Calendar local date created:', localDate);
+        console.log('Local date string:', localDate.toDateString());
+        (props.onSelect as any)(localDate);
+      } else {
+        // For other selection modes (range, multiple), pass through as-is
+        (props.onSelect as any)(value);
+      }
     }
-  };
+  }, [props.onSelect]);
 
   return (
     <DayPicker
       showOutsideDays={showOutsideDays}
       className={cn("p-3 pointer-events-auto", className)}
-      onSelect={handleSelect}
       classNames={{
         months: "flex flex-col sm:flex-row space-y-4 sm:space-x-4 sm:space-y-0",
         month: "space-y-4",
@@ -72,6 +74,7 @@ function Calendar({
         IconRight: ({ ..._props }) => <ChevronRight className="h-4 w-4" />,
       }}
       {...props}
+      onSelect={handleSelect}
     />
   );
 }
