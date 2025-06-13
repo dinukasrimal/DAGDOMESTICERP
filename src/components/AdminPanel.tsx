@@ -110,8 +110,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
       setIsLoading(true);
       try {
+        // Create a new date object that preserves the local date without timezone conversion
+        const localDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+        
+        console.log('Selected date from calendar:', selectedDate);
+        console.log('Local date being saved:', localDate);
+        console.log('Local date string:', localDate.toLocaleDateString());
+        
         const newHoliday = await supabaseDataService.createHoliday({
-          date: selectedDate,
+          date: localDate,
           name: newHolidayName.trim(),
           isGlobal: isGlobalHoliday,
           affectedLineIds: isGlobalHoliday ? [] : selectedLineIds
@@ -122,7 +129,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         setSelectedLineIds([]);
         toast({
           title: "Success",
-          description: "Holiday created successfully"
+          description: `Holiday created for ${localDate.toLocaleDateString()}`
         });
       } catch (error) {
         console.error('Error creating holiday:', error);
@@ -337,10 +344,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <Calendar
                     mode="single"
                     selected={selectedDate}
-                    onSelect={setSelectedDate}
+                    onSelect={(date) => {
+                      console.log('Calendar date selected:', date);
+                      setSelectedDate(date);
+                    }}
                     className="rounded-md border"
                     disabled={isLoading}
                   />
+                  {selectedDate && (
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Selected: {selectedDate.toLocaleDateString()}
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-4">
                   <div>
