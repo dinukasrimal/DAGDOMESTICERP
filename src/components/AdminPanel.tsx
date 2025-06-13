@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -8,6 +7,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Calendar } from './ui/calendar';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { Plus, Trash2, Edit, Settings, Calendar as CalendarIcon, Target, ArrowLeft } from 'lucide-react';
+import { supabaseDataService } from '../services/supabaseDataService';
+import { toast } from './ui/use-toast';
 
 interface AdminPanelProps {
   orders: Order[];
@@ -41,57 +42,154 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     { day: 1, efficiency: 50 }
   ]);
   const [finalEfficiency, setFinalEfficiency] = useState<number>(90);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleAddProductionLine = () => {
+  const handleAddProductionLine = async () => {
     if (newLineName.trim()) {
-      const newLine: ProductionLine = {
-        id: Date.now().toString(),
-        name: newLineName.trim(),
-        capacity: newLineCapacity
-      };
-      onProductionLinesChange([...productionLines, newLine]);
-      setNewLineName('');
-      setNewLineCapacity(100);
+      setIsLoading(true);
+      try {
+        const newLine = await supabaseDataService.createProductionLine({
+          name: newLineName.trim(),
+          capacity: newLineCapacity
+        });
+        onProductionLinesChange([...productionLines, newLine]);
+        setNewLineName('');
+        setNewLineCapacity(100);
+        toast({
+          title: "Success",
+          description: "Production line created successfully"
+        });
+      } catch (error) {
+        console.error('Error creating production line:', error);
+        toast({
+          title: "Error",
+          description: "Failed to create production line",
+          variant: "destructive"
+        });
+      } finally {
+        setIsLoading(false);
+      }
     }
   };
 
-  const handleDeleteProductionLine = (id: string) => {
-    onProductionLinesChange(productionLines.filter(line => line.id !== id));
+  const handleDeleteProductionLine = async (id: string) => {
+    setIsLoading(true);
+    try {
+      await supabaseDataService.deleteProductionLine(id);
+      onProductionLinesChange(productionLines.filter(line => line.id !== id));
+      toast({
+        title: "Success",
+        description: "Production line deleted successfully"
+      });
+    } catch (error) {
+      console.error('Error deleting production line:', error);
+      toast({
+        title: "Error",
+        description: "Failed to delete production line",
+        variant: "destructive"
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleAddHoliday = () => {
+  const handleAddHoliday = async () => {
     if (selectedDate && newHolidayName.trim()) {
-      const newHoliday: Holiday = {
-        id: Date.now().toString(),
-        date: selectedDate,
-        name: newHolidayName.trim()
-      };
-      onHolidaysChange([...holidays, newHoliday]);
-      setNewHolidayName('');
+      setIsLoading(true);
+      try {
+        const newHoliday = await supabaseDataService.createHoliday({
+          date: selectedDate,
+          name: newHolidayName.trim()
+        });
+        onHolidaysChange([...holidays, newHoliday]);
+        setNewHolidayName('');
+        toast({
+          title: "Success",
+          description: "Holiday created successfully"
+        });
+      } catch (error) {
+        console.error('Error creating holiday:', error);
+        toast({
+          title: "Error",
+          description: "Failed to create holiday",
+          variant: "destructive"
+        });
+      } finally {
+        setIsLoading(false);
+      }
     }
   };
 
-  const handleDeleteHoliday = (id: string) => {
-    onHolidaysChange(holidays.filter(holiday => holiday.id !== id));
+  const handleDeleteHoliday = async (id: string) => {
+    setIsLoading(true);
+    try {
+      await supabaseDataService.deleteHoliday(id);
+      onHolidaysChange(holidays.filter(holiday => holiday.id !== id));
+      toast({
+        title: "Success",
+        description: "Holiday deleted successfully"
+      });
+    } catch (error) {
+      console.error('Error deleting holiday:', error);
+      toast({
+        title: "Error",
+        description: "Failed to delete holiday",
+        variant: "destructive"
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleAddRampUpPlan = () => {
+  const handleAddRampUpPlan = async () => {
     if (newPlanName.trim() && newPlanEfficiencies.length > 0) {
-      const newPlan: RampUpPlan = {
-        id: Date.now().toString(),
-        name: newPlanName.trim(),
-        efficiencies: [...newPlanEfficiencies],
-        finalEfficiency
-      };
-      onRampUpPlansChange([...rampUpPlans, newPlan]);
-      setNewPlanName('');
-      setNewPlanEfficiencies([{ day: 1, efficiency: 50 }]);
-      setFinalEfficiency(90);
+      setIsLoading(true);
+      try {
+        const newPlan = await supabaseDataService.createRampUpPlan({
+          name: newPlanName.trim(),
+          efficiencies: [...newPlanEfficiencies],
+          finalEfficiency
+        });
+        onRampUpPlansChange([...rampUpPlans, newPlan]);
+        setNewPlanName('');
+        setNewPlanEfficiencies([{ day: 1, efficiency: 50 }]);
+        setFinalEfficiency(90);
+        toast({
+          title: "Success",
+          description: "Ramp-up plan created successfully"
+        });
+      } catch (error) {
+        console.error('Error creating ramp-up plan:', error);
+        toast({
+          title: "Error",
+          description: "Failed to create ramp-up plan",
+          variant: "destructive"
+        });
+      } finally {
+        setIsLoading(false);
+      }
     }
   };
 
-  const handleDeleteRampUpPlan = (id: string) => {
-    onRampUpPlansChange(rampUpPlans.filter(plan => plan.id !== id));
+  const handleDeleteRampUpPlan = async (id: string) => {
+    setIsLoading(true);
+    try {
+      await supabaseDataService.deleteRampUpPlan(id);
+      onRampUpPlansChange(rampUpPlans.filter(plan => plan.id !== id));
+      toast({
+        title: "Success",
+        description: "Ramp-up plan deleted successfully"
+      });
+    } catch (error) {
+      console.error('Error deleting ramp-up plan:', error);
+      toast({
+        title: "Error",
+        description: "Failed to delete ramp-up plan",
+        variant: "destructive"
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const addEfficiencyDay = () => {
@@ -151,6 +249,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     value={newLineName}
                     onChange={(e) => setNewLineName(e.target.value)}
                     placeholder="e.g., Line A - Knitwear"
+                    disabled={isLoading}
                   />
                 </div>
                 <div>
@@ -160,12 +259,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     value={newLineCapacity}
                     onChange={(e) => setNewLineCapacity(parseInt(e.target.value) || 100)}
                     placeholder="100"
+                    disabled={isLoading}
                   />
                 </div>
               </div>
-              <Button onClick={handleAddProductionLine} disabled={!newLineName.trim()}>
+              <Button 
+                onClick={handleAddProductionLine} 
+                disabled={!newLineName.trim() || isLoading}
+              >
                 <Plus className="h-4 w-4 mr-2" />
-                Add Production Line
+                {isLoading ? 'Adding...' : 'Add Production Line'}
               </Button>
             </CardContent>
           </Card>
@@ -186,6 +289,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       variant="destructive"
                       size="sm"
                       onClick={() => handleDeleteProductionLine(line.id)}
+                      disabled={isLoading}
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>
@@ -210,6 +314,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     selected={selectedDate}
                     onSelect={setSelectedDate}
                     className="rounded-md border"
+                    disabled={isLoading}
                   />
                 </div>
                 <div>
@@ -218,14 +323,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     value={newHolidayName}
                     onChange={(e) => setNewHolidayName(e.target.value)}
                     placeholder="e.g., New Year's Day"
+                    disabled={isLoading}
                   />
                   <Button 
                     onClick={handleAddHoliday} 
-                    disabled={!selectedDate || !newHolidayName.trim()}
+                    disabled={!selectedDate || !newHolidayName.trim() || isLoading}
                     className="mt-4"
                   >
                     <Plus className="h-4 w-4 mr-2" />
-                    Add Holiday
+                    {isLoading ? 'Adding...' : 'Add Holiday'}
                   </Button>
                 </div>
               </div>
@@ -248,6 +354,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       variant="destructive"
                       size="sm"
                       onClick={() => handleDeleteHoliday(holiday.id)}
+                      disabled={isLoading}
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>
@@ -270,6 +377,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   value={newPlanName}
                   onChange={(e) => setNewPlanName(e.target.value)}
                   placeholder="e.g., Fast Track Plan"
+                  disabled={isLoading}
                 />
               </div>
               
@@ -286,6 +394,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         value={eff.efficiency}
                         onChange={(e) => updateEfficiency(eff.day, parseInt(e.target.value) || 0)}
                         className="w-20"
+                        disabled={isLoading}
                       />
                       <span className="text-sm">%</span>
                       {newPlanEfficiencies.length > 1 && (
@@ -293,13 +402,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           variant="destructive"
                           size="sm"
                           onClick={() => removeEfficiencyDay(eff.day)}
+                          disabled={isLoading}
                         >
                           <Trash2 className="h-3 w-3" />
                         </Button>
                       )}
                     </div>
                   ))}
-                  <Button variant="outline" size="sm" onClick={addEfficiencyDay}>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={addEfficiencyDay}
+                    disabled={isLoading}
+                  >
                     <Plus className="h-3 w-3 mr-1" />
                     Add Day
                   </Button>
@@ -316,14 +431,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     value={finalEfficiency}
                     onChange={(e) => setFinalEfficiency(parseInt(e.target.value) || 90)}
                     className="w-20"
+                    disabled={isLoading}
                   />
                   <span className="text-sm">%</span>
                 </div>
               </div>
               
-              <Button onClick={handleAddRampUpPlan} disabled={!newPlanName.trim()}>
+              <Button 
+                onClick={handleAddRampUpPlan} 
+                disabled={!newPlanName.trim() || isLoading}
+              >
                 <Plus className="h-4 w-4 mr-2" />
-                Create Ramp-Up Plan
+                {isLoading ? 'Creating...' : 'Create Ramp-Up Plan'}
               </Button>
             </CardContent>
           </Card>
@@ -342,6 +461,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         variant="destructive"
                         size="sm"
                         onClick={() => handleDeleteRampUpPlan(plan.id)}
+                        disabled={isLoading}
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>

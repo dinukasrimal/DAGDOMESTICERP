@@ -6,7 +6,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Label } from './ui/label';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
-import { CalendarDays, Plus, ArrowLeft, Scissors } from 'lucide-react';
+import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical } from 'lucide-react';
+import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
 
 interface SchedulingBoardProps {
   orders: Order[];
@@ -27,7 +28,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   onOrderMovedToPending,
   onOrderSplit
 }) => {
-  // Simplified state management
   const [pendingSchedule, setPendingSchedule] = useState<{
     order: Order | null;
     lineId: string;
@@ -38,6 +38,20 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     lineId: '',
     date: null,
     showDialog: false
+  });
+  
+  const [overlapDialog, setOverlapDialog] = useState<{
+    isOpen: boolean;
+    newOrder: Order | null;
+    overlappingOrders: Order[];
+    targetDate: Date | null;
+    targetLine: string;
+  }>({
+    isOpen: false,
+    newOrder: null,
+    overlappingOrders: [],
+    targetDate: null,
+    targetLine: ''
   });
   
   const [planningMethod, setPlanningMethod] = useState<'capacity' | 'rampup'>('capacity');
@@ -78,6 +92,38 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return Math.min((totalPlanned / line.capacity) * 100, 100);
   }, [productionLines, getScheduledOrdersForCell]);
 
+  const checkForOverlaps = useCallback((newOrder: Order, targetLineId: string, targetDate: Date) => {
+    const line = productionLines.find(l => l.id === targetLineId);
+    if (!line) return [];
+
+    // Calculate how many days the new order would need
+    const dailyCapacity = line.capacity;
+    const totalDays = Math.ceil(newOrder.orderQuantity / dailyCapacity);
+    
+    const overlappingOrders: Order[] = [];
+    const newOrderEndDate = new Date(targetDate);
+    newOrderEndDate.setDate(newOrderEndDate.getDate() + totalDays - 1);
+
+    // Check for existing scheduled orders in the date range
+    orders.forEach(order => {
+      if (order.status === 'scheduled' && 
+          order.assignedLineId === targetLineId && 
+          order.id !== newOrder.id &&
+          order.planStartDate && order.planEndDate) {
+        
+        const existingStart = new Date(order.planStartDate);
+        const existingEnd = new Date(order.planEndDate);
+        
+        // Check if date ranges overlap
+        if (targetDate <= existingEnd && newOrderEndDate >= existingStart) {
+          overlappingOrders.push(order);
+        }
+      }
+    });
+
+    return overlappingOrders;
+  }, [orders, productionLines]);
+
   const calculateDailyProduction = useCallback((order: Order, line: ProductionLine, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
@@ -116,7 +162,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       
       currentDate.setDate(currentDate.getDate() + 1);
       
-      // Safety break
       if (currentDate.getTime() - startDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
         break;
       }
@@ -125,7 +170,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return dailyPlan;
   }, [isHoliday, planningMethod, selectedRampUpPlanId, rampUpPlans]);
 
-  // Drag and drop handlers - simplified approach
+  // Drag and drop handlers
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
@@ -140,7 +185,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    // Only clear if we're actually leaving the drop zone
     if (!e.currentTarget.contains(e.relatedTarget as Node)) {
       setDragHighlight(null);
     }
@@ -156,17 +200,32 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const orderData = JSON.parse(e.dataTransfer.getData('text/plain'));
       if (orderData && orderData.id) {
         console.log('📋 Scheduling order:', orderData.poNumber, 'on line:', lineId, 'date:', date.toDateString());
-        setPendingSchedule({
-          order: orderData,
-          lineId,
-          date,
-          showDialog: true
-        });
+        
+        // Check for overlaps
+        const overlappingOrders = checkForOverlaps(orderData, lineId, date);
+        const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
+        
+        if (overlappingOrders.length > 0) {
+          setOverlapDialog({
+            isOpen: true,
+            newOrder: orderData,
+            overlappingOrders,
+            targetDate: date,
+            targetLine: lineName
+          });
+        } else {
+          setPendingSchedule({
+            order: orderData,
+            lineId,
+            date,
+            showDialog: true
+          });
+        }
       }
     } catch (error) {
       console.error('❌ Failed to parse dropped order data:', error);
     }
-  }, [isHoliday]);
+  }, [isHoliday, checkForOverlaps, productionLines]);
 
   const handleScheduleConfirm = useCallback(async () => {
     const { order, lineId, date } = pendingSchedule;
@@ -198,7 +257,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       
       await onOrderScheduled(updatedOrder, date, endDate, dailyPlan);
       
-      // Reset state
       setPendingSchedule({ order: null, lineId: '', date: null, showDialog: false });
       setPlanningMethod('capacity');
       setSelectedRampUpPlanId('');
@@ -208,10 +266,61 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [pendingSchedule, productionLines, planningMethod, selectedRampUpPlanId, calculateDailyProduction, onOrderScheduled]);
 
+  const handleOverlapConfirm = useCallback(async () => {
+    const { newOrder, overlappingOrders, targetDate, targetLine } = overlapDialog;
+    
+    if (!newOrder || !targetDate) return;
+
+    try {
+      // First, move overlapping orders back to pending
+      for (const overlappingOrder of overlappingOrders) {
+        await onOrderMovedToPending(overlappingOrder);
+      }
+      
+      // Then proceed with scheduling the new order
+      const lineId = productionLines.find(l => l.name === targetLine)?.id;
+      if (lineId) {
+        setPendingSchedule({
+          order: newOrder,
+          lineId,
+          date: targetDate,
+          showDialog: true
+        });
+      }
+      
+      setOverlapDialog({
+        isOpen: false,
+        newOrder: null,
+        overlappingOrders: [],
+        targetDate: null,
+        targetLine: ''
+      });
+    } catch (error) {
+      console.error('❌ Failed to handle overlap:', error);
+    }
+  }, [overlapDialog, onOrderMovedToPending, productionLines]);
+
   const handleDialogClose = useCallback(() => {
     setPendingSchedule({ order: null, lineId: '', date: null, showDialog: false });
     setPlanningMethod('capacity');
     setSelectedRampUpPlanId('');
+  }, []);
+
+  const handleOrderDragStart = useCallback((e: React.DragEvent, order: Order) => {
+    console.log('🔄 Starting drag for scheduled order:', order.poNumber);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', JSON.stringify(order));
+    
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '0.5';
+    }
+  }, []);
+
+  const handleOrderDragEnd = useCallback((e: React.DragEvent) => {
+    console.log('🏁 Drag ended for scheduled order');
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '1';
+    }
   }, []);
 
   return (
@@ -303,7 +412,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                       </div>
                     )}
                     
-                    {/* Scheduled orders */}
+                    {/* Scheduled orders - now draggable */}
                     <div className="p-1 space-y-1 relative z-10">
                       {scheduledOrders.map((scheduledOrder) => {
                         const dateStr = date.toISOString().split('T')[0];
@@ -312,10 +421,16 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                         return (
                           <div 
                             key={`${scheduledOrder.id}-${dateStr}`}
-                            className="bg-primary/20 rounded text-xs p-2 text-primary group cursor-pointer hover:bg-primary/30 transition-colors"
+                            className="bg-primary/20 rounded text-xs p-2 text-primary group cursor-move hover:bg-primary/30 transition-colors"
+                            draggable
+                            onDragStart={(e) => handleOrderDragStart(e, scheduledOrder)}
+                            onDragEnd={handleOrderDragEnd}
                           >
                             <div className="flex items-center justify-between mb-1">
-                              <span className="truncate font-medium">{scheduledOrder.poNumber}</span>
+                              <div className="flex items-center space-x-1">
+                                <GripVertical className="h-3 w-3 text-primary/60" />
+                                <span className="truncate font-medium">{scheduledOrder.poNumber}</span>
+                              </div>
                               <div className="opacity-0 group-hover:opacity-100 flex space-x-1">
                                 <Button
                                   size="sm"
@@ -361,7 +476,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         </div>
       </div>
 
-      {/* Simplified Schedule Dialog */}
+      {/* Schedule Dialog */}
       <Dialog open={pendingSchedule.showDialog} onOpenChange={(open) => !open && handleDialogClose()}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -442,6 +557,17 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Overlap Confirmation Dialog */}
+      <OverlapConfirmationDialog
+        isOpen={overlapDialog.isOpen}
+        onClose={() => setOverlapDialog(prev => ({ ...prev, isOpen: false }))}
+        onConfirm={handleOverlapConfirm}
+        newOrder={overlapDialog.newOrder!}
+        overlappingOrders={overlapDialog.overlappingOrders}
+        targetDate={overlapDialog.targetDate!}
+        targetLine={overlapDialog.targetLine}
+      />
     </div>
   );
 };
