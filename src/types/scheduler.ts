@@ -1,3 +1,4 @@
+
 export interface Order {
   id: string;
   poNumber: string;
@@ -26,6 +27,8 @@ export interface Holiday {
   id: string;
   date: Date;
   name: string;
+  isGlobal: boolean;
+  affectedLineIds?: string[]; // Line IDs affected by this holiday (empty if global)
 }
 
 export interface RampUpPlan {

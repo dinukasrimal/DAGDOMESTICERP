@@ -63,9 +63,15 @@ export class SupabaseDataService {
 
   // Holidays
   async getHolidays(): Promise<Holiday[]> {
-    const { data, error } = await supabase
+    // Get holidays with their associated production lines
+    const { data: holidaysData, error } = await supabase
       .from('holidays')
-      .select('*')
+      .select(`
+        *,
+        holiday_production_lines (
+          production_line_id
+        )
+      `)
       .order('date');
     
     if (error) {
@@ -73,9 +79,12 @@ export class SupabaseDataService {
       throw error;
     }
     
-    return (data || []).map(holiday => ({
-      ...holiday,
-      date: new Date(holiday.date)
+    return (holidaysData || []).map(holiday => ({
+      id: holiday.id,
+      date: new Date(holiday.date),
+      name: holiday.name,
+      isGlobal: holiday.is_global,
+      affectedLineIds: holiday.is_global ? [] : holiday.holiday_production_lines?.map((hpl: any) => hpl.production_line_id) || []
     }));
   }
 
@@ -83,8 +92,9 @@ export class SupabaseDataService {
     const { data, error } = await supabase
       .from('holidays')
       .insert([{
-        ...holiday,
-        date: holiday.date.toISOString().split('T')[0]
+        name: holiday.name,
+        date: holiday.date.toISOString().split('T')[0],
+        is_global: holiday.isGlobal
       }])
       .select()
       .single();
@@ -93,18 +103,38 @@ export class SupabaseDataService {
       console.error('Error creating holiday:', error);
       throw error;
     }
+
+    // If it's not global, create the line associations
+    if (!holiday.isGlobal && holiday.affectedLineIds && holiday.affectedLineIds.length > 0) {
+      const lineAssociations = holiday.affectedLineIds.map(lineId => ({
+        holiday_id: data.id,
+        production_line_id: lineId
+      }));
+
+      const { error: associationError } = await supabase
+        .from('holiday_production_lines')
+        .insert(lineAssociations);
+
+      if (associationError) {
+        console.error('Error creating holiday line associations:', associationError);
+        throw associationError;
+      }
+    }
     
     return {
-      ...data,
-      date: new Date(data.date)
+      id: data.id,
+      date: new Date(data.date),
+      name: data.name,
+      isGlobal: data.is_global,
+      affectedLineIds: holiday.isGlobal ? [] : holiday.affectedLineIds || []
     };
   }
 
   async updateHoliday(id: string, updates: Partial<Holiday>): Promise<Holiday> {
-    const updateData: any = { ...updates };
-    if (updates.date) {
-      updateData.date = updates.date.toISOString().split('T')[0];
-    }
+    const updateData: any = {};
+    if (updates.name !== undefined) updateData.name = updates.name;
+    if (updates.date !== undefined) updateData.date = updates.date.toISOString().split('T')[0];
+    if (updates.isGlobal !== undefined) updateData.is_global = updates.isGlobal;
     
     const { data, error } = await supabase
       .from('holidays')
@@ -117,10 +147,34 @@ export class SupabaseDataService {
       console.error('Error updating holiday:', error);
       throw error;
     }
+
+    // Handle line associations if updating to/from global
+    if (updates.isGlobal !== undefined || updates.affectedLineIds !== undefined) {
+      // Delete existing associations
+      await supabase
+        .from('holiday_production_lines')
+        .delete()
+        .eq('holiday_id', id);
+
+      // Add new associations if not global
+      if (!data.is_global && updates.affectedLineIds && updates.affectedLineIds.length > 0) {
+        const lineAssociations = updates.affectedLineIds.map(lineId => ({
+          holiday_id: id,
+          production_line_id: lineId
+        }));
+
+        await supabase
+          .from('holiday_production_lines')
+          .insert(lineAssociations);
+      }
+    }
     
     return {
-      ...data,
-      date: new Date(data.date)
+      id: data.id,
+      date: new Date(data.date),
+      name: data.name,
+      isGlobal: data.is_global,
+      affectedLineIds: data.is_global ? [] : updates.affectedLineIds || []
     };
   }
 

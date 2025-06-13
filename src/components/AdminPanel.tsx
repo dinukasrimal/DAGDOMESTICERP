@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Calendar } from './ui/calendar';
+import { Checkbox } from './ui/checkbox';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { Plus, Trash2, Edit, Settings, Calendar as CalendarIcon, Target, ArrowLeft } from 'lucide-react';
 import { supabaseDataService } from '../services/supabaseDataService';
@@ -37,6 +38,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [newLineCapacity, setNewLineCapacity] = useState<number>(100);
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
   const [newHolidayName, setNewHolidayName] = useState('');
+  const [isGlobalHoliday, setIsGlobalHoliday] = useState(true);
+  const [selectedLineIds, setSelectedLineIds] = useState<string[]>([]);
   const [newPlanName, setNewPlanName] = useState('');
   const [newPlanEfficiencies, setNewPlanEfficiencies] = useState<{ day: number; efficiency: number }[]>([
     { day: 1, efficiency: 50 }
@@ -95,14 +98,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleAddHoliday = async () => {
     if (selectedDate && newHolidayName.trim()) {
+      // Validate line-specific holiday has lines selected
+      if (!isGlobalHoliday && selectedLineIds.length === 0) {
+        toast({
+          title: "Error",
+          description: "Please select at least one production line for line-specific holidays",
+          variant: "destructive"
+        });
+        return;
+      }
+
       setIsLoading(true);
       try {
         const newHoliday = await supabaseDataService.createHoliday({
           date: selectedDate,
-          name: newHolidayName.trim()
+          name: newHolidayName.trim(),
+          isGlobal: isGlobalHoliday,
+          affectedLineIds: isGlobalHoliday ? [] : selectedLineIds
         });
         onHolidaysChange([...holidays, newHoliday]);
         setNewHolidayName('');
+        setIsGlobalHoliday(true);
+        setSelectedLineIds([]);
         toast({
           title: "Success",
           description: "Holiday created successfully"
@@ -138,6 +155,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       });
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleLineSelection = (lineId: string, checked: boolean) => {
+    if (checked) {
+      setSelectedLineIds([...selectedLineIds, lineId]);
+    } else {
+      setSelectedLineIds(selectedLineIds.filter(id => id !== lineId));
     }
   };
 
@@ -317,18 +342,61 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     disabled={isLoading}
                   />
                 </div>
-                <div>
-                  <label className="text-sm font-medium">Holiday Name:</label>
-                  <Input
-                    value={newHolidayName}
-                    onChange={(e) => setNewHolidayName(e.target.value)}
-                    placeholder="e.g., New Year's Day"
-                    disabled={isLoading}
-                  />
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-sm font-medium">Holiday Name:</label>
+                    <Input
+                      value={newHolidayName}
+                      onChange={(e) => setNewHolidayName(e.target.value)}
+                      placeholder="e.g., New Year's Day"
+                      disabled={isLoading}
+                    />
+                  </div>
+                  
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="global-holiday"
+                      checked={isGlobalHoliday}
+                      onCheckedChange={(checked) => {
+                        setIsGlobalHoliday(checked as boolean);
+                        if (checked) {
+                          setSelectedLineIds([]);
+                        }
+                      }}
+                      disabled={isLoading}
+                    />
+                    <label htmlFor="global-holiday" className="text-sm font-medium">
+                      Global Holiday (affects all lines)
+                    </label>
+                  </div>
+
+                  {!isGlobalHoliday && (
+                    <div>
+                      <label className="text-sm font-medium mb-2 block">
+                        Select Production Lines:
+                      </label>
+                      <div className="space-y-2 max-h-32 overflow-y-auto border rounded p-2">
+                        {productionLines.map((line) => (
+                          <div key={line.id} className="flex items-center space-x-2">
+                            <Checkbox
+                              id={`line-${line.id}`}
+                              checked={selectedLineIds.includes(line.id)}
+                              onCheckedChange={(checked) => handleLineSelection(line.id, checked as boolean)}
+                              disabled={isLoading}
+                            />
+                            <label htmlFor={`line-${line.id}`} className="text-sm">
+                              {line.name}
+                            </label>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
                   <Button 
                     onClick={handleAddHoliday} 
                     disabled={!selectedDate || !newHolidayName.trim() || isLoading}
-                    className="mt-4"
+                    className="w-full"
                   >
                     <Plus className="h-4 w-4 mr-2" />
                     {isLoading ? 'Adding...' : 'Add Holiday'}
@@ -349,6 +417,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <div>
                       <div className="font-medium">{holiday.name}</div>
                       <div className="text-sm text-muted-foreground">{holiday.date.toLocaleDateString()}</div>
+                      <div className="flex items-center gap-2 mt-1">
+                        <Badge variant={holiday.isGlobal ? "default" : "secondary"}>
+                          {holiday.isGlobal ? "Global" : "Line-specific"}
+                        </Badge>
+                        {!holiday.isGlobal && holiday.affectedLineIds && holiday.affectedLineIds.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {holiday.affectedLineIds.map(lineId => {
+                              const line = productionLines.find(l => l.id === lineId);
+                              return line ? (
+                                <Badge key={lineId} variant="outline" className="text-xs">
+                                  {line.name}
+                                </Badge>
+                              ) : null;
+                            })}
+                          </div>
+                        )}
+                      </div>
                     </div>
                     <Button
                       variant="destructive"

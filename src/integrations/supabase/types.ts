@@ -9,23 +9,62 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
+      holiday_production_lines: {
+        Row: {
+          created_at: string
+          holiday_id: string
+          id: string
+          production_line_id: string
+        }
+        Insert: {
+          created_at?: string
+          holiday_id: string
+          id?: string
+          production_line_id: string
+        }
+        Update: {
+          created_at?: string
+          holiday_id?: string
+          id?: string
+          production_line_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "holiday_production_lines_holiday_id_fkey"
+            columns: ["holiday_id"]
+            isOneToOne: false
+            referencedRelation: "holidays"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "holiday_production_lines_production_line_id_fkey"
+            columns: ["production_line_id"]
+            isOneToOne: false
+            referencedRelation: "production_lines"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       holidays: {
         Row: {
           created_at: string | null
           date: string
           id: string
+          is_global: boolean
           name: string
         }
         Insert: {
           created_at?: string | null
           date: string
           id?: string
+          is_global?: boolean
           name: string
         }
         Update: {
           created_at?: string | null
           date?: string
           id?: string
+          is_global?: boolean
           name?: string
         }
         Relationships: []
