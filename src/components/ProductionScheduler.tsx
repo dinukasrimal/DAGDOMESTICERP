@@ -46,11 +46,11 @@ export const ProductionScheduler: React.FC = () => {
     }
   };
 
-  // Enhanced refresh plan with magnetic behavior
+  // Enhanced refresh plan with targeted magnetic behavior for holiday changes
   const refreshPlan = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      console.log('🔄 Starting magnetic refresh plan...');
+      console.log('🔄 Starting targeted magnetic refresh plan...');
       
       const scheduledOrders = orders.filter(order => 
         order.status === 'scheduled' && 
@@ -67,7 +67,7 @@ export const ProductionScheduler: React.FC = () => {
         return acc;
       }, {} as { [lineId: string]: Order[] });
 
-      // Process each line
+      // Process each line with targeted approach
       for (const [lineId, lineOrders] of Object.entries(ordersByLine)) {
         const line = productionLines.find(l => l.id === lineId);
         if (!line) continue;
@@ -81,10 +81,25 @@ export const ProductionScheduler: React.FC = () => {
           return dateA - dateB;
         });
 
-        // Reschedule orders with magnetic behavior
-        let currentDate = sortedOrders[0]?.planStartDate ? new Date(sortedOrders[0].planStartDate) : new Date();
+        // FIXED: Only reschedule orders that are affected by holiday changes
+        const affectedOrders = findOrdersAffectedByHolidayChanges(sortedOrders);
         
-        for (const order of sortedOrders) {
+        if (affectedOrders.length === 0) {
+          console.log(`✅ No orders affected by holiday changes in line ${line.name}`);
+          continue;
+        }
+
+        console.log(`🎯 Found ${affectedOrders.length} orders affected by holiday changes`);
+
+        // Find the earliest affected order to start rescheduling from there
+        const firstAffectedOrder = affectedOrders[0];
+        const startIndex = sortedOrders.findIndex(o => o.id === firstAffectedOrder.id);
+        
+        // Reschedule from the first affected order onwards
+        let currentDate = firstAffectedOrder.planStartDate ? new Date(firstAffectedOrder.planStartDate) : new Date();
+        
+        for (let i = startIndex; i < sortedOrders.length; i++) {
+          const order = sortedOrders[i];
           const newDailyPlan = await rescheduleOrderMagnetically(order, line, currentDate);
           
           if (Object.keys(newDailyPlan).length > 0) {
@@ -106,16 +121,46 @@ export const ProductionScheduler: React.FC = () => {
         }
       }
       
-      console.log('✅ Magnetic refresh completed');
+      console.log('✅ Targeted magnetic refresh completed');
       
     } catch (error) {
-      console.error('❌ Error during magnetic refresh:', error);
+      console.error('❌ Error during targeted magnetic refresh:', error);
     } finally {
       setIsRefreshing(false);
     }
   }, [orders, productionLines, holidays, updateOrderInDatabase]);
 
-  // Magnetic rescheduling helper
+  // Helper function to identify orders affected by holiday changes
+  const findOrdersAffectedByHolidayChanges = useCallback((orders: Order[]) => {
+    const affectedOrders: Order[] = [];
+    
+    for (const order of orders) {
+      if (!order.planStartDate || !order.planEndDate || !order.actualProduction) continue;
+      
+      // Check if any production days fall on current holidays
+      const productionDays = Object.keys(order.actualProduction);
+      const hasHolidayConflict = productionDays.some(dateStr => {
+        const date = new Date(dateStr);
+        return holidays.some(h => h.date.toDateString() === date.toDateString());
+      });
+      
+      if (hasHolidayConflict) {
+        affectedOrders.push(order);
+        // Also include all subsequent orders in the line for magnetic effect
+        const subsequentOrders = orders.filter(o => 
+          o.planStartDate && 
+          order.planEndDate &&
+          new Date(o.planStartDate) > new Date(order.planEndDate)
+        );
+        affectedOrders.push(...subsequentOrders);
+        break; // Once we find the first affected order, we include all subsequent ones
+      }
+    }
+    
+    return [...new Set(affectedOrders)]; // Remove duplicates
+  }, [holidays]);
+
+  // Enhanced magnetic rescheduling with capacity optimization
   const rescheduleOrderMagnetically = useCallback(async (order: Order, line: any, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
@@ -125,11 +170,25 @@ export const ProductionScheduler: React.FC = () => {
       return holidays.some(h => h.date.toDateString() === date.toDateString());
     };
 
+    // FIXED: Enhanced capacity handling for magnetic rescheduling
     while (remainingQty > 0) {
       if (!isHoliday(currentDate)) {
-        const plannedQty = Math.min(remainingQty, line.capacity);
+        // Get available capacity for this day
+        const dateStr = currentDate.toISOString().split('T')[0];
+        const usedCapacity = orders
+          .filter(o => 
+            o.status === 'scheduled' && 
+            o.assignedLineId === line.id && 
+            o.id !== order.id && // Exclude current order
+            o.actualProduction?.[dateStr] > 0
+          )
+          .reduce((sum, o) => sum + (o.actualProduction?.[dateStr] || 0), 0);
+        
+        const availableCapacity = Math.max(0, line.capacity - usedCapacity);
+        const plannedQty = Math.min(remainingQty, availableCapacity);
+        
         if (plannedQty > 0) {
-          dailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
+          dailyPlan[dateStr] = plannedQty;
           remainingQty -= plannedQty;
         }
       }
@@ -142,7 +201,7 @@ export const ProductionScheduler: React.FC = () => {
     }
 
     return dailyPlan;
-  }, [holidays]);
+  }, [holidays, orders]);
 
   const handleOrderScheduled = useCallback(async (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => {
     try {
