@@ -149,7 +149,9 @@ export class SupabaseDataService {
     }
     
     return (data || []).map(plan => ({
-      ...plan,
+      id: plan.id,
+      name: plan.name,
+      efficiencies: Array.isArray(plan.efficiencies) ? plan.efficiencies as { day: number; efficiency: number }[] : [],
       finalEfficiency: plan.final_efficiency
     }));
   }
@@ -158,7 +160,8 @@ export class SupabaseDataService {
     const { data, error } = await supabase
       .from('ramp_up_plans')
       .insert([{
-        ...plan,
+        name: plan.name,
+        efficiencies: plan.efficiencies,
         final_efficiency: plan.finalEfficiency
       }])
       .select()
@@ -170,17 +173,18 @@ export class SupabaseDataService {
     }
     
     return {
-      ...data,
+      id: data.id,
+      name: data.name,
+      efficiencies: Array.isArray(data.efficiencies) ? data.efficiencies as { day: number; efficiency: number }[] : [],
       finalEfficiency: data.final_efficiency
     };
   }
 
   async updateRampUpPlan(id: string, updates: Partial<RampUpPlan>): Promise<RampUpPlan> {
-    const updateData: any = { ...updates };
-    if (updates.finalEfficiency !== undefined) {
-      updateData.final_efficiency = updates.finalEfficiency;
-      delete updateData.finalEfficiency;
-    }
+    const updateData: any = {};
+    if (updates.name !== undefined) updateData.name = updates.name;
+    if (updates.efficiencies !== undefined) updateData.efficiencies = updates.efficiencies;
+    if (updates.finalEfficiency !== undefined) updateData.final_efficiency = updates.finalEfficiency;
     
     const { data, error } = await supabase
       .from('ramp_up_plans')
@@ -195,7 +199,9 @@ export class SupabaseDataService {
     }
     
     return {
-      ...data,
+      id: data.id,
+      name: data.name,
+      efficiencies: Array.isArray(data.efficiencies) ? data.efficiencies as { day: number; efficiency: number }[] : [],
       finalEfficiency: data.final_efficiency
     };
   }
