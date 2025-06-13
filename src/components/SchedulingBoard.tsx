@@ -45,17 +45,21 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     overlappingOrders: Order[];
     targetDate: Date | null;
     targetLine: string;
+    originalTargetDate: Date | null;
   }>({
     isOpen: false,
     newOrder: null,
     overlappingOrders: [],
     targetDate: null,
-    targetLine: ''
+    targetLine: '',
+    originalTargetDate: null
   });
   
   const [planningMethod, setPlanningMethod] = useState<'capacity' | 'rampup'>('capacity');
   const [selectedRampUpPlanId, setSelectedRampUpPlanId] = useState<string>('');
   const [dragHighlight, setDragHighlight] = useState<string | null>(null);
+  const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
 
   // Generate date range (next 30 days)
   const dates = Array.from({ length: 30 }, (_, i) => {
@@ -104,12 +108,30 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return Math.max(0, line.capacity - totalUsed);
   }, [productionLines, getOrdersForCell]);
 
-  // Fixed overlap detection to find ALL overlapping orders
+  // Multi-select functionality
+  const handleOrderClick = useCallback((e: React.MouseEvent, orderId: string) => {
+    if (e.ctrlKey || e.metaKey) {
+      setIsMultiSelectMode(true);
+      setSelectedOrders(prev => {
+        const newSet = new Set(prev);
+        if (newSet.has(orderId)) {
+          newSet.delete(orderId);
+        } else {
+          newSet.add(orderId);
+        }
+        return newSet;
+      });
+    } else if (!selectedOrders.has(orderId)) {
+      setSelectedOrders(new Set());
+      setIsMultiSelectMode(false);
+    }
+  }, [selectedOrders]);
+
+  // Enhanced overlap detection
   const checkForOverlaps = useCallback((newOrder: Order, targetLineId: string, targetDate: Date) => {
     const line = productionLines.find(l => l.id === targetLineId);
     if (!line) return [];
 
-    // Calculate how many days the new order would need
     const dailyCapacity = line.capacity;
     const totalDays = Math.ceil(newOrder.orderQuantity / dailyCapacity);
     
@@ -117,7 +139,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     const newOrderEndDate = new Date(targetDate);
     newOrderEndDate.setDate(newOrderEndDate.getDate() + totalDays - 1);
 
-    // Check for existing scheduled orders in the date range on the same line
     orders.forEach(order => {
       if (order.status === 'scheduled' && 
           order.assignedLineId === targetLineId && 
@@ -127,22 +148,15 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         const existingStart = new Date(order.planStartDate);
         const existingEnd = new Date(order.planEndDate);
         
-        // Check if date ranges overlap
         if (targetDate <= existingEnd && newOrderEndDate >= existingStart) {
           overlappingOrders.push(order);
         }
       }
     });
 
-    console.log(`🔍 Overlap check: Found ${overlappingOrders.length} overlapping orders for line ${targetLineId}`);
-    overlappingOrders.forEach(order => {
-      console.log(`  - ${order.poNumber} (${order.planStartDate?.toDateString()} - ${order.planEndDate?.toDateString()})`);
-    });
-
     return overlappingOrders;
   }, [orders, productionLines]);
 
-  // Calculate daily production with strict capacity sharing
   const calculateDailyProductionWithSharing = useCallback((order: Order, line: ProductionLine, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
@@ -155,7 +169,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const isWorkingDay = !isHoliday(currentDate);
       
       if (isWorkingDay) {
-        // Get available capacity for this date - this ensures we never exceed 100%
         const availableCapacity = getAvailableCapacity(line.id, currentDate);
         
         let dailyCapacity = 0;
@@ -193,28 +206,48 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return dailyPlan;
   }, [isHoliday, planningMethod, selectedRampUpPlanId, rampUpPlans, getAvailableCapacity]);
 
-  // Move orders for placement function - fixed to handle ALL overlapping orders
-  const moveOrdersForPlacement = useCallback(async (newOrder: Order, targetLineId: string, targetDate: Date, placement: 'before' | 'after', overlappingOrders: Order[]) => {
+  // Enhanced magnetic placement with capacity-aware scheduling
+  const moveOrdersForPlacement = useCallback(async (
+    newOrder: Order, 
+    targetLineId: string, 
+    targetDate: Date, 
+    placement: 'before' | 'after', 
+    overlappingOrders: Order[],
+    originalTargetDate: Date
+  ) => {
     console.log(`📋 Moving ${overlappingOrders.length} orders for ${placement} placement`);
     
     if (placement === 'before') {
-      // Move ALL overlapping orders to pending, they'll be rescheduled after new order
-      console.log(`🔄 Moving ${overlappingOrders.length} overlapping orders to pending`);
-      for (const order of overlappingOrders) {
+      // Move ALL overlapping orders to pending - they'll be magnetically rescheduled
+      console.log(`🔄 Moving ${overlappingOrders.length} overlapping orders to pending for magnetic rescheduling`);
+      
+      // Sort overlapping orders by their original start dates to maintain sequence
+      const sortedOverlapping = [...overlappingOrders].sort((a, b) => {
+        const dateA = a.planStartDate ? new Date(a.planStartDate).getTime() : 0;
+        const dateB = b.planStartDate ? new Date(b.planStartDate).getTime() : 0;
+        return dateA - dateB;
+      });
+      
+      for (const order of sortedOverlapping) {
         console.log(`  - Moving ${order.poNumber} to pending`);
         await onOrderMovedToPending(order);
       }
       
-      // Set up new order for immediate scheduling at the target date
+      // Schedule new order at the original target date
       setScheduleDialog({
         isOpen: true,
         order: newOrder,
         lineId: targetLineId,
-        startDate: targetDate
+        startDate: originalTargetDate
       });
       
+      // After new order is scheduled, we'll reschedule the overlapping orders magnetically
+      setTimeout(async () => {
+        await rescheduleOrdersMagnetically(sortedOverlapping, newOrder, targetLineId);
+      }, 100);
+      
     } else {
-      // Find the latest end date among ALL overlapping orders
+      // For "after" placement, find the last end date and check for remaining capacity
       let latestEndDate = targetDate;
       overlappingOrders.forEach(order => {
         if (order.planEndDate && order.planEndDate > latestEndDate) {
@@ -222,21 +255,81 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         }
       });
       
-      // Schedule new order to start the day after the latest end date
-      const newStartDate = new Date(latestEndDate);
-      newStartDate.setDate(newStartDate.getDate() + 1);
-      
-      setScheduleDialog({
-        isOpen: true,
-        order: newOrder,
-        lineId: targetLineId,
-        startDate: newStartDate
-      });
+      // Check if the last day has remaining capacity
+      const line = productionLines.find(l => l.id === targetLineId);
+      if (line) {
+        const availableCapacity = getAvailableCapacity(targetLineId, latestEndDate);
+        
+        if (availableCapacity > 0) {
+          // Start by filling remaining capacity of the last day
+          const startDate = new Date(latestEndDate);
+          console.log(`📊 Found ${availableCapacity} remaining capacity on ${startDate.toDateString()}`);
+          
+          setScheduleDialog({
+            isOpen: true,
+            order: newOrder,
+            lineId: targetLineId,
+            startDate: startDate
+          });
+        } else {
+          // Start the day after
+          const newStartDate = new Date(latestEndDate);
+          newStartDate.setDate(newStartDate.getDate() + 1);
+          
+          setScheduleDialog({
+            isOpen: true,
+            order: newOrder,
+            lineId: targetLineId,
+            startDate: newStartDate
+          });
+        }
+      }
     }
-  }, [onOrderMovedToPending]);
+  }, [onOrderMovedToPending, productionLines, getAvailableCapacity]);
 
-  // Helper function to check if a date is in the current week
-  const isCurrentWeek = useCallback((date: Date) => {
+  // Function to reschedule orders magnetically after a new order is placed
+  const rescheduleOrdersMagnetically = useCallback(async (
+    ordersToReschedule: Order[], 
+    newOrder: Order, 
+    lineId: string
+  ) => {
+    console.log(`🧲 Starting magnetic rescheduling of ${ordersToReschedule.length} orders`);
+    
+    // Find the end date of the new order to start rescheduling from there
+    const newOrderInList = orders.find(o => o.id === newOrder.id);
+    if (!newOrderInList || !newOrderInList.planEndDate) return;
+    
+    let currentStartDate = new Date(newOrderInList.planEndDate);
+    currentStartDate.setDate(currentStartDate.getDate() + 1);
+    
+    // Reschedule each order in sequence (magnetically)
+    for (const order of ordersToReschedule) {
+      const line = productionLines.find(l => l.id === lineId);
+      if (!line) continue;
+      
+      console.log(`🔄 Magnetically rescheduling ${order.poNumber} to start ${currentStartDate.toDateString()}`);
+      
+      // Calculate new daily plan
+      const newDailyPlan = calculateDailyProductionWithSharing(order, line, currentStartDate);
+      const planDates = Object.keys(newDailyPlan);
+      const newEndDate = planDates.length > 0 
+        ? new Date(Math.max(...planDates.map(d => new Date(d).getTime())))
+        : currentStartDate;
+      
+      // Schedule the order
+      const updatedOrder = { ...order, assignedLineId: lineId };
+      await onOrderScheduled(updatedOrder, currentStartDate, newEndDate, newDailyPlan);
+      
+      // Next order starts the day after this one ends (magnetic behavior)
+      currentStartDate = new Date(newEndDate);
+      currentStartDate.setDate(currentStartDate.getDate() + 1);
+    }
+    
+    console.log('✅ Magnetic rescheduling completed');
+  }, [orders, productionLines, calculateDailyProductionWithSharing, onOrderScheduled]);
+
+  // Helper function to check if order should be highlighted in red
+  const shouldHighlightRed = useCallback((order: Order, date: Date) => {
     const now = new Date();
     const startOfWeek = new Date(now);
     startOfWeek.setDate(now.getDate() - now.getDay());
@@ -246,16 +339,15 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     endOfWeek.setDate(startOfWeek.getDate() + 6);
     endOfWeek.setHours(23, 59, 59, 999);
     
-    return date >= startOfWeek && date <= endOfWeek;
-  }, []);
-
-  // Check if order should be highlighted in red
-  const shouldHighlightRed = useCallback((order: Order, date: Date) => {
+    const isCurrentWeek = order.planStartDate && 
+                         order.planStartDate >= startOfWeek && 
+                         order.planStartDate <= endOfWeek;
+    
     return order.cutQuantity === 0 && 
-           order.planStartDate && 
-           isCurrentWeek(order.planStartDate) &&
+           isCurrentWeek &&
+           order.planStartDate &&
            date.toDateString() === order.planStartDate.toDateString();
-  }, [isCurrentWeek]);
+  }, []);
 
   // Drag and drop handlers
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -288,7 +380,12 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       if (orderData && orderData.id && orderData.poNumber) {
         console.log('📋 Scheduling order:', orderData.poNumber, 'on line:', lineId, 'date:', date.toDateString());
         
-        // Check for overlaps
+        // Handle multi-select drop
+        if (isMultiSelectMode && selectedOrders.size > 1) {
+          console.log(`📋 Multi-select drop: ${selectedOrders.size} orders`);
+          // For now, just handle the main order - multi-select can be enhanced later
+        }
+        
         const overlappingOrders = checkForOverlaps(orderData, lineId, date);
         const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
         
@@ -298,7 +395,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             newOrder: orderData,
             overlappingOrders,
             targetDate: date,
-            targetLine: lineName
+            targetLine: lineName,
+            originalTargetDate: date
           });
         } else {
           setScheduleDialog({
@@ -312,30 +410,19 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     } catch (error) {
       console.error('❌ Failed to parse dropped order data:', error);
     }
-  }, [isHoliday, checkForOverlaps, productionLines]);
+  }, [isHoliday, checkForOverlaps, productionLines, isMultiSelectMode, selectedOrders]);
 
   const handleScheduleConfirm = useCallback(async () => {
     const { order, lineId, startDate } = scheduleDialog;
     
-    if (!order || !lineId || !startDate) {
-      console.log('⚠️ Missing required scheduling data');
-      return;
-    }
+    if (!order || !lineId || !startDate) return;
 
     const selectedLine = productionLines.find(l => l.id === lineId);
-    if (!selectedLine) {
-      console.log('❌ Selected line not found');
-      return;
-    }
+    if (!selectedLine) return;
 
-    if (planningMethod === 'rampup' && !selectedRampUpPlanId) {
-      console.log('⚠️ Ramp-up plan required but not selected');
-      return;
-    }
+    if (planningMethod === 'rampup' && !selectedRampUpPlanId) return;
 
     try {
-      console.log('✅ Confirming schedule for:', order.poNumber);
-      
       const dailyPlan = calculateDailyProductionWithSharing(order, selectedLine, startDate);
       const planDates = Object.keys(dailyPlan);
       const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
@@ -354,22 +441,23 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   }, [scheduleDialog, productionLines, planningMethod, selectedRampUpPlanId, calculateDailyProductionWithSharing, onOrderScheduled]);
 
   const handleOverlapConfirm = useCallback(async (placement: 'before' | 'after') => {
-    const { newOrder, overlappingOrders, targetDate, targetLine } = overlapDialog;
+    const { newOrder, overlappingOrders, targetDate, targetLine, originalTargetDate } = overlapDialog;
     
-    if (!newOrder || !targetDate) return;
+    if (!newOrder || !targetDate || !originalTargetDate) return;
 
     try {
       const lineId = productionLines.find(l => l.name === targetLine)?.id;
       if (!lineId) return;
 
-      await moveOrdersForPlacement(newOrder, lineId, targetDate, placement, overlappingOrders);
+      await moveOrdersForPlacement(newOrder, lineId, targetDate, placement, overlappingOrders, originalTargetDate);
       
       setOverlapDialog({
         isOpen: false,
         newOrder: null,
         overlappingOrders: [],
         targetDate: null,
-        targetLine: ''
+        targetLine: '',
+        originalTargetDate: null
       });
     } catch (error) {
       console.error('❌ Failed to handle overlap:', error);
@@ -393,14 +481,37 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   }, []);
 
   const handleOrderDragEnd = useCallback((e: React.DragEvent) => {
-    console.log('🏁 Drag ended for scheduled order');
     if (e.currentTarget instanceof HTMLElement) {
       e.currentTarget.style.opacity = '1';
     }
+    
+    // Clear selection after drag
+    setSelectedOrders(new Set());
+    setIsMultiSelectMode(false);
   }, []);
 
   return (
     <div className="flex-1 overflow-auto bg-background">
+      {/* Multi-select info bar */}
+      {isMultiSelectMode && selectedOrders.size > 0 && (
+        <div className="sticky top-0 z-20 bg-blue-100 border-b border-blue-300 p-2 text-center">
+          <span className="text-blue-800 font-medium">
+            {selectedOrders.size} orders selected - Drag to move together
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-2 text-blue-800"
+            onClick={() => {
+              setSelectedOrders(new Set());
+              setIsMultiSelectMode(false);
+            }}
+          >
+            Clear Selection
+          </Button>
+        </div>
+      )}
+
       <div className="min-w-max">
         {/* Header with dates */}
         <div className="sticky top-0 z-10 bg-card border-b border-border">
@@ -496,27 +607,31 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                       </div>
                     )}
                     
-                    {/* Multiple orders in same cell - stacked vertically with proper capacity sizing */}
+                    {/* Orders in cell */}
                     <div className="p-1 space-y-1 relative z-10 h-full flex flex-col">
                       {ordersInCell.map((scheduledOrder, index) => {
                         const dateStr = date.toISOString().split('T')[0];
                         const dailyQty = scheduledOrder.actualProduction?.[dateStr] || 0;
                         const shouldHighlight = shouldHighlightRed(scheduledOrder, date);
                         const orderUtilization = (dailyQty / line.capacity) * 100;
+                        const isSelected = selectedOrders.has(scheduledOrder.id);
                         
                         return (
                           <div 
                             key={`${scheduledOrder.id}-${dateStr}`}
                             className={`rounded text-xs p-1 group cursor-move transition-colors flex-1 min-h-[60px] ${
-                              shouldHighlight 
-                                ? 'bg-red-100 border-2 border-red-500 text-red-800' 
-                                : index % 2 === 0
-                                  ? 'bg-blue-100 border border-blue-300 text-blue-800'
-                                  : 'bg-green-100 border border-green-300 text-green-800'
+                              isSelected 
+                                ? 'ring-2 ring-blue-500 bg-blue-50' 
+                                : shouldHighlight 
+                                  ? 'bg-red-100 border-2 border-red-500 text-red-800' 
+                                  : index % 2 === 0
+                                    ? 'bg-blue-100 border border-blue-300 text-blue-800'
+                                    : 'bg-green-100 border border-green-300 text-green-800'
                             }`}
                             draggable
                             onDragStart={(e) => handleOrderDragStart(e, scheduledOrder)}
                             onDragEnd={handleOrderDragEnd}
+                            onClick={(e) => handleOrderClick(e, scheduledOrder.id)}
                             style={{ 
                               height: `${Math.max(orderUtilization, 20)}%`,
                               minHeight: '60px'

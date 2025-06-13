@@ -46,6 +46,49 @@ export const ProductionScheduler: React.FC = () => {
     }
   };
 
+  // Helper function to find magnetically connected orders
+  const findMagneticChain = useCallback((startOrder: Order, allOrders: Order[]): Order[] => {
+    const chain: Order[] = [startOrder];
+    const visited = new Set([startOrder.id]);
+    
+    // Find orders that are magnetically connected (end-to-end scheduling)
+    const findConnected = (currentOrder: Order, direction: 'forward' | 'backward') => {
+      const currentEndDate = currentOrder.planEndDate;
+      const currentStartDate = currentOrder.planStartDate;
+      
+      if (!currentEndDate || !currentStartDate || !currentOrder.assignedLineId) return;
+      
+      for (const order of allOrders) {
+        if (visited.has(order.id) || !order.planStartDate || !order.planEndDate || order.assignedLineId !== currentOrder.assignedLineId) continue;
+        
+        if (direction === 'forward') {
+          // Check if this order starts the day after current order ends
+          const nextDay = new Date(currentEndDate);
+          nextDay.setDate(nextDay.getDate() + 1);
+          if (order.planStartDate.toDateString() === nextDay.toDateString()) {
+            visited.add(order.id);
+            chain.push(order);
+            findConnected(order, 'forward');
+          }
+        } else {
+          // Check if this order ends the day before current order starts
+          const prevDay = new Date(currentStartDate);
+          prevDay.setDate(prevDay.getDate() - 1);
+          if (order.planEndDate.toDateString() === prevDay.toDateString()) {
+            visited.add(order.id);
+            chain.unshift(order); // Add to beginning for backward chain
+            findConnected(order, 'backward');
+          }
+        }
+      }
+    };
+    
+    findConnected(startOrder, 'forward');
+    findConnected(startOrder, 'backward');
+    
+    return chain;
+  }, []);
+
   const refreshPlan = useCallback(async () => {
     setIsRefreshing(true);
     try {
@@ -59,8 +102,8 @@ export const ProductionScheduler: React.FC = () => {
         order.assignedLineId
       );
 
-      // Check each scheduled order against holidays and reschedule if needed
-      const ordersToReschedule: Order[] = [];
+      // Find orders with holiday conflicts
+      const ordersWithConflicts: Order[] = [];
       
       for (const order of scheduledOrders) {
         if (!order.planStartDate || !order.planEndDate || !order.assignedLineId) continue;
@@ -68,7 +111,7 @@ export const ProductionScheduler: React.FC = () => {
         // Check if any production day falls on a holiday
         const hasHolidayConflict = Object.keys(order.actualProduction || {}).some(dateStr => {
           const productionQty = order.actualProduction?.[dateStr] || 0;
-          if (productionQty === 0) return false; // Skip days with no production
+          if (productionQty === 0) return false;
           
           const productionDate = new Date(dateStr);
           return holidays.some(holiday => 
@@ -77,27 +120,32 @@ export const ProductionScheduler: React.FC = () => {
         });
         
         if (hasHolidayConflict) {
-          ordersToReschedule.push(order);
+          ordersWithConflicts.push(order);
         }
       }
 
-      if (ordersToReschedule.length === 0) {
+      if (ordersWithConflicts.length === 0) {
         console.log('✅ No orders need rescheduling - no holiday conflicts found');
         return;
       }
 
-      console.log(`📅 Found ${ordersToReschedule.length} orders with holiday conflicts, rescheduling...`);
+      console.log(`📅 Found ${ordersWithConflicts.length} orders with holiday conflicts`);
       
-      // Sort orders by their current start date to maintain sequence
-      ordersToReschedule.sort((a, b) => {
-        const dateA = a.planStartDate ? new Date(a.planStartDate).getTime() : 0;
-        const dateB = b.planStartDate ? new Date(b.planStartDate).getTime() : 0;
-        return dateA - dateB;
-      });
+      // Process each conflicting order and its magnetic chain
+      const processedOrders = new Set<string>();
       
-      // Reschedule each conflicting order while respecting capacity limits
-      for (const order of ordersToReschedule) {
-        await rescheduleOrderAroundHolidays(order);
+      for (const conflictOrder of ordersWithConflicts) {
+        if (processedOrders.has(conflictOrder.id)) continue;
+        
+        // Find the magnetic chain for this order
+        const magneticChain = findMagneticChain(conflictOrder, scheduledOrders);
+        console.log(`🧲 Found magnetic chain of ${magneticChain.length} orders starting with ${conflictOrder.poNumber}`);
+        
+        // Mark all orders in chain as processed
+        magneticChain.forEach(order => processedOrders.add(order.id));
+        
+        // Move the entire magnetic chain to avoid holidays
+        await rescheduleMagneticChain(magneticChain);
       }
       
       console.log('✅ Plan refresh completed successfully');
@@ -107,102 +155,103 @@ export const ProductionScheduler: React.FC = () => {
     } finally {
       setIsRefreshing(false);
     }
-  }, [orders, holidays, updateOrderInDatabase]);
+  }, [orders, holidays, findMagneticChain, updateOrderInDatabase]);
 
-  // Fixed helper function to reschedule an order around holidays with capacity limits
-  const rescheduleOrderAroundHolidays = useCallback(async (order: Order) => {
-    if (!order.assignedLineId || !order.planStartDate) return;
-
-    const line = productionLines.find(l => l.id === order.assignedLineId);
-    if (!line) return;
-
-    console.log(`🔄 Rescheduling ${order.poNumber} around holidays with capacity limits...`);
-
-    // Helper function to get available capacity for a specific date, excluding the current order
-    const getAvailableCapacityForReschedule = (date: Date, currentOrderId: string) => {
-      const dateStr = date.toISOString().split('T')[0];
-      const otherOrders = orders.filter(o => 
-        o.status === 'scheduled' &&
-        o.assignedLineId === order.assignedLineId &&
-        o.id !== currentOrderId &&
-        o.actualProduction?.[dateStr] > 0
-      );
-      
-      const usedCapacity = otherOrders.reduce((sum, o) => 
-        sum + (o.actualProduction?.[dateStr] || 0), 0
-      );
-      
-      return Math.max(0, line.capacity - usedCapacity);
-    };
-
-    // Calculate new production plan avoiding holidays and respecting capacity
-    const newDailyPlan: { [date: string]: number } = {};
-    let remainingQty = order.orderQuantity;
-    let currentDate = new Date(order.planStartDate);
+  // Function to reschedule a magnetic chain of orders
+  const rescheduleMagneticChain = useCallback(async (magneticChain: Order[]) => {
+    if (magneticChain.length === 0) return;
     
-    // Helper function to check if a date is a holiday
-    const isHoliday = (date: Date) => {
-      return holidays.some(h => h.date.toDateString() === date.toDateString());
-    };
-
-    while (remainingQty > 0) {
-      const isWorkingDay = !isHoliday(currentDate);
+    const firstOrder = magneticChain[0];
+    if (!firstOrder.assignedLineId || !firstOrder.planStartDate) return;
+    
+    const line = productionLines.find(l => l.id === firstOrder.assignedLineId);
+    if (!line) return;
+    
+    console.log(`🔄 Rescheduling magnetic chain starting with ${firstOrder.poNumber}`);
+    
+    // Find next available date after holidays for the first order
+    let newStartDate = new Date(firstOrder.planStartDate);
+    
+    // Keep moving forward until we find a date without holiday conflicts
+    while (true) {
+      const hasHoliday = holidays.some(h => h.date.toDateString() === newStartDate.toDateString());
+      if (!hasHoliday) break;
+      newStartDate.setDate(newStartDate.getDate() + 1);
+    }
+    
+    // If start date changed, reschedule the entire chain
+    if (newStartDate.toDateString() !== firstOrder.planStartDate.toDateString()) {
+      let currentStartDate = new Date(newStartDate);
       
-      if (isWorkingDay) {
-        // Get available capacity for this date, excluding current order's allocation
-        const availableCapacity = getAvailableCapacityForReschedule(currentDate, order.id);
-        const plannedQty = Math.min(remainingQty, availableCapacity);
+      for (const order of magneticChain) {
+        // Check for overlaps at new position
+        const overlappingOrders = orders.filter(o => 
+          o.status === 'scheduled' &&
+          o.assignedLineId === order.assignedLineId &&
+          o.id !== order.id &&
+          !magneticChain.some(chainOrder => chainOrder.id === o.id) &&
+          o.planStartDate && o.planEndDate &&
+          currentStartDate <= o.planEndDate
+        );
+        
+        // Move overlapping orders backward
+        for (const overlapping of overlappingOrders) {
+          console.log(`📤 Moving overlapping order ${overlapping.poNumber} backward`);
+          await handleOrderMovedToPending(overlapping);
+        }
+        
+        // Calculate new production plan avoiding holidays
+        const newDailyPlan = await calculateHolidayAwareProduction(order, line, currentStartDate);
+        const planDates = Object.keys(newDailyPlan);
+        const newEndDate = planDates.length > 0 
+          ? new Date(Math.max(...planDates.map(d => new Date(d).getTime())))
+          : currentStartDate;
+        
+        // Update order with new schedule
+        await updateOrderInDatabase(order.id, {
+          planStartDate: currentStartDate,
+          planEndDate: newEndDate,
+          actualProduction: newDailyPlan
+        });
+        
+        console.log(`✅ Rescheduled ${order.poNumber} from ${currentStartDate.toDateString()} to ${newEndDate.toDateString()}`);
+        
+        // Next order starts the day after this one ends
+        currentStartDate = new Date(newEndDate);
+        currentStartDate.setDate(currentStartDate.getDate() + 1);
+      }
+    }
+  }, [productionLines, holidays, orders, updateOrderInDatabase]);
+
+  // Helper function to calculate production avoiding holidays
+  const calculateHolidayAwareProduction = useCallback(async (order: Order, line: any, startDate: Date) => {
+    const dailyPlan: { [date: string]: number } = {};
+    let remainingQty = order.orderQuantity;
+    let currentDate = new Date(startDate);
+    
+    while (remainingQty > 0) {
+      const isHoliday = holidays.some(h => h.date.toDateString() === currentDate.toDateString());
+      
+      if (!isHoliday) {
+        const dailyCapacity = line.capacity;
+        const plannedQty = Math.min(remainingQty, dailyCapacity);
         
         if (plannedQty > 0) {
-          newDailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
+          dailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
           remainingQty -= plannedQty;
-          console.log(`  📅 ${currentDate.toDateString()}: ${plannedQty}/${availableCapacity} (${((plannedQty/line.capacity)*100).toFixed(1)}%)`);
-        } else {
-          console.log(`  ⚠️ ${currentDate.toDateString()}: No available capacity (line full)`);
         }
-      } else {
-        console.log(`  ⏭️ Skipping holiday on ${currentDate.toDateString()} for ${order.poNumber}`);
       }
       
       currentDate.setDate(currentDate.getDate() + 1);
       
-      // Safety check to prevent infinite loops
-      if (currentDate.getTime() - order.planStartDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
-        console.error('❌ Rescheduling took too long, breaking loop');
+      // Safety check
+      if (currentDate.getTime() - startDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
         break;
       }
     }
-
-    // Calculate new end date
-    const planDates = Object.keys(newDailyPlan);
-    const newEndDate = planDates.length > 0 
-      ? new Date(Math.max(...planDates.map(d => new Date(d).getTime())))
-      : order.planEndDate;
-
-    // Verify total capacity doesn't exceed 100% on any day
-    let capacityViolation = false;
-    for (const [dateStr, qty] of Object.entries(newDailyPlan)) {
-      const date = new Date(dateStr);
-      const totalUsed = getAvailableCapacityForReschedule(date, order.id) + qty;
-      if (totalUsed > line.capacity) {
-        console.error(`❌ Capacity violation on ${dateStr}: ${totalUsed}/${line.capacity} (${((totalUsed/line.capacity)*100).toFixed(1)}%)`);
-        capacityViolation = true;
-      }
-    }
-
-    if (capacityViolation) {
-      console.error(`❌ Cannot reschedule ${order.poNumber} - would exceed capacity limits`);
-      return;
-    }
-
-    // Update the order with new schedule
-    await updateOrderInDatabase(order.id, {
-      planEndDate: newEndDate,
-      actualProduction: newDailyPlan
-    });
-
-    console.log(`✅ Rescheduled ${order.poNumber} - new end date: ${newEndDate?.toDateString()}`);
-  }, [productionLines, holidays, orders, updateOrderInDatabase]);
+    
+    return dailyPlan;
+  }, [holidays]);
 
   const handleOrderScheduled = useCallback(async (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => {
     try {
