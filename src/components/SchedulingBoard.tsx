@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -65,24 +66,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   });
 
   // Helper functions
-  const isHoliday = useCallback((date: Date, lineId?: string) => {
-    return holidays.some(h => {
-      const holidayDate = new Date(h.date);
-      const isSameDate = holidayDate.toDateString() === date.toDateString();
-      
-      if (!isSameDate) return false;
-      
-      // If holiday is global, it affects all lines
-      if (h.isGlobal) return true;
-      
-      // If lineId is provided and holiday is line-specific, check if this line is affected
-      if (lineId && h.affectedLineIds) {
-        return h.affectedLineIds.includes(lineId);
-      }
-      
-      // If no lineId provided for line-specific holiday, assume it doesn't affect
-      return false;
-    });
+  const isHoliday = useCallback((date: Date) => {
+    return holidays.some(h => h.date.toDateString() === date.toDateString());
   }, [holidays]);
 
   const getScheduledOrdersForCell = useCallback((lineId: string, date: Date) => {
@@ -139,7 +124,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return overlappingOrders;
   }, [orders, productionLines]);
 
-  // Calculate daily production function with holiday handling
+  // Calculate daily production function
   const calculateDailyProduction = useCallback((order: Order, line: ProductionLine, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
@@ -149,8 +134,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     const rampUpPlan = rampUpPlans.find(p => p.id === selectedRampUpPlanId);
 
     while (remainingQty > 0) {
-      // Check if current date is a working day (not a holiday for this line)
-      const isWorkingDay = !isHoliday(currentDate, line.id);
+      const isWorkingDay = !isHoliday(currentDate);
       
       if (isWorkingDay) {
         let dailyCapacity = 0;
@@ -179,9 +163,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       
       currentDate.setDate(currentDate.getDate() + 1);
       
-      // Safety break to prevent infinite loops
       if (currentDate.getTime() - startDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
-        console.warn('⚠️ Production planning exceeded 1 year, breaking to prevent infinite loop');
         break;
       }
     }
@@ -280,7 +262,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   const handleDragEnter = useCallback((e: React.DragEvent, lineId: string, date: Date) => {
     e.preventDefault();
-    if (!isHoliday(date, lineId)) {
+    if (!isHoliday(date)) {
       setDragHighlight(`${lineId}-${date.toISOString().split('T')[0]}`);
     }
   }, [isHoliday]);
@@ -296,11 +278,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     e.preventDefault();
     setDragHighlight(null);
     
-    // Check if this is a holiday for this specific line
-    if (isHoliday(date, lineId)) {
-      console.log('❌ Cannot schedule on holiday for this line');
-      return;
-    }
+    if (isHoliday(date)) return;
 
     try {
       const orderData = JSON.parse(e.dataTransfer.getData('text/plain'));
@@ -475,7 +453,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                 const isHighlighted = dragHighlight === cellKey;
                 const utilizationPercent = calculateCapacityUtilization(line.id, date);
                 const scheduledOrders = getScheduledOrdersForCell(line.id, date);
-                const isHolidayCell = isHoliday(date, line.id);
+                const isHolidayCell = isHoliday(date);
                 
                 return (
                   <div
