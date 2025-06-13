@@ -334,6 +334,19 @@ export const useSupabaseProductionData = () => {
     }
   }, [checkHolidayImpact, rescheduleAffectedOrders, loadAllData]);
 
+  const createProductionLine = useCallback(async (lineData: Omit<ProductionLine, 'id'>) => {
+    try {
+      console.log(`➕ Creating new production line:`, lineData.name);
+      const newLine = await supabaseDataService.createProductionLine(lineData);
+      setProductionLines(prev => [...prev, newLine]);
+      console.log(`✅ Successfully created production line ${newLine.name}`);
+      return newLine;
+    } catch (err) {
+      console.error('Failed to create production line:', err);
+      throw err;
+    }
+  }, []);
+
   return {
     orders,
     productionLines,
@@ -355,6 +368,7 @@ export const useSupabaseProductionData = () => {
     deleteOrderFromDatabase,
     loadAllData,
     clearError: () => setError(null),
-    createHolidayWithImpactCheck
+    createHolidayWithImpactCheck,
+    createProductionLine
   };
 };
