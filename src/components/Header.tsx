@@ -2,7 +2,8 @@
 import React from 'react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { Settings, Calendar, Users } from 'lucide-react';
+import { Settings, Calendar, LogOut, User } from 'lucide-react';
+import { useAuth } from '@/hooks/useAuth';
 
 interface HeaderProps {
   userRole: 'planner' | 'superuser';
@@ -15,6 +16,16 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleAdmin,
   onRoleChange
 }) => {
+  const { user, signOut } = useAuth();
+
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+    } catch (error) {
+      console.error('Error signing out:', error);
+    }
+  };
+
   return (
     <header className="border-b border-border bg-card px-6 py-4">
       <div className="flex items-center justify-between">
@@ -56,6 +67,21 @@ export const Header: React.FC<HeaderProps> = ({
             <Calendar className="h-4 w-4" />
             <span>{new Date().toLocaleDateString()}</span>
           </div>
+
+          <div className="flex items-center space-x-2 text-sm text-muted-foreground">
+            <User className="h-4 w-4" />
+            <span>{user?.email}</span>
+          </div>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSignOut}
+            className="flex items-center space-x-2"
+          >
+            <LogOut className="h-4 w-4" />
+            <span>Sign Out</span>
+          </Button>
         </div>
       </div>
     </header>
