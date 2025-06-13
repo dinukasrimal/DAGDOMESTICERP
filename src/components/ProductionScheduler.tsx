@@ -178,7 +178,17 @@ export const ProductionScheduler: React.FC = () => {
   if (showAdminPanel) {
     return (
       <TooltipProvider>
-        <AdminPanel />
+        <AdminPanel
+          orders={orders}
+          productionLines={productionLines}
+          holidays={holidays}
+          rampUpPlans={rampUpPlans}
+          onOrdersChange={setOrders}
+          onProductionLinesChange={setProductionLines}
+          onHolidaysChange={setHolidays}
+          onRampUpPlansChange={setRampUpPlans}
+          onClose={() => setShowAdminPanel(false)}
+        />
       </TooltipProvider>
     );
   }
