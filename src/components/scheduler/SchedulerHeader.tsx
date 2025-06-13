@@ -13,8 +13,13 @@ export const SchedulerHeader: React.FC<SchedulerHeaderProps> = ({ dates, holiday
     return holidays.some(h => h.date.toDateString() === date.toDateString());
   };
 
+  const getHolidayName = (date: Date) => {
+    const holiday = holidays.find(h => h.date.toDateString() === date.toDateString());
+    return holiday?.name || '';
+  };
+
   return (
-    <div className="sticky top-0 z-10 bg-card border-b border-border">
+    <div className="sticky top-0 z-10 bg-card border-b border-border shadow-sm">
       <div className="flex">
         <div className="w-48 p-4 border-r border-border bg-card">
           <div className="flex items-center space-x-2">
@@ -22,24 +27,35 @@ export const SchedulerHeader: React.FC<SchedulerHeaderProps> = ({ dates, holiday
             <span className="font-medium">Production Lines</span>
           </div>
         </div>
-        {dates.map((date) => (
-          <div
-            key={date.toISOString()}
-            className={`w-32 p-2 border-r border-border text-center ${
-              isHoliday(date) ? 'bg-red-50 border-red-200' : 'bg-card'
-            }`}
-          >
-            <div className="text-xs font-medium">
-              {date.toLocaleDateString('en-US', { weekday: 'short' })}
+        {dates.map((date) => {
+          const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+          const holiday = isHoliday(date);
+          
+          return (
+            <div
+              key={date.toISOString()}
+              className={`w-32 p-2 border-r border-border text-center transition-colors ${
+                holiday 
+                  ? 'bg-red-50 border-red-200 text-red-800' 
+                  : isWeekend 
+                    ? 'bg-amber-50 border-amber-200'
+                    : 'bg-card'
+              }`}
+            >
+              <div className="text-xs font-medium">
+                {date.toLocaleDateString('en-US', { weekday: 'short' })}
+              </div>
+              <div className="text-sm font-semibold">
+                {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              </div>
+              {holiday && (
+                <div className="text-xs text-red-600 font-medium mt-1 truncate" title={getHolidayName(date)}>
+                  {getHolidayName(date)}
+                </div>
+              )}
             </div>
-            <div className="text-sm">
-              {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-            </div>
-            {isHoliday(date) && (
-              <div className="text-xs text-red-600 font-medium">Holiday</div>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

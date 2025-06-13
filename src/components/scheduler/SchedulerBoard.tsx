@@ -1,10 +1,10 @@
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useRef } from 'react';
 import { Order, ProductionLine, Holiday } from '../../types/scheduler';
 import { SchedulerHeader } from './SchedulerHeader';
 import { SchedulerGrid } from './SchedulerGrid';
 import { PlacementDialog } from './PlacementDialog';
-import { SchedulingDialog } from './SchedulingDialog';
+import { MultiSelectManager } from './MultiSelectManager';
 
 interface SchedulerBoardProps {
   orders: Order[];
@@ -32,32 +32,39 @@ export const SchedulerBoard: React.FC<SchedulerBoardProps> = ({
     }), []
   );
 
-  // State for dialogs
+  // Multi-select state
+  const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+
+  // Drag state
+  const [dragState, setDragState] = useState<{
+    isDragging: boolean;
+    draggedOrders: Order[];
+    draggedFromPending: boolean;
+    highlightedCell: string | null;
+  }>({
+    isDragging: false,
+    draggedOrders: [],
+    draggedFromPending: false,
+    highlightedCell: null
+  });
+
+  // Dialog state
   const [placementDialog, setPlacementDialog] = useState<{
     isOpen: boolean;
-    draggedOrder: Order | null;
+    draggedOrders: Order[];
     targetLine: string;
     targetDate: Date | null;
     overlappingOrders: Order[];
   }>({
     isOpen: false,
-    draggedOrder: null,
+    draggedOrders: [],
     targetLine: '',
     targetDate: null,
     overlappingOrders: []
   });
 
-  const [schedulingDialog, setSchedulingDialog] = useState<{
-    isOpen: boolean;
-    order: Order | null;
-    lineId: string;
-    startDate: Date | null;
-  }>({
-    isOpen: false,
-    order: null,
-    lineId: '',
-    startDate: null
-  });
+  const boardRef = useRef<HTMLDivElement>(null);
 
   // Helper functions
   const isHoliday = useCallback((date: Date) => {
@@ -88,30 +95,49 @@ export const SchedulerBoard: React.FC<SchedulerBoardProps> = ({
     return Math.max(0, line.capacity - usedCapacity);
   }, [productionLines, getUsedCapacity]);
 
-  // Find overlapping orders when dropping
-  const findOverlappingOrders = useCallback((order: Order, lineId: string, targetDate: Date) => {
+  // Find overlapping orders with magnetic behavior
+  const findOverlappingOrders = useCallback((orders: Order[], lineId: string, targetDate: Date) => {
     const line = productionLines.find(l => l.id === lineId);
     if (!line) return [];
 
-    // Calculate estimated duration
-    const estimatedDays = Math.ceil(order.orderQuantity / line.capacity);
+    const totalQuantity = orders.reduce((sum, order) => sum + order.orderQuantity, 0);
+    const estimatedDays = Math.ceil(totalQuantity / line.capacity);
     const endDate = new Date(targetDate);
     endDate.setDate(endDate.getDate() + estimatedDays - 1);
 
-    // Find overlapping scheduled orders
     return orders.filter(scheduledOrder => 
       scheduledOrder.status === 'scheduled' &&
       scheduledOrder.assignedLineId === lineId &&
-      scheduledOrder.id !== order.id &&
+      !orders.some(draggedOrder => draggedOrder.id === scheduledOrder.id) &&
       scheduledOrder.planStartDate &&
       scheduledOrder.planEndDate &&
       targetDate <= new Date(scheduledOrder.planEndDate) &&
       endDate >= new Date(scheduledOrder.planStartDate)
     );
-  }, [orders, productionLines]);
+  }, [productionLines]);
 
-  // Handle drop from pending orders or within scheduler
-  const handleDrop = useCallback((e: React.DragEvent, lineId: string, date: Date) => {
+  // Multi-select handlers
+  const handleOrderSelect = useCallback((orderId: string, isSelected: boolean) => {
+    setSelectedOrders(prev => {
+      const newSet = new Set(prev);
+      if (isSelected) {
+        newSet.add(orderId);
+      } else {
+        newSet.delete(orderId);
+      }
+      return newSet;
+    });
+  }, []);
+
+  const handleMultiSelectToggle = useCallback(() => {
+    setIsMultiSelectMode(prev => !prev);
+    if (isMultiSelectMode) {
+      setSelectedOrders(new Set());
+    }
+  }, [isMultiSelectMode]);
+
+  // Drag handlers for external orders (from pending)
+  const handleExternalDrop = useCallback((e: React.DragEvent, lineId: string, date: Date) => {
     e.preventDefault();
     
     if (isHoliday(date)) {
@@ -123,87 +149,99 @@ export const SchedulerBoard: React.FC<SchedulerBoardProps> = ({
       const orderData = JSON.parse(e.dataTransfer.getData('text/plain'));
       if (!orderData?.id || !orderData?.poNumber) return;
 
-      const overlappingOrders = findOverlappingOrders(orderData, lineId, date);
+      const draggedOrders = [orderData];
+      const overlappingOrders = findOverlappingOrders(draggedOrders, lineId, date);
       
       if (overlappingOrders.length > 0) {
-        // Show placement dialog for overlaps
         setPlacementDialog({
           isOpen: true,
-          draggedOrder: orderData,
+          draggedOrders,
           targetLine: lineId,
           targetDate: date,
           overlappingOrders
         });
       } else {
-        // Direct scheduling without overlaps
-        setSchedulingDialog({
-          isOpen: true,
-          order: orderData,
-          lineId,
-          startDate: date
-        });
+        scheduleOrdersDirectly(draggedOrders, lineId, date);
       }
     } catch (error) {
       console.error('Failed to parse dropped order:', error);
     }
   }, [isHoliday, findOverlappingOrders]);
 
-  // Handle placement choice (before/after)
-  const handlePlacementChoice = useCallback(async (placement: 'before' | 'after') => {
-    const { draggedOrder, targetLine, targetDate, overlappingOrders } = placementDialog;
-    
-    if (!draggedOrder || !targetDate) return;
+  // Drag handlers for internal orders (within scheduler)
+  const handleInternalDragStart = useCallback((orders: Order[]) => {
+    setDragState({
+      isDragging: true,
+      draggedOrders: orders,
+      draggedFromPending: false,
+      highlightedCell: null
+    });
+  }, []);
 
-    if (placement === 'before') {
-      // Move overlapping orders to pending, then schedule the dragged order first
-      for (const order of overlappingOrders) {
-        await onOrderMovedToPending(order);
-      }
-      
-      setSchedulingDialog({
+  const handleInternalDrop = useCallback((lineId: string, date: Date) => {
+    if (!dragState.isDragging || dragState.draggedOrders.length === 0) return;
+
+    if (isHoliday(date)) {
+      console.log('Cannot drop on holiday');
+      setDragState(prev => ({ ...prev, isDragging: false, highlightedCell: null }));
+      return;
+    }
+
+    const overlappingOrders = findOverlappingOrders(dragState.draggedOrders, lineId, date);
+    
+    if (overlappingOrders.length > 0) {
+      setPlacementDialog({
         isOpen: true,
-        order: draggedOrder,
-        lineId: targetLine,
-        startDate: targetDate
+        draggedOrders: dragState.draggedOrders,
+        targetLine: lineId,
+        targetDate: date,
+        overlappingOrders
       });
     } else {
-      // Schedule after the latest overlapping order
-      const latestEndDate = overlappingOrders.reduce((latest, order) => {
-        const endDate = order.planEndDate ? new Date(order.planEndDate) : latest;
-        return endDate > latest ? endDate : latest;
-      }, targetDate);
-      
-      const nextDay = new Date(latestEndDate);
-      nextDay.setDate(nextDay.getDate() + 1);
-      
-      setSchedulingDialog({
-        isOpen: true,
-        order: draggedOrder,
-        lineId: targetLine,
-        startDate: nextDay
-      });
+      scheduleOrdersDirectly(dragState.draggedOrders, lineId, date);
     }
-    
-    setPlacementDialog(prev => ({ ...prev, isOpen: false }));
-  }, [placementDialog, onOrderMovedToPending]);
 
-  // Handle final scheduling with capacity constraints
-  const handleScheduleConfirm = useCallback(async () => {
-    const { order, lineId, startDate } = schedulingDialog;
-    
-    if (!order || !lineId || !startDate) return;
+    setDragState(prev => ({ ...prev, isDragging: false, highlightedCell: null }));
+  }, [dragState, isHoliday, findOverlappingOrders]);
 
-    const line = productionLines.find(l => l.id === lineId);
-    if (!line) return;
+  // Direct scheduling without overlaps
+  const scheduleOrdersDirectly = useCallback(async (ordersToSchedule: Order[], lineId: string, startDate: Date) => {
+    for (const order of ordersToSchedule) {
+      const line = productionLines.find(l => l.id === lineId);
+      if (!line) continue;
 
-    // Calculate daily plan with strict capacity limits
+      const dailyPlan = await calculateDailyPlan(order, line, startDate);
+      
+      if (Object.keys(dailyPlan).length === 0) {
+        console.error('No valid dates found for scheduling');
+        continue;
+      }
+
+      const planDates = Object.keys(dailyPlan);
+      const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
+      const updatedOrder = { ...order, assignedLineId: lineId };
+
+      try {
+        await onOrderScheduled(updatedOrder, startDate, endDate, dailyPlan);
+        
+        // Update start date for next order
+        startDate = new Date(endDate);
+        startDate.setDate(startDate.getDate() + 1);
+      } catch (error) {
+        console.error('Failed to schedule order:', error);
+      }
+    }
+  }, [productionLines, onOrderScheduled]);
+
+  // Calculate daily plan with capacity constraints
+  const calculateDailyPlan = useCallback(async (order: Order, line: ProductionLine, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
     let currentDate = new Date(startDate);
 
     while (remainingQty > 0) {
       if (!isHoliday(currentDate)) {
-        const availableCapacity = getAvailableCapacity(lineId, currentDate);
+        const availableCapacity = getAvailableCapacity(line.id, currentDate);
         const plannedQty = Math.min(remainingQty, availableCapacity);
         
         if (plannedQty > 0) {
@@ -221,25 +259,86 @@ export const SchedulerBoard: React.FC<SchedulerBoardProps> = ({
       }
     }
 
-    const planDates = Object.keys(dailyPlan);
-    if (planDates.length === 0) {
-      console.error('No valid dates found for scheduling');
-      return;
-    }
+    return dailyPlan;
+  }, [isHoliday, getAvailableCapacity]);
 
-    const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
-    const updatedOrder = { ...order, assignedLineId: lineId };
+  // Magnetic placement logic
+  const handlePlacementChoice = useCallback(async (placement: 'before' | 'after') => {
+    const { draggedOrders, targetLine, targetDate, overlappingOrders } = placementDialog;
+    
+    if (!draggedOrders.length || !targetDate) return;
 
-    try {
-      await onOrderScheduled(updatedOrder, startDate, endDate, dailyPlan);
-      setSchedulingDialog(prev => ({ ...prev, isOpen: false }));
-    } catch (error) {
-      console.error('Failed to schedule order:', error);
+    if (placement === 'before') {
+      // Place dragged orders before overlapping orders
+      // First move overlapping orders to pending to clear space
+      for (const order of overlappingOrders) {
+        await onOrderMovedToPending(order);
+      }
+      
+      // Schedule dragged orders at target date
+      await scheduleOrdersDirectly(draggedOrders, targetLine, targetDate);
+      
+      // Reschedule overlapping orders after dragged orders with magnetic snapping
+      if (overlappingOrders.length > 0) {
+        const line = productionLines.find(l => l.id === targetLine);
+        if (line) {
+          // Calculate when dragged orders end
+          const totalDraggedQty = draggedOrders.reduce((sum, order) => sum + order.orderQuantity, 0);
+          const draggedDays = Math.ceil(totalDraggedQty / line.capacity);
+          const nextAvailableDate = new Date(targetDate);
+          nextAvailableDate.setDate(nextAvailableDate.getDate() + draggedDays);
+          
+          await scheduleOrdersDirectly(overlappingOrders, targetLine, nextAvailableDate);
+        }
+      }
+    } else {
+      // Place dragged orders after overlapping orders with magnetic snapping
+      const latestEndDate = overlappingOrders.reduce((latest, order) => {
+        const endDate = order.planEndDate ? new Date(order.planEndDate) : latest;
+        return endDate > latest ? endDate : latest;
+      }, targetDate);
+      
+      // Check for remaining capacity on the last day
+      const line = productionLines.find(l => l.id === targetLine);
+      if (line) {
+        const lastDayCapacity = getAvailableCapacity(targetLine, latestEndDate);
+        let scheduleDate = latestEndDate;
+        
+        if (lastDayCapacity > 0) {
+          // Try to fit in remaining capacity first
+          const firstOrderQty = draggedOrders[0]?.orderQuantity || 0;
+          if (firstOrderQty <= lastDayCapacity) {
+            scheduleDate = latestEndDate;
+          } else {
+            scheduleDate = new Date(latestEndDate);
+            scheduleDate.setDate(scheduleDate.getDate() + 1);
+          }
+        } else {
+          scheduleDate = new Date(latestEndDate);
+          scheduleDate.setDate(scheduleDate.getDate() + 1);
+        }
+        
+        await scheduleOrdersDirectly(draggedOrders, targetLine, scheduleDate);
+      }
     }
-  }, [schedulingDialog, productionLines, isHoliday, getAvailableCapacity, onOrderScheduled]);
+    
+    setPlacementDialog(prev => ({ ...prev, isOpen: false }));
+  }, [placementDialog, onOrderMovedToPending, scheduleOrdersDirectly, productionLines, getAvailableCapacity]);
+
+  // Cell highlighting for drag feedback
+  const handleCellHighlight = useCallback((cellKey: string | null) => {
+    setDragState(prev => ({ ...prev, highlightedCell: cellKey }));
+  }, []);
 
   return (
-    <div className="flex-1 overflow-auto bg-background">
+    <div ref={boardRef} className="flex-1 overflow-auto bg-background">
+      <MultiSelectManager
+        isMultiSelectMode={isMultiSelectMode}
+        selectedCount={selectedOrders.size}
+        onToggleMultiSelect={handleMultiSelectToggle}
+        onClearSelection={() => setSelectedOrders(new Set())}
+      />
+      
       <div className="min-w-max">
         <SchedulerHeader dates={dates} holidays={holidays} />
         
@@ -248,9 +347,16 @@ export const SchedulerBoard: React.FC<SchedulerBoardProps> = ({
           dates={dates}
           orders={orders}
           holidays={holidays}
-          onDrop={handleDrop}
+          selectedOrders={selectedOrders}
+          isMultiSelectMode={isMultiSelectMode}
+          dragState={dragState}
+          onExternalDrop={handleExternalDrop}
+          onInternalDragStart={handleInternalDragStart}
+          onInternalDrop={handleInternalDrop}
+          onOrderSelect={handleOrderSelect}
           onOrderMovedToPending={onOrderMovedToPending}
           onOrderSplit={onOrderSplit}
+          onCellHighlight={handleCellHighlight}
           getOrdersForCell={getOrdersForCell}
           getUsedCapacity={getUsedCapacity}
           getAvailableCapacity={getAvailableCapacity}
@@ -259,20 +365,10 @@ export const SchedulerBoard: React.FC<SchedulerBoardProps> = ({
 
       <PlacementDialog
         isOpen={placementDialog.isOpen}
-        draggedOrder={placementDialog.draggedOrder}
+        draggedOrders={placementDialog.draggedOrders}
         overlappingOrders={placementDialog.overlappingOrders}
         onChoice={handlePlacementChoice}
         onClose={() => setPlacementDialog(prev => ({ ...prev, isOpen: false }))}
-      />
-
-      <SchedulingDialog
-        isOpen={schedulingDialog.isOpen}
-        order={schedulingDialog.order}
-        lineId={schedulingDialog.lineId}
-        startDate={schedulingDialog.startDate}
-        productionLines={productionLines}
-        onConfirm={handleScheduleConfirm}
-        onClose={() => setSchedulingDialog(prev => ({ ...prev, isOpen: false }))}
       />
     </div>
   );
