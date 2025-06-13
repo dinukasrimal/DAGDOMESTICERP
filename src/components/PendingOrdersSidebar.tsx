@@ -35,8 +35,10 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
   };
 
   const handleDragStart = (e: React.DragEvent, order: Order) => {
-    e.dataTransfer.setData('application/json', JSON.stringify(order));
+    console.log('Starting drag for order:', order.poNumber);
     e.dataTransfer.effectAllowed = 'move';
+    // Store the order data for the drop handler
+    e.dataTransfer.setData('text/plain', JSON.stringify(order));
   };
 
   return (
@@ -63,7 +65,7 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
         {filteredOrders.map((order) => (
           <Card
             key={order.id}
-            className="cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow"
+            className="cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow border-2 border-transparent hover:border-primary/20"
             draggable
             onDragStart={(e) => handleDragStart(e, order)}
           >

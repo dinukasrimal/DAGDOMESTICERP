@@ -4,7 +4,6 @@ import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
-import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { CalendarDays, Plus, ArrowLeft, Scissors } from 'lucide-react';
@@ -30,13 +29,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 }) => {
   const [draggedOrder, setDraggedOrder] = useState<Order | null>(null);
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
-  const [showSplitDialog, setShowSplitDialog] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedLineId, setSelectedLineId] = useState<string>('');
   const [selectedRampUpPlanId, setSelectedRampUpPlanId] = useState<string>('');
   const [planningMethod, setPlanningMethod] = useState<'capacity' | 'rampup'>('capacity');
-  const [orderToSplit, setOrderToSplit] = useState<Order | null>(null);
-  const [splitQuantity, setSplitQuantity] = useState<number>(0);
   const [dragOverCell, setDragOverCell] = useState<string | null>(null);
 
   // Generate date range (next 30 days)
@@ -102,11 +98,46 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return dailyPlan;
   };
 
+  const isHoliday = (date: Date) => {
+    return holidays.some(h => h.date.toDateString() === date.toDateString());
+  };
+
+  const getScheduledOrdersForLineAndDate = (lineId: string, date: Date) => {
+    const dateStr = date.toISOString().split('T')[0];
+    return orders.filter(order => 
+      order.status === 'scheduled' &&
+      order.planStartDate &&
+      order.planEndDate &&
+      order.assignedLineId === lineId &&
+      date >= order.planStartDate &&
+      date <= order.planEndDate &&
+      order.actualProduction &&
+      order.actualProduction[dateStr] > 0
+    );
+  };
+
+  const getDailyPlannedQuantity = (order: Order, date: Date) => {
+    const dateStr = date.toISOString().split('T')[0];
+    return order.actualProduction?.[dateStr] || 0;
+  };
+
+  const getCapacityUtilization = (lineId: string, date: Date) => {
+    const line = productionLines.find(l => l.id === lineId);
+    if (!line) return 0;
+    
+    const scheduledOrders = getScheduledOrdersForLineAndDate(lineId, date);
+    const totalPlanned = scheduledOrders.reduce((sum, order) => 
+      sum + getDailyPlannedQuantity(order, date), 0
+    );
+    
+    return Math.min((totalPlanned / line.capacity) * 100, 100);
+  };
+
+  // Drag event handlers
   const handleDragStart = (e: React.DragEvent, order: Order) => {
     console.log('Drag started for order:', order.poNumber);
     setDraggedOrder(order);
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', order.id);
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -122,10 +153,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
-    // Only clear if we're actually leaving the cell
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-      setDragOverCell(null);
-    }
+    setDragOverCell(null);
   };
 
   const handleDrop = (e: React.DragEvent, lineId: string, date: Date) => {
@@ -173,70 +201,23 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     
     try {
       await onOrderScheduled(updatedOrder, selectedDate, endDate, dailyPlan);
-      setShowScheduleDialog(false);
-      setDraggedOrder(null);
-      setSelectedRampUpPlanId('');
-      setPlanningMethod('capacity');
-      setSelectedDate(null);
-      setSelectedLineId('');
+      handleDialogClose();
     } catch (error) {
       console.error('Failed to schedule order:', error);
     }
   };
 
+  const handleDialogClose = () => {
+    setShowScheduleDialog(false);
+    setDraggedOrder(null);
+    setSelectedRampUpPlanId('');
+    setPlanningMethod('capacity');
+    setSelectedDate(null);
+    setSelectedLineId('');
+  };
+
   const handleMoveBackToPending = (order: Order) => {
     onOrderMovedToPending(order);
-  };
-
-  const handleSplitOrder = (order: Order, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setOrderToSplit(order);
-    setSplitQuantity(Math.floor(order.orderQuantity / 2));
-    setShowSplitDialog(true);
-  };
-
-  const handleSplitConfirm = () => {
-    if (orderToSplit && splitQuantity > 0 && splitQuantity < orderToSplit.orderQuantity) {
-      onOrderSplit(orderToSplit.id, splitQuantity);
-      setShowSplitDialog(false);
-      setOrderToSplit(null);
-      setSplitQuantity(0);
-    }
-  };
-
-  const isHoliday = (date: Date) => {
-    return holidays.some(h => h.date.toDateString() === date.toDateString());
-  };
-
-  const getScheduledOrdersForLineAndDate = (lineId: string, date: Date) => {
-    const dateStr = date.toISOString().split('T')[0];
-    return orders.filter(order => 
-      order.status === 'scheduled' &&
-      order.planStartDate &&
-      order.planEndDate &&
-      order.assignedLineId === lineId &&
-      date >= order.planStartDate &&
-      date <= order.planEndDate &&
-      order.actualProduction &&
-      order.actualProduction[dateStr] > 0
-    );
-  };
-
-  const getDailyPlannedQuantity = (order: Order, date: Date) => {
-    const dateStr = date.toISOString().split('T')[0];
-    return order.actualProduction?.[dateStr] || 0;
-  };
-
-  const getCapacityUtilization = (lineId: string, date: Date) => {
-    const line = productionLines.find(l => l.id === lineId);
-    if (!line) return 0;
-    
-    const scheduledOrders = getScheduledOrdersForLineAndDate(lineId, date);
-    const totalPlanned = scheduledOrders.reduce((sum, order) => 
-      sum + getDailyPlannedQuantity(order, date), 0
-    );
-    
-    return Math.min((totalPlanned / line.capacity) * 100, 100);
   };
 
   return (
@@ -357,7 +338,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                                   size="sm"
                                   variant="ghost"
                                   className="h-4 w-4 p-0"
-                                  onClick={(e) => handleSplitOrder(scheduledOrder, e)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOrderSplit(scheduledOrder.id, Math.floor(scheduledOrder.orderQuantity / 2));
+                                  }}
                                   title="Split order"
                                 >
                                   <Scissors className="h-3 w-3" />
@@ -453,67 +437,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                 </Button>
                 <Button
                   variant="outline"
-                  onClick={() => {
-                    setShowScheduleDialog(false);
-                    setDraggedOrder(null);
-                    setSelectedDate(null);
-                    setSelectedLineId('');
-                  }}
-                  className="flex-1"
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Split Order Dialog */}
-      <Dialog open={showSplitDialog} onOpenChange={setShowSplitDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Split Order</DialogTitle>
-          </DialogHeader>
-          {orderToSplit && (
-            <div className="space-y-4">
-              <div>
-                <h3 className="font-medium">{orderToSplit.poNumber}</h3>
-                <p className="text-sm text-muted-foreground">
-                  Total Quantity: {orderToSplit.orderQuantity.toLocaleString()}
-                </p>
-              </div>
-              
-              <div>
-                <Label htmlFor="splitQty">Split Quantity</Label>
-                <Input
-                  id="splitQty"
-                  type="number"
-                  value={splitQuantity}
-                  onChange={(e) => setSplitQuantity(parseInt(e.target.value) || 0)}
-                  min={1}
-                  max={orderToSplit.orderQuantity - 1}
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Remaining: {orderToSplit.orderQuantity - splitQuantity}
-                </p>
-              </div>
-              
-              <div className="flex space-x-2">
-                <Button
-                  onClick={handleSplitConfirm}
-                  disabled={splitQuantity <= 0 || splitQuantity >= orderToSplit.orderQuantity}
-                  className="flex-1"
-                >
-                  Split Order
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setShowSplitDialog(false);
-                    setOrderToSplit(null);
-                    setSplitQuantity(0);
-                  }}
+                  onClick={handleDialogClose}
                   className="flex-1"
                 >
                   Cancel
