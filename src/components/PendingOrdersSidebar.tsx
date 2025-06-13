@@ -1,12 +1,12 @@
 
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Input } from './ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 import { Order } from '../types/scheduler';
-import { Package, Scissors, Target, Search } from 'lucide-react';
+import { Package, Scissors, Target, Search, GripVertical } from 'lucide-react';
 
 interface PendingOrdersSidebarProps {
   orders: Order[];
@@ -19,6 +19,7 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
 }) => {
   const [splitQuantities, setSplitQuantities] = useState<{ [orderId: string]: number }>({});
   const [searchTerm, setSearchTerm] = useState('');
+  const [draggedOrder, setDraggedOrder] = useState<string | null>(null);
 
   // Filter orders based on search term
   const filteredOrders = orders.filter(order =>
@@ -26,20 +27,37 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
     order.styleId.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const handleSplit = (orderId: string) => {
+  const handleSplit = useCallback((orderId: string) => {
     const quantity = splitQuantities[orderId];
     if (quantity && quantity > 0) {
       onOrderSplit(orderId, quantity);
       setSplitQuantities(prev => ({ ...prev, [orderId]: 0 }));
     }
-  };
+  }, [splitQuantities, onOrderSplit]);
 
-  const handleDragStart = (e: React.DragEvent, order: Order) => {
-    console.log('Starting drag for order:', order.poNumber);
+  const handleDragStart = useCallback((e: React.DragEvent, order: Order) => {
+    console.log('🔄 Starting drag for order:', order.poNumber);
+    setDraggedOrder(order.id);
+    
+    // Set drag data
     e.dataTransfer.effectAllowed = 'move';
-    // Store the order data for the drop handler
     e.dataTransfer.setData('text/plain', JSON.stringify(order));
-  };
+    
+    // Add drag image effect
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '0.5';
+    }
+  }, []);
+
+  const handleDragEnd = useCallback((e: React.DragEvent) => {
+    console.log('🏁 Drag ended');
+    setDraggedOrder(null);
+    
+    // Reset opacity
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '1';
+    }
+  }, []);
 
   return (
     <div className="h-full flex flex-col">
@@ -65,13 +83,21 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
         {filteredOrders.map((order) => (
           <Card
             key={order.id}
-            className="cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow border-2 border-transparent hover:border-primary/20"
+            className={`cursor-grab active:cursor-grabbing hover:shadow-md transition-all duration-200 border-2 ${
+              draggedOrder === order.id 
+                ? 'border-primary bg-primary/5' 
+                : 'border-transparent hover:border-primary/20'
+            }`}
             draggable
             onDragStart={(e) => handleDragStart(e, order)}
+            onDragEnd={handleDragEnd}
           >
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-sm font-medium">{order.poNumber}</CardTitle>
+                <div className="flex items-center space-x-2">
+                  <GripVertical className="h-4 w-4 text-muted-foreground" />
+                  <CardTitle className="text-sm font-medium">{order.poNumber}</CardTitle>
+                </div>
                 <Badge variant="outline">{order.styleId}</Badge>
               </div>
             </CardHeader>
@@ -102,6 +128,7 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
               <Dialog>
                 <DialogTrigger asChild>
                   <Button variant="outline" size="sm" className="w-full">
+                    <Scissors className="h-3 w-3 mr-1" />
                     Split Order
                   </Button>
                 </DialogTrigger>
@@ -110,6 +137,15 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
                     <DialogTitle>Split Order {order.poNumber}</DialogTitle>
                   </DialogHeader>
                   <div className="space-y-4">
+                    <div className="bg-muted/50 p-3 rounded">
+                      <p className="text-sm">
+                        <strong>Current Quantity:</strong> {order.orderQuantity.toLocaleString()}
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        Enter the quantity for the new split order. The remaining quantity will stay with the original order.
+                      </p>
+                    </div>
+                    
                     <div>
                       <label className="text-sm font-medium">Split Quantity:</label>
                       <Input
@@ -122,8 +158,10 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
                           [order.id]: parseInt(e.target.value) || 0
                         }))}
                         placeholder={`Max: ${order.orderQuantity - 1}`}
+                        className="mt-1"
                       />
                     </div>
+                    
                     <Button
                       onClick={() => handleSplit(order.id)}
                       disabled={!splitQuantities[order.id] || splitQuantities[order.id] >= order.orderQuantity}
@@ -150,7 +188,7 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
           <div className="text-center py-8 text-muted-foreground">
             <Package className="h-12 w-12 mx-auto mb-4 opacity-50" />
             <p>No pending orders</p>
-            <p className="text-sm">All orders have been scheduled</p>
+            <p className="text-sm">All orders have been scheduled or sync from Google Sheets</p>
           </div>
         )}
       </div>
