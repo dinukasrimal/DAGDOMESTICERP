@@ -110,20 +110,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
       setIsLoading(true);
       try {
-        // Create date in local timezone - use the exact date selected without any timezone conversion
-        const year = selectedDate.getFullYear();
-        const month = selectedDate.getMonth();
-        const day = selectedDate.getDate();
-        
-        // Create a new date at midnight in local timezone
-        const localHolidayDate = new Date(year, month, day, 0, 0, 0, 0);
-        
-        console.log('Original selected date:', selectedDate);
-        console.log('Local holiday date being saved:', localHolidayDate);
-        console.log('Holiday date string:', localHolidayDate.toDateString());
+        console.log('Selected date for holiday:', selectedDate);
+        console.log('Holiday date string:', selectedDate.toDateString());
         
         const newHoliday = await supabaseDataService.createHoliday({
-          date: localHolidayDate,
+          date: selectedDate,
           name: newHolidayName.trim(),
           isGlobal: isGlobalHoliday,
           affectedLineIds: isGlobalHoliday ? [] : selectedLineIds
@@ -134,7 +125,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         setSelectedLineIds([]);
         toast({
           title: "Success",
-          description: `Holiday "${newHolidayName.trim()}" created for ${localHolidayDate.toDateString()}`
+          description: `Holiday "${newHolidayName.trim()}" created for ${selectedDate.toDateString()}`
         });
       } catch (error) {
         console.error('Error creating holiday:', error);
@@ -350,15 +341,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     mode="single"
                     selected={selectedDate}
                     onSelect={(date) => {
-                      if (date) {
-                        // Ensure we keep the exact date selected without timezone issues
-                        const localDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-                        console.log('Calendar date selected:', date);
-                        console.log('Setting local date:', localDate);
-                        setSelectedDate(localDate);
-                      } else {
-                        setSelectedDate(undefined);
-                      }
+                      console.log('Calendar returned date:', date);
+                      setSelectedDate(date);
                     }}
                     className="rounded-md border"
                     disabled={isLoading}

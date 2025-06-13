@@ -12,12 +12,27 @@ function Calendar({
   className,
   classNames,
   showOutsideDays = true,
+  onSelect,
   ...props
 }: CalendarProps) {
+  const handleSelect = (date: Date | undefined) => {
+    if (date && onSelect) {
+      // Create a new date in local timezone without any offset
+      const localDate = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0, 0, 0);
+      console.log('Calendar original date:', date);
+      console.log('Calendar local date created:', localDate);
+      console.log('Local date string:', localDate.toDateString());
+      onSelect(localDate);
+    } else if (onSelect) {
+      onSelect(date);
+    }
+  };
+
   return (
     <DayPicker
       showOutsideDays={showOutsideDays}
       className={cn("p-3 pointer-events-auto", className)}
+      onSelect={handleSelect}
       classNames={{
         months: "flex flex-col sm:flex-row space-y-4 sm:space-x-4 sm:space-y-0",
         month: "space-y-4",
