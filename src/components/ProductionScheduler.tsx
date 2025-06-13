@@ -49,7 +49,7 @@ export const ProductionScheduler: React.FC = () => {
   const refreshPlan = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      console.log('🔄 Refreshing plan to avoid holidays...');
+      console.log('🔄 Refreshing plan to reschedule around holidays...');
       
       // Get all scheduled orders
       const scheduledOrders = orders.filter(order => 
@@ -59,19 +59,21 @@ export const ProductionScheduler: React.FC = () => {
         order.assignedLineId
       );
 
-      // Check each scheduled order against holidays
+      // Check each scheduled order against holidays and reschedule if needed
       const ordersToReschedule: Order[] = [];
       
       for (const order of scheduledOrders) {
-        if (!order.planStartDate || !order.planEndDate) continue;
+        if (!order.planStartDate || !order.planEndDate || !order.assignedLineId) continue;
         
-        // Check if any day in the order's plan falls on a holiday
-        const orderStartTime = new Date(order.planStartDate).getTime();
-        const orderEndTime = new Date(order.planEndDate).getTime();
-        
-        const hasHolidayConflict = holidays.some(holiday => {
-          const holidayTime = new Date(holiday.date).getTime();
-          return holidayTime >= orderStartTime && holidayTime <= orderEndTime;
+        // Check if any production day falls on a holiday
+        const hasHolidayConflict = Object.keys(order.actualProduction || {}).some(dateStr => {
+          const productionQty = order.actualProduction?.[dateStr] || 0;
+          if (productionQty === 0) return false; // Skip days with no production
+          
+          const productionDate = new Date(dateStr);
+          return holidays.some(holiday => 
+            holiday.date.toDateString() === productionDate.toDateString()
+          );
         });
         
         if (hasHolidayConflict) {
@@ -84,19 +86,11 @@ export const ProductionScheduler: React.FC = () => {
         return;
       }
 
-      console.log(`📅 Found ${ordersToReschedule.length} orders with holiday conflicts, moving to pending...`);
+      console.log(`📅 Found ${ordersToReschedule.length} orders with holiday conflicts, rescheduling...`);
       
-      // Move conflicting orders back to pending
+      // Reschedule each conflicting order
       for (const order of ordersToReschedule) {
-        await updateOrderInDatabase(order.id, {
-          planStartDate: null,
-          planEndDate: null,
-          status: 'pending' as const,
-          actualProduction: {},
-          assignedLineId: undefined
-        });
-        
-        console.log(`⏪ Moved ${order.poNumber} back to pending due to holiday conflict`);
+        await rescheduleOrderAroundHolidays(order);
       }
       
       console.log('✅ Plan refresh completed successfully');
@@ -107,6 +101,64 @@ export const ProductionScheduler: React.FC = () => {
       setIsRefreshing(false);
     }
   }, [orders, holidays, updateOrderInDatabase]);
+
+  // Helper function to reschedule an order around holidays
+  const rescheduleOrderAroundHolidays = useCallback(async (order: Order) => {
+    if (!order.assignedLineId || !order.planStartDate) return;
+
+    const line = productionLines.find(l => l.id === order.assignedLineId);
+    if (!line) return;
+
+    console.log(`🔄 Rescheduling ${order.poNumber} around holidays...`);
+
+    // Calculate new production plan avoiding holidays
+    const newDailyPlan: { [date: string]: number } = {};
+    let remainingQty = order.orderQuantity;
+    let currentDate = new Date(order.planStartDate);
+    
+    // Helper function to check if a date is a holiday
+    const isHoliday = (date: Date) => {
+      return holidays.some(h => h.date.toDateString() === date.toDateString());
+    };
+
+    while (remainingQty > 0) {
+      const isWorkingDay = !isHoliday(currentDate);
+      
+      if (isWorkingDay) {
+        const dailyCapacity = line.capacity;
+        const plannedQty = Math.min(remainingQty, dailyCapacity);
+        
+        if (plannedQty > 0) {
+          newDailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
+          remainingQty -= plannedQty;
+        }
+      } else {
+        console.log(`⏭️ Skipping holiday on ${currentDate.toDateString()} for ${order.poNumber}`);
+      }
+      
+      currentDate.setDate(currentDate.getDate() + 1);
+      
+      // Safety check to prevent infinite loops
+      if (currentDate.getTime() - order.planStartDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
+        console.error('❌ Rescheduling took too long, breaking loop');
+        break;
+      }
+    }
+
+    // Calculate new end date
+    const planDates = Object.keys(newDailyPlan);
+    const newEndDate = planDates.length > 0 
+      ? new Date(Math.max(...planDates.map(d => new Date(d).getTime())))
+      : order.planEndDate;
+
+    // Update the order with new schedule
+    await updateOrderInDatabase(order.id, {
+      planEndDate: newEndDate,
+      actualProduction: newDailyPlan
+    });
+
+    console.log(`✅ Rescheduled ${order.poNumber} - new end date: ${newEndDate?.toDateString()}`);
+  }, [productionLines, holidays, updateOrderInDatabase]);
 
   const handleOrderScheduled = useCallback(async (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => {
     try {
