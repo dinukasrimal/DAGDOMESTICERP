@@ -253,6 +253,87 @@ export const useSupabaseProductionData = () => {
     }
   }, []);
 
+  // Helper function to check if a holiday affects scheduled orders
+  const checkHolidayImpact = useCallback(async (newHoliday: Holiday) => {
+    const affectedOrders: Order[] = [];
+    const holidayDate = new Date(newHoliday.date);
+    const holidayDateStr = holidayDate.toISOString().split('T')[0];
+
+    // Find orders that have production planned on the holiday date
+    orders.forEach(order => {
+      if (order.status === 'scheduled' && 
+          order.actualProduction && 
+          order.actualProduction[holidayDateStr] > 0) {
+        
+        // Check if this holiday affects this order's production line
+        const orderLineId = order.assignedLineId;
+        if (orderLineId) {
+          const isAffected = newHoliday.isGlobal || 
+                           (newHoliday.affectedLineIds && newHoliday.affectedLineIds.includes(orderLineId));
+          
+          if (isAffected) {
+            affectedOrders.push(order);
+          }
+        }
+      }
+    });
+
+    return affectedOrders;
+  }, [orders]);
+
+  // Function to reschedule orders affected by new holidays
+  const rescheduleAffectedOrders = useCallback(async (affectedOrders: Order[]) => {
+    console.log(`🔄 Rescheduling ${affectedOrders.length} orders affected by new holiday`);
+    
+    for (const order of affectedOrders) {
+      try {
+        // Move order back to pending status temporarily
+        await updateOrderInDatabase(order.id, {
+          status: 'pending',
+          planStartDate: null,
+          planEndDate: null,
+          actualProduction: {},
+          assignedLineId: undefined
+        });
+        
+        console.log(`📋 Order ${order.poNumber} moved to pending due to holiday conflict`);
+      } catch (error) {
+        console.error(`❌ Failed to reschedule order ${order.poNumber}:`, error);
+      }
+    }
+  }, []);
+
+  // Updated function to create holiday with impact checking
+  const createHolidayWithImpactCheck = useCallback(async (holidayData: Omit<Holiday, 'id'>) => {
+    try {
+      // Check which orders would be affected by this holiday
+      const potentiallyAffectedOrders = await checkHolidayImpact({
+        ...holidayData,
+        id: 'temp' // temporary ID for checking
+      });
+
+      // Create the holiday
+      const newHoliday = await supabaseDataService.createHoliday(holidayData);
+      
+      // If there are affected orders, reschedule them
+      if (potentiallyAffectedOrders.length > 0) {
+        console.log(`⚠️ Holiday "${newHoliday.name}" affects ${potentiallyAffectedOrders.length} scheduled orders`);
+        await rescheduleAffectedOrders(potentiallyAffectedOrders);
+        
+        // Reload orders to reflect the changes
+        await loadAllData();
+      }
+
+      // Update local state
+      setHolidays(prev => [...prev, newHoliday]);
+      
+      return newHoliday;
+    } catch (error) {
+      console.error('❌ Failed to create holiday:', error);
+      throw error;
+    }
+  }, [checkHolidayImpact, rescheduleAffectedOrders, loadAllData]);
+
   return {
     orders,
     productionLines,
@@ -273,6 +354,7 @@ export const useSupabaseProductionData = () => {
     createOrderInDatabase,
     deleteOrderFromDatabase,
     loadAllData,
-    clearError: () => setError(null)
+    clearError: () => setError(null),
+    createHolidayWithImpactCheck
   };
 };
