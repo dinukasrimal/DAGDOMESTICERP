@@ -31,7 +31,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const [draggedOrder, setDraggedOrder] = useState<Order | null>(null);
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
   const [showSplitDialog, setShowSplitDialog] = useState(false);
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
+  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedLineId, setSelectedLineId] = useState<string>('');
   const [selectedRampUpPlanId, setSelectedRampUpPlanId] = useState<string>('');
   const [planningMethod, setPlanningMethod] = useState<'capacity' | 'rampup'>('capacity');
@@ -42,10 +42,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   // Generate date range (next 30 days)
   const generateDateRange = () => {
     const dates = [];
-    const startDate = new Date();
+    const today = new Date();
     for (let i = 0; i < 30; i++) {
-      const date = new Date(startDate);
-      date.setDate(startDate.getDate() + i);
+      const date = new Date(today);
+      date.setDate(today.getDate() + i);
       dates.push(date);
     }
     return dates;
@@ -62,7 +62,9 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     const rampUpPlan = rampUpPlans.find(p => p.id === rampUpPlanId);
 
     while (remainingQty > 0) {
-      const isHoliday = holidays.some(h => h.date.toDateString() === currentDate.toDateString());
+      const isHoliday = holidays.some(h => 
+        h.date.toDateString() === currentDate.toDateString()
+      );
       
       if (!isHoliday) {
         let dailyCapacity = 0;
@@ -91,6 +93,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       
       currentDate.setDate(currentDate.getDate() + 1);
       
+      // Safety break to prevent infinite loops
       if (currentDate.getTime() - startDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
         break;
       }
@@ -102,8 +105,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const handleDragStart = (e: React.DragEvent, order: Order) => {
     console.log('Drag started for order:', order.poNumber);
     setDraggedOrder(order);
-    e.dataTransfer.setData('application/json', JSON.stringify(order));
     e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', order.id);
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -119,16 +122,19 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
-    setDragOverCell(null);
+    // Only clear if we're actually leaving the cell
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragOverCell(null);
+    }
   };
 
   const handleDrop = (e: React.DragEvent, lineId: string, date: Date) => {
     e.preventDefault();
-    console.log('Drop event triggered for line:', lineId, 'date:', date);
+    console.log('Drop event - Line:', lineId, 'Date:', date.toDateString());
     setDragOverCell(null);
     
     if (draggedOrder) {
-      console.log('Opening schedule dialog for order:', draggedOrder.poNumber);
+      console.log('Opening schedule dialog for:', draggedOrder.poNumber);
       setSelectedLineId(lineId);
       setSelectedDate(date);
       setShowScheduleDialog(true);
@@ -136,33 +142,45 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   };
 
   const handleScheduleConfirm = async () => {
-    if (draggedOrder && selectedDate && selectedLineId) {
-      const selectedLine = productionLines.find(l => l.id === selectedLineId);
-      if (!selectedLine) return;
+    if (!draggedOrder || !selectedDate || !selectedLineId) {
+      console.log('Missing required data for scheduling');
+      return;
+    }
 
-      console.log('Confirming schedule for order:', draggedOrder.poNumber);
+    const selectedLine = productionLines.find(l => l.id === selectedLineId);
+    if (!selectedLine) {
+      console.log('Selected line not found');
+      return;
+    }
 
-      const dailyPlan = calculateDailyProduction(
-        draggedOrder, 
-        selectedLine, 
-        selectedDate, 
-        planningMethod, 
-        selectedRampUpPlanId
-      );
+    console.log('Confirming schedule for order:', draggedOrder.poNumber);
 
-      const planDates = Object.keys(dailyPlan);
-      const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
-      
-      const updatedOrder = {
-        ...draggedOrder,
-        assignedLineId: selectedLineId
-      };
-      
+    const dailyPlan = calculateDailyProduction(
+      draggedOrder, 
+      selectedLine, 
+      selectedDate, 
+      planningMethod, 
+      selectedRampUpPlanId
+    );
+
+    const planDates = Object.keys(dailyPlan);
+    const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
+    
+    const updatedOrder = {
+      ...draggedOrder,
+      assignedLineId: selectedLineId
+    };
+    
+    try {
       await onOrderScheduled(updatedOrder, selectedDate, endDate, dailyPlan);
       setShowScheduleDialog(false);
       setDraggedOrder(null);
       setSelectedRampUpPlanId('');
       setPlanningMethod('capacity');
+      setSelectedDate(null);
+      setSelectedLineId('');
+    } catch (error) {
+      console.error('Failed to schedule order:', error);
     }
   };
 
@@ -199,13 +217,14 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       order.assignedLineId === lineId &&
       date >= order.planStartDate &&
       date <= order.planEndDate &&
+      order.actualProduction &&
       order.actualProduction[dateStr] > 0
     );
   };
 
   const getDailyPlannedQuantity = (order: Order, date: Date) => {
     const dateStr = date.toISOString().split('T')[0];
-    return order.actualProduction[dateStr] || 0;
+    return order.actualProduction?.[dateStr] || 0;
   };
 
   const getCapacityUtilization = (lineId: string, date: Date) => {
@@ -267,11 +286,12 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                 const utilizationPercent = getCapacityUtilization(line.id, date);
                 const cellKey = `${line.id}-${date.toISOString().split('T')[0]}`;
                 const isDragOver = dragOverCell === cellKey;
+                const scheduledOrders = getScheduledOrdersForLineAndDate(line.id, date);
                 
                 return (
                   <div
                     key={cellKey}
-                    className={`w-32 h-20 border-r border-border relative transition-colors ${
+                    className={`w-32 min-h-[80px] border-r border-border relative transition-all duration-200 ${
                       isHoliday(date) 
                         ? 'bg-muted/50' 
                         : isDragOver 
@@ -283,71 +303,77 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                     onDragEnter={(e) => handleDragEnter(e, line.id, date)}
                     onDragLeave={handleDragLeave}
                   >
-                    {/* Capacity utilization visual indicator */}
+                    {/* Capacity utilization bar */}
                     {utilizationPercent > 0 && (
                       <div 
                         className="absolute bottom-0 left-0 right-0 bg-primary/30 transition-all duration-300"
-                        style={{ height: `${utilizationPercent}%` }}
+                        style={{ height: `${Math.min(utilizationPercent, 100)}%` }}
                       />
                     )}
                     
-                    {!isHoliday(date) && !isDragOver && (
+                    {/* Drop zone indicator */}
+                    {!isHoliday(date) && !scheduledOrders.length && (
                       <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
                         <Plus className="h-4 w-4 text-muted-foreground" />
                       </div>
                     )}
                     
+                    {/* Drag over indicator */}
                     {isDragOver && (
                       <div className="absolute inset-0 flex items-center justify-center">
-                        <div className="text-xs font-medium text-primary">Drop Here</div>
+                        <div className="text-xs font-medium text-primary bg-primary/10 px-2 py-1 rounded">
+                          Drop Here
+                        </div>
                       </div>
                     )}
                     
-                    {/* Render scheduled orders */}
-                    {getScheduledOrdersForLineAndDate(line.id, date).map((scheduledOrder) => {
-                      const dailyQty = getDailyPlannedQuantity(scheduledOrder, date);
-                      return (
-                        <div 
-                          key={scheduledOrder.id} 
-                          className="absolute inset-1 bg-primary/20 rounded text-xs p-1 text-primary group cursor-pointer hover:bg-primary/30"
-                          draggable
-                          onDragStart={(e) => handleDragStart(e, scheduledOrder)}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="truncate">{scheduledOrder.poNumber}</span>
-                            <div className="opacity-0 group-hover:opacity-100 flex space-x-1">
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-4 w-4 p-0"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleMoveBackToPending(scheduledOrder);
-                                }}
-                                title="Move back to pending"
-                              >
-                                <ArrowLeft className="h-3 w-3" />
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-4 w-4 p-0"
-                                onClick={(e) => handleSplitOrder(scheduledOrder, e)}
-                                title="Split order"
-                              >
-                                <Scissors className="h-3 w-3" />
-                              </Button>
+                    {/* Scheduled orders */}
+                    <div className="p-1 space-y-1">
+                      {scheduledOrders.map((scheduledOrder) => {
+                        const dailyQty = getDailyPlannedQuantity(scheduledOrder, date);
+                        return (
+                          <div 
+                            key={scheduledOrder.id} 
+                            className="bg-primary/20 rounded text-xs p-1 text-primary group cursor-pointer hover:bg-primary/30 transition-colors"
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, scheduledOrder)}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="truncate text-xs">{scheduledOrder.poNumber}</span>
+                              <div className="opacity-0 group-hover:opacity-100 flex space-x-1">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-4 w-4 p-0"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleMoveBackToPending(scheduledOrder);
+                                  }}
+                                  title="Move back to pending"
+                                >
+                                  <ArrowLeft className="h-3 w-3" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-4 w-4 p-0"
+                                  onClick={(e) => handleSplitOrder(scheduledOrder, e)}
+                                  title="Split order"
+                                >
+                                  <Scissors className="h-3 w-3" />
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="text-xs opacity-60">
+                              Qty: {dailyQty.toLocaleString()}
+                            </div>
+                            <div className="text-xs opacity-60">
+                              {utilizationPercent.toFixed(0)}% used
                             </div>
                           </div>
-                          <div className="text-xs opacity-60">
-                            Qty: {dailyQty.toLocaleString()}
-                          </div>
-                          <div className="text-xs opacity-60">
-                            {utilizationPercent.toFixed(0)}% used
-                          </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
                 );
               })}
@@ -427,7 +453,12 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                 </Button>
                 <Button
                   variant="outline"
-                  onClick={() => setShowScheduleDialog(false)}
+                  onClick={() => {
+                    setShowScheduleDialog(false);
+                    setDraggedOrder(null);
+                    setSelectedDate(null);
+                    setSelectedLineId('');
+                  }}
                   className="flex-1"
                 >
                   Cancel
@@ -478,7 +509,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                 </Button>
                 <Button
                   variant="outline"
-                  onClick={() => setShowSplitDialog(false)}
+                  onClick={() => {
+                    setShowSplitDialog(false);
+                    setOrderToSplit(null);
+                    setSplitQuantity(0);
+                  }}
                   className="flex-1"
                 >
                   Cancel
