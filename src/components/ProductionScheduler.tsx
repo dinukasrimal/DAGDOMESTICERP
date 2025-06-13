@@ -46,21 +46,24 @@ export const ProductionScheduler: React.FC = () => {
 
   const handleOrderScheduled = useCallback(async (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => {
     try {
+      console.log('Scheduling order:', order.poNumber, 'from', startDate, 'to', endDate);
+      console.log('Daily plan:', dailyPlan);
+      
       // Update the order with schedule dates, daily production plan, and line assignment
-      const updatedOrder = {
-        ...order,
+      const updatedOrderData: Partial<Order> = {
         planStartDate: startDate,
         planEndDate: endDate,
         status: 'scheduled' as const,
         actualProduction: dailyPlan,
-        assignedLineId: order.assignedLineId // Preserve the line assignment
+        assignedLineId: order.assignedLineId
       };
 
       // Update in database
-      await updateOrderInDatabase(order.id, updatedOrder);
+      await updateOrderInDatabase(order.id, updatedOrderData);
 
       // Update the schedule in Google Sheets if configured
       if (isGoogleSheetsConfigured) {
+        const updatedOrder = { ...order, ...updatedOrderData };
         await updateOrderSchedule(updatedOrder, startDate, endDate);
       }
 
@@ -72,12 +75,14 @@ export const ProductionScheduler: React.FC = () => {
 
   const handleOrderMovedToPending = useCallback(async (order: Order) => {
     try {
-      const updatedOrder = {
+      console.log('Moving order back to pending:', order.poNumber);
+      
+      const updatedOrder: Partial<Order> = {
         planStartDate: null,
         planEndDate: null,
         status: 'pending' as const,
         actualProduction: {},
-        assignedLineId: undefined // Clear the line assignment when moving back to pending
+        assignedLineId: undefined
       };
 
       await updateOrderInDatabase(order.id, updatedOrder);
@@ -87,7 +92,6 @@ export const ProductionScheduler: React.FC = () => {
     }
   }, [updateOrderInDatabase]);
 
-  // Completely redone split functionality with proper numbering
   const handleOrderSplit = useCallback(async (orderId: string, splitQuantity: number) => {
     try {
       const orderToSplit = orders.find(o => o.id === orderId);
