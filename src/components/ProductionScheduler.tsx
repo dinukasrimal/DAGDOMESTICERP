@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback } from 'react';
 import { useSupabaseProductionData } from '../hooks/useSupabaseProductionData';
 import { SchedulingBoard } from './SchedulingBoard';
@@ -6,12 +5,15 @@ import { PendingOrdersSidebar } from './PendingOrdersSidebar';
 import { AdminPanel } from './AdminPanel';
 import { GoogleSheetsConfig } from './GoogleSheetsConfig';
 import { Header } from './Header';
+import { Button } from './ui/button';
+import { RefreshCw } from 'lucide-react';
 import { TooltipProvider } from './ui/tooltip';
 import { Order } from '../types/scheduler';
 
 export const ProductionScheduler: React.FC = () => {
   const [userRole, setUserRole] = useState<'planner' | 'superuser'>('planner');
   const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   
   const {
     orders,
@@ -43,6 +45,68 @@ export const ProductionScheduler: React.FC = () => {
       setShowAdminPanel(false);
     }
   };
+
+  const refreshPlan = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      console.log('🔄 Refreshing plan to avoid holidays...');
+      
+      // Get all scheduled orders
+      const scheduledOrders = orders.filter(order => 
+        order.status === 'scheduled' && 
+        order.planStartDate && 
+        order.planEndDate &&
+        order.assignedLineId
+      );
+
+      // Check each scheduled order against holidays
+      const ordersToReschedule: Order[] = [];
+      
+      for (const order of scheduledOrders) {
+        if (!order.planStartDate || !order.planEndDate) continue;
+        
+        // Check if any day in the order's plan falls on a holiday
+        const orderStartTime = new Date(order.planStartDate).getTime();
+        const orderEndTime = new Date(order.planEndDate).getTime();
+        
+        const hasHolidayConflict = holidays.some(holiday => {
+          const holidayTime = new Date(holiday.date).getTime();
+          return holidayTime >= orderStartTime && holidayTime <= orderEndTime;
+        });
+        
+        if (hasHolidayConflict) {
+          ordersToReschedule.push(order);
+        }
+      }
+
+      if (ordersToReschedule.length === 0) {
+        console.log('✅ No orders need rescheduling - no holiday conflicts found');
+        return;
+      }
+
+      console.log(`📅 Found ${ordersToReschedule.length} orders with holiday conflicts, moving to pending...`);
+      
+      // Move conflicting orders back to pending
+      for (const order of ordersToReschedule) {
+        await updateOrderInDatabase(order.id, {
+          planStartDate: null,
+          planEndDate: null,
+          status: 'pending' as const,
+          actualProduction: {},
+          assignedLineId: undefined
+        });
+        
+        console.log(`⏪ Moved ${order.poNumber} back to pending due to holiday conflict`);
+      }
+      
+      console.log('✅ Plan refresh completed successfully');
+      
+    } catch (error) {
+      console.error('❌ Error refreshing plan:', error);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [orders, holidays, updateOrderInDatabase]);
 
   const handleOrderScheduled = useCallback(async (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => {
     try {
@@ -205,7 +269,7 @@ export const ProductionScheduler: React.FC = () => {
         <div className="flex-1 flex overflow-hidden">
           {/* Simple sidebar - always visible */}
           <div className="w-80 border-r border-border bg-card flex flex-col">
-            <div className="p-4 border-b border-border">
+            <div className="p-4 border-b border-border space-y-4">
               <GoogleSheetsConfig
                 isLoading={isLoading}
                 error={error}
@@ -214,6 +278,17 @@ export const ProductionScheduler: React.FC = () => {
                 onConfigure={configureGoogleSheets}
                 onClearError={clearError}
               />
+              
+              {/* Refresh Plan Button */}
+              <Button
+                onClick={refreshPlan}
+                disabled={isRefreshing || isLoading}
+                className="w-full"
+                variant="outline"
+              >
+                <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
+                {isRefreshing ? 'Refreshing Plan...' : 'Refresh Plan'}
+              </Button>
             </div>
             
             <div className="flex-1 overflow-hidden">
