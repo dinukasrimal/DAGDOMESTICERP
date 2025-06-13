@@ -57,7 +57,7 @@ export class DataService {
     // Check if this order has schedule dates - if so, it's already scheduled
     const hasScheduleDates = sheetOrder.planStartDate && sheetOrder.planEndDate;
     
-    console.log(`🔄 Converting sheet order: ${sheetOrder.poNumber} (Qty: ${sheetOrder.qty}, SMV: ${sheetOrder.smv})`);
+    console.log(`🔄 Converting sheet order: ${sheetOrder.poNumber} (Qty: ${sheetOrder.qty}, SMV: ${sheetOrder.smv}, Cut: ${sheetOrder.cutQuantity || 0}, Issue: ${sheetOrder.issueQuantity || 0})`);
     
     return {
       id: uniqueId,
@@ -66,8 +66,8 @@ export class DataService {
       orderQuantity: sheetOrder.qty,
       smv: sheetOrder.smv,
       moCount: sheetOrder.moCount,
-      cutQuantity: sheetOrder.qty, // Default to same as order quantity
-      issueQuantity: sheetOrder.qty, // Default to same as order quantity
+      cutQuantity: sheetOrder.cutQuantity || 0,
+      issueQuantity: sheetOrder.issueQuantity || 0,
       status: hasScheduleDates ? 'scheduled' : 'pending',
       planStartDate: sheetOrder.planStartDate ? new Date(sheetOrder.planStartDate) : null,
       planEndDate: sheetOrder.planEndDate ? new Date(sheetOrder.planEndDate) : null,
@@ -75,7 +75,7 @@ export class DataService {
     };
   }
 
-  async fetchOrdersFromSheet(): Promise<Order[]> {
+  async fetchOrdersFromSheet(existingOrders: Order[] = []): Promise<Order[]> {
     if (!this.googleSheetsService) {
       throw new Error('Google Sheets service not initialized');
     }
@@ -86,16 +86,70 @@ export class DataService {
       
       if (!sheetOrders || sheetOrders.length === 0) {
         console.log('📭 No orders found in Google Sheets');
-        return [];
+        return existingOrders;
       }
       
       console.log(`📋 Processing ${sheetOrders.length} orders from sheet`);
-      this.orders = sheetOrders.map(order => this.convertSheetOrderToOrder(order));
+      
+      // Create a map of existing orders by PO number for quick lookup
+      const existingOrdersMap = new Map<string, Order>();
+      existingOrders.forEach(order => {
+        existingOrdersMap.set(order.poNumber, order);
+      });
+      
+      const newOrders: Order[] = [];
+      let duplicateCount = 0;
+      let scheduledCount = 0;
+      
+      for (const sheetOrder of sheetOrders) {
+        const existingOrder = existingOrdersMap.get(sheetOrder.poNumber);
+        
+        if (existingOrder) {
+          // Order already exists - check if it's scheduled/assigned
+          if (existingOrder.status === 'scheduled' || existingOrder.assignedLineId) {
+            console.log(`⏭️ Skipping ${sheetOrder.poNumber} - already scheduled/assigned`);
+            scheduledCount++;
+            // Keep the existing scheduled order as-is
+            newOrders.push(existingOrder);
+          } else {
+            console.log(`🔄 Updating ${sheetOrder.poNumber} - was pending, updating with sheet data`);
+            // Update the pending order with fresh sheet data
+            const updatedOrder = {
+              ...existingOrder,
+              styleId: sheetOrder.styleName,
+              orderQuantity: sheetOrder.qty,
+              smv: sheetOrder.smv,
+              moCount: sheetOrder.moCount,
+              cutQuantity: sheetOrder.cutQuantity || 0,
+              issueQuantity: sheetOrder.issueQuantity || 0
+            };
+            newOrders.push(updatedOrder);
+          }
+        } else {
+          // New order from sheet
+          console.log(`➕ Adding new order: ${sheetOrder.poNumber}`);
+          const newOrder = this.convertSheetOrderToOrder(sheetOrder);
+          newOrders.push(newOrder);
+        }
+      }
+      
+      // Add any existing orders that weren't found in the sheet (they might be manually created)
+      existingOrders.forEach(existingOrder => {
+        if (!sheetOrders.some(sheetOrder => sheetOrder.poNumber === existingOrder.poNumber)) {
+          console.log(`📋 Keeping existing order not found in sheet: ${existingOrder.poNumber}`);
+          newOrders.push(existingOrder);
+        }
+      });
+      
+      this.orders = newOrders;
       
       const pendingCount = this.orders.filter(o => o.status === 'pending').length;
-      const scheduledCount = this.orders.filter(o => o.status === 'scheduled').length;
+      const totalScheduledCount = this.orders.filter(o => o.status === 'scheduled').length;
       
-      console.log(`✅ Converted ${this.orders.length} orders: ${pendingCount} pending, ${scheduledCount} scheduled`);
+      console.log(`✅ Sync complete: ${this.orders.length} total orders`);
+      console.log(`📊 Status: ${pendingCount} pending, ${totalScheduledCount} scheduled`);
+      console.log(`🔄 ${scheduledCount} scheduled orders preserved, ${duplicateCount} duplicates skipped`);
+      
       return this.orders;
     } catch (error) {
       console.error('❌ Error fetching orders from sheet:', error);

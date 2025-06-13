@@ -1,4 +1,3 @@
-
 import { useState, useEffect, useCallback } from 'react';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { supabaseDataService } from '../services/supabaseDataService';
@@ -75,7 +74,11 @@ export const useSupabaseProductionData = () => {
           moCount: order.moCount,
           cutQuantity: order.cutQuantity,
           issueQuantity: order.issueQuantity,
-          status: order.status
+          status: order.status,
+          planStartDate: order.planStartDate,
+          planEndDate: order.planEndDate,
+          actualProduction: order.actualProduction || {},
+          assignedLineId: order.assignedLineId
         });
       } else {
         console.log(`➕ Creating new order: ${order.poNumber}`);
@@ -90,7 +93,8 @@ export const useSupabaseProductionData = () => {
           status: order.status,
           planStartDate: order.planStartDate,
           planEndDate: order.planEndDate,
-          actualProduction: order.actualProduction || {}
+          actualProduction: order.actualProduction || {},
+          assignedLineId: order.assignedLineId
         });
       }
     } catch (error) {
@@ -110,12 +114,15 @@ export const useSupabaseProductionData = () => {
 
     try {
       console.log('🔄 Starting to fetch orders from Google Sheets...');
-      const fetchedOrders = await dataService.fetchOrdersFromSheet();
-      console.log(`📥 Fetched ${fetchedOrders.length} orders from Google Sheets`);
+      
+      // Pass current orders to preserve scheduled ones
+      const currentOrders = await supabaseDataService.getOrders();
+      const fetchedOrders = await dataService.fetchOrdersFromSheet(currentOrders);
+      
+      console.log(`📥 Processed ${fetchedOrders.length} orders from Google Sheets sync`);
       
       if (fetchedOrders.length === 0) {
-        console.log('⚠️ No orders fetched from Google Sheets');
-        setOrders([]);
+        console.log('⚠️ No orders processed from Google Sheets sync');
         return;
       }
 
