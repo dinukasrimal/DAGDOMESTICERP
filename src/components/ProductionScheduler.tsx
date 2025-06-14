@@ -5,8 +5,9 @@ import { PendingOrdersSidebar } from './PendingOrdersSidebar';
 import { AdminPanel } from './AdminPanel';
 import { GoogleSheetsConfig } from './GoogleSheetsConfig';
 import { Header } from './Header';
+import { LineFilter } from './LineFilter';
 import { Button } from './ui/button';
-import { RefreshCw, FileText, ChevronDown } from 'lucide-react';
+import { RefreshCw, FileText } from 'lucide-react';
 import { TooltipProvider } from './ui/tooltip';
 import { Order, ProductionLine } from '../types/scheduler';
 import { ReportDialog } from './reports/ReportDialog';
@@ -16,15 +17,6 @@ import { LinePlanReportDialog } from './reports/LinePlanReportDialog';
 import { downloadElementAsPdf } from '../lib/pdfUtils';
 import { toast } from "@/hooks/use-toast";
 import { dataService } from "../services/dataService";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuCheckboxItem,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "./ui/dropdown-menu";
 
 export const ProductionScheduler: React.FC = () => {
   const [userRole, setUserRole] = useState<'planner' | 'superuser'>('planner');
@@ -476,52 +468,15 @@ export const ProductionScheduler: React.FC = () => {
           onRoleChange={handleRoleChange}
         />
         
-        {/* Line Filter Dropdown */}
+        {/* Line Filter */}
         <div className="p-4 border-b border-border bg-card">
-          <div className="flex items-center gap-4">
-            <label className="text-sm font-medium text-muted-foreground">
-              Show Lines:
-            </label>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" className="w-64 justify-between">
-                  {selectedLineIds.length === productionLines.length
-                    ? "All Lines Selected"
-                    : selectedLineIds.length === 0
-                    ? "No Lines Selected"
-                    : `${selectedLineIds.length} Lines Selected`
-                  }
-                  <ChevronDown className="h-4 w-4 ml-2" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent className="w-64 max-h-80 overflow-y-auto">
-                <DropdownMenuLabel>Select Production Lines</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={handleSelectAll} className="cursor-pointer">
-                  Select All
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={handleDeselectAll} className="cursor-pointer">
-                  Deselect All
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                {productionLines.map(line => (
-                  <DropdownMenuCheckboxItem
-                    key={line.id}
-                    checked={selectedLineIds.includes(line.id)}
-                    onCheckedChange={(checked) => handleLineToggle(line.id, checked)}
-                  >
-                    {line.name}
-                  </DropdownMenuCheckboxItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-            <span className="text-xs text-muted-foreground">
-              {selectedLineIds.length === productionLines.length 
-                ? `Showing all ${productionLines.length} lines`
-                : `Showing ${selectedLineIds.length} of ${productionLines.length} lines`
-              }
-            </span>
-          </div>
+          <LineFilter
+            productionLines={productionLines}
+            selectedLineIds={selectedLineIds}
+            onLineToggle={handleLineToggle}
+            onSelectAll={handleSelectAll}
+            onDeselectAll={handleDeselectAll}
+          />
         </div>
         
         <div className="flex-1 flex overflow-hidden">
