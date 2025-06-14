@@ -60,7 +60,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const [dragHighlight, setDragHighlight] = useState<string | null>(null);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
-  const [multiSelectExplicit, setMultiSelectExplicit] = useState(false);
 
   // Generate date range (next 30 days)
   const dates = Array.from({ length: 30 }, (_, i) => {
@@ -182,29 +181,23 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   }, [isHoliday, planningMethod, selectedRampUpPlanId, rampUpPlans, getAvailableCapacity]);
 
   // Multi-select functionality
-  const handleOrderClick = useCallback(
-    (e: React.MouseEvent, orderId: string) => {
-      if (multiSelectExplicit) {
-        // In multi mode, toggle selection
-        setIsMultiSelectMode(true);
-        setSelectedOrders((prev) => {
-          const newSet = new Set(prev);
-          if (newSet.has(orderId)) {
-            newSet.delete(orderId);
-          } else {
-            newSet.add(orderId);
-          }
-          return newSet;
-        });
-        return;
-      }
-      // When not in multi-mode, any click always clears & sets only this order
+  const handleOrderClick = useCallback((e: React.MouseEvent, orderId: string) => {
+    if (e.ctrlKey || e.metaKey) {
+      setIsMultiSelectMode(true);
+      setSelectedOrders(prev => {
+        const newSet = new Set(prev);
+        if (newSet.has(orderId)) {
+          newSet.delete(orderId);
+        } else {
+          newSet.add(orderId);
+        }
+        return newSet;
+      });
+    } else if (!selectedOrders.has(orderId)) {
       setSelectedOrders(new Set());
       setIsMultiSelectMode(false);
-      setMultiSelectExplicit(false);
-    },
-    [multiSelectExplicit]
-  );
+    }
+  }, [selectedOrders]);
 
   // --- Drag & Drop ---
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -226,72 +219,36 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, []);
 
-  const handleDrop = useCallback(
-    (e: React.DragEvent, lineId: string, date: Date) => {
-      e.preventDefault(); setDragHighlight(null);
-      if (isHoliday(date)) return;
-      try {
-        let orderData: any = null;
-        let dragType = 'single';
-        try {
-          const json = JSON.parse(e.dataTransfer.getData('application/json'));
-          if (json.type === 'multiple-orders' && Array.isArray(json.ids)) {
-            dragType = 'multiple';
-            orderData = { ids: json.ids };
-          } else if (json.type === 'single-order' && json.id && json.poNumber) {
-            dragType = 'single';
-            orderData = json;
-          }
-        } catch {
-          // fallback for single
-          const plain = e.dataTransfer.getData('text/plain');
-          if (plain) orderData = JSON.parse(plain);
+  const handleDrop = useCallback((e: React.DragEvent, lineId: string, date: Date) => {
+    e.preventDefault(); setDragHighlight(null);
+    if (isHoliday(date)) return;
+    try {
+      const orderData = JSON.parse(e.dataTransfer.getData('text/plain'));
+      if (orderData && orderData.id && orderData.poNumber) {
+        const overlappingOrders = getOverlappingOrders(orderData, lineId, date);
+        const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
+        if (overlappingOrders.length > 0) {
+          setOverlapDialog({
+            isOpen: true,
+            newOrder: orderData,
+            overlappingOrders,
+            targetDate: date,
+            targetLine: lineName,
+            originalTargetDate: date
+          });
+        } else {
+          setScheduleDialog({
+            isOpen: true,
+            order: orderData,
+            lineId,
+            startDate: date
+          });
         }
-  
-        if (dragType === 'multiple' && orderData?.ids) {
-          // Only allow batch move if all are scheduled, same line
-          const draggedOrders = orders.filter(o => orderData.ids.includes(o.id));
-          const sameLine = draggedOrders.every(o => o.status === 'scheduled' && o.assignedLineId === lineId);
-          if (draggedOrders.length > 1 && sameLine) {
-            setScheduleDialog({
-              isOpen: true,
-              order: draggedOrders[0],
-              lineId,
-              startDate: date,
-              batchOrderIds: draggedOrders.map(o => o.id)
-            } as any);
-          }
-          // Otherwise do nothing
-          return;
-        }
-  
-        if (orderData && orderData.id && orderData.poNumber) {
-          const overlappingOrders = getOverlappingOrders(orderData, lineId, date);
-          const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
-          if (overlappingOrders.length > 0) {
-            setOverlapDialog({
-              isOpen: true,
-              newOrder: orderData,
-              overlappingOrders,
-              targetDate: date,
-              targetLine: lineName,
-              originalTargetDate: date
-            });
-          } else {
-            setScheduleDialog({
-              isOpen: true,
-              order: orderData,
-              lineId,
-              startDate: date
-            });
-          }
-        }
-      } catch (error) {
-        console.error('❌ Failed to parse dropped order data:', error);
       }
-    },
-    [isHoliday, getOverlappingOrders, orders, productionLines]
-  );
+    } catch (error) {
+      console.error('❌ Failed to parse dropped order data:', error);
+    }
+  }, [isHoliday, getOverlappingOrders, productionLines, isMultiSelectMode, selectedOrders]);
   
   // --- Revised "before" Overlap Handling Workflow ---
   // 1. onConfirm(before): move all overlapping orders to pending, only schedule the new order first.
@@ -320,7 +277,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         lineId,
         startDate: originalTargetDate // this is the "before" drop date!
       });
-      // Step 3: queue up magnetically rescheduling the overlappers after new planEndDate
+      // Step 3: queue up magnetically rescheduling the overlappers after newOrder
       setPendingReschedule({ toSchedule: overlappingOrders, afterOrderId: newOrder.id, lineId });
     } else {
       // "After" logic: move new order after overlappers' latest end date,
@@ -409,47 +366,14 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   };
 
   const handleScheduleConfirm = useCallback(async () => {
-    const { order, lineId, startDate, fillFirstDay, batchOrderIds } = scheduleDialog as any;
+    const { order, lineId, startDate, fillFirstDay } = scheduleDialog as any;
     if (!order || !lineId || !startDate) return;
     const selectedLine = productionLines.find(l => l.id === lineId); if (!selectedLine) return;
     if (planningMethod === 'rampup' && !selectedRampUpPlanId) return;
     try {
-      if (batchOrderIds && batchOrderIds.length > 1) {
-        // batch logic: move all as block one after the next, anchored at startDate
-        let anchor = new Date(startDate);
-        for (const oid of batchOrderIds) {
-          const batchOrder = orders.find(o => o.id === oid);
-          if (!batchOrder) continue;
-          let plan: { [date: string]: number };
-          if (planningMethod === 'capacity') {
-            plan = getContiguousProductionPlan(
-              batchOrder.orderQuantity,
-              selectedLine.capacity,
-              anchor,
-              isHoliday,
-              fillFirstDay || 0
-            );
-          } else {
-            plan = calculateDailyProductionWithSharing(batchOrder, selectedLine, anchor);
-          }
-          const planDates = Object.keys(plan);
-          const batchStart = planDates.length > 0 ? new Date(planDates[0]) : new Date(anchor);
-          const batchEnd = planDates.length > 0 ? new Date(planDates[planDates.length - 1]) : new Date(anchor);
-          const movedOrder = { ...batchOrder, assignedLineId: lineId };
-          await onOrderScheduled(movedOrder, batchStart, batchEnd, plan);
-          anchor = new Date(batchEnd);
-          anchor.setDate(anchor.getDate() + 1); // next batch starts after previous finish
-        }
-        // close dialog and clear selection
-        setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
-        setSelectedOrders(new Set());
-        setIsMultiSelectMode(false);
-        setMultiSelectExplicit(false);
-        return;
-      }
-      // ... original single order schedule logic unchanged ...
       let dailyPlan: { [date: string]: number };
       if (planningMethod === 'capacity') {
+        // Pass fillFirstDay to getContiguousProductionPlan if it exists
         dailyPlan = getContiguousProductionPlan(
           order.orderQuantity,
           selectedLine.capacity,
@@ -465,14 +389,57 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const updatedOrder = { ...order, assignedLineId: lineId };
       await onOrderScheduled(updatedOrder, startDate, endDate, dailyPlan);
       setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
-      setPlanningMethod('capacity');
-      setSelectedRampUpPlanId('');
+      setPlanningMethod('capacity'); setSelectedRampUpPlanId('');
+
+      if (pendingReschedule.toSchedule.length > 0 && pendingReschedule.afterOrderId === order.id && pendingReschedule.lineId) {
+        let newPlanEnd: Date | null = endDate;
+        let magnetDate = new Date(newPlanEnd);
+        const newOrderLastDayStr = magnetDate.toISOString().split('T')[0];
+        const lineObj = productionLines.find(l => l.id === pendingReschedule.lineId);
+        let lastDayAvailCapacity = lineObj ? lineObj.capacity - (dailyPlan[newOrderLastDayStr] || 0) : 0;
+
+        for (const [i, next] of pendingReschedule.toSchedule.entries()) {
+          if (!lineObj) continue;
+
+          let qty = next.orderQuantity;
+          let plan: { [date: string]: number } = {};
+
+          if (i === 0 && lastDayAvailCapacity > 0) {
+            plan = getContiguousProductionPlan(
+              qty, lineObj.capacity,
+              magnetDate,
+              (d) => holidays.some(h => h.date.toDateString() === d.toDateString()),
+              lastDayAvailCapacity
+            );
+          } else {
+            const anchorNextDay = new Date(magnetDate);
+            if (!(i === 0 && lastDayAvailCapacity > 0)) {
+              anchorNextDay.setDate(anchorNextDay.getDate() + 1);
+            }
+            plan = getContiguousProductionPlan(
+              qty, lineObj.capacity,
+              anchorNextDay,
+              (d) => holidays.some(h => h.date.toDateString() === d.toDateString()),
+              0
+            );
+          }
+
+          const planDays = Object.keys(plan);
+          const firstPlanDay = planDays.length > 0 ? new Date(planDays[0]) : new Date(magnetDate);
+          const lastPlanDay = planDays.length > 0 ? new Date(planDays[planDays.length - 1]) : new Date(magnetDate);
+          const nextOrder = { ...next, assignedLineId: lineObj.id };
+          await onOrderScheduled(nextOrder, firstPlanDay, lastPlanDay, plan);
+
+          magnetDate = new Date(lastPlanDay);
+        }
+        setPendingReschedule({ toSchedule: [], afterOrderId: null, lineId: null });
+      }
     } catch (error) {
       console.error('❌ Failed to schedule order:', error);
     }
   }, [
     scheduleDialog, productionLines, planningMethod, selectedRampUpPlanId,
-    calculateDailyProductionWithSharing, onOrderScheduled, orders, getContiguousProductionPlan, isHoliday
+    calculateDailyProductionWithSharing, onOrderScheduled, pendingReschedule, holidays, getContiguousProductionPlan, isHoliday
   ]);
   
   const handleDialogClose = useCallback(() => {
@@ -481,57 +448,25 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     setSelectedRampUpPlanId('');
   }, []);
 
-  const handleOrderDragStart = useCallback(
-    (e: React.DragEvent, order: Order) => {
-      // Allow multi-drag ONLY if explicit multi-select & all selected orders are in the same line
-      let dragOrderIds: string[] = [order.id];
-      if (multiSelectExplicit && selectedOrders.size > 1) {
-        // Only allow drag if all selected are in the same assignedLineId
-        const selected = orders.filter(o => selectedOrders.has(o.id));
-        const sameLine = selected.every(o => o.assignedLineId && o.assignedLineId === order.assignedLineId);
-        if (sameLine) {
-          dragOrderIds = [...selectedOrders];
-        } else {
-          dragOrderIds = [order.id]; // fallback to just one
-        }
-      }
-      // If not in multi-select, always single drag
-      e.dataTransfer.effectAllowed = 'move';
-      if (dragOrderIds.length > 1) {
-        e.dataTransfer.setData(
-          'application/json',
-          JSON.stringify({
-            type: 'multiple-orders',
-            ids: dragOrderIds
-          })
-        );
-      } else {
-        e.dataTransfer.setData(
-          'application/json',
-          JSON.stringify({
-            ...order,
-            type: 'single-order'
-          })
-        );
-      }
-      if (e.currentTarget instanceof HTMLElement) {
-        e.currentTarget.style.opacity = '0.5';
-      }
-    },
-    [orders, selectedOrders, multiSelectExplicit]
-  );
+  const handleOrderDragStart = useCallback((e: React.DragEvent, order: Order) => {
+    console.log('🔄 Starting drag for scheduled order:', order.poNumber);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', JSON.stringify(order));
+    
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '0.5';
+    }
+  }, []);
 
-  const handleOrderDragEnd = useCallback(
-    (e: React.DragEvent) => {
-      if (e.currentTarget instanceof HTMLElement) {
-        e.currentTarget.style.opacity = '1';
-      }
-      setSelectedOrders(new Set());
-      setIsMultiSelectMode(false);
-      setMultiSelectExplicit(false);
-    },
-    []
-  );
+  const handleOrderDragEnd = useCallback((e: React.DragEvent) => {
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '1';
+    }
+    
+    // Clear selection after drag
+    setSelectedOrders(new Set());
+    setIsMultiSelectMode(false);
+  }, []);
 
   // Helper function to check if order should be highlighted in red
   const shouldHighlightRed = useCallback((order: Order, date: Date) => {
@@ -556,41 +491,25 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   return (
     <div className="flex-1 overflow-auto bg-background">
-      {/* Multi-select toggle */}
-      <div className="sticky top-0 z-30 bg-background border-b border-border p-2 flex items-center">
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={multiSelectExplicit}
-            onChange={e => {
-              setMultiSelectExplicit(e.target.checked);
-              setIsMultiSelectMode(e.target.checked);
-              if (!e.target.checked) setSelectedOrders(new Set());
-            }}
-            className="mr-2"
-          />
-          Multiple Order Select
-        </label>
-        {isMultiSelectMode && selectedOrders.size > 0 && (
-          <span className="ml-4 text-blue-700 font-medium">
-            {selectedOrders.size} orders selected
+      {/* Multi-select info bar */}
+      {isMultiSelectMode && selectedOrders.size > 0 && (
+        <div className="sticky top-0 z-20 bg-blue-100 border-b border-blue-300 p-2 text-center">
+          <span className="text-blue-800 font-medium">
+            {selectedOrders.size} orders selected - Drag to move together
           </span>
-        )}
-        {(isMultiSelectMode || multiSelectExplicit) && (
           <Button
             size="sm"
             variant="ghost"
-            className="ml-4 text-blue-500"
+            className="ml-2 text-blue-800"
             onClick={() => {
               setSelectedOrders(new Set());
               setIsMultiSelectMode(false);
-              setMultiSelectExplicit(false);
             }}
           >
             Clear Selection
           </Button>
-        )}
-      </div>
+        </div>
+      )}
 
       <div className="min-w-max">
         {/* Header with dates */}
