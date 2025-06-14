@@ -5,8 +5,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Label } from './ui/label';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
-import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical } from 'lucide-react';
+import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown } from 'lucide-react';
 import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
+import { downloadElementAsPdf } from '../lib/pdfUtils';
 
 interface SchedulingBoardProps {
   orders: Order[];
@@ -489,8 +490,83 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
            date.toDateString() === order.planStartDate.toDateString();
   }, []);
 
+  // New handler to download plan PDF for a single line
+  const handleDownloadLinePdf = async (lineId: string, lineName: string) => {
+    const reportId = `line-pdf-report-${lineId}`;
+    const fileName = `${lineName.replace(/\s+/g, '_')}_Production_Plan`;
+    await downloadElementAsPdf(reportId, fileName);
+  };
+
+  // Helper: Get all scheduled orders (distinct by orderId) for a line
+  const getScheduledOrdersForLine = (lineId: string) => {
+    return orders
+      .filter(order => order.status === 'scheduled' && order.assignedLineId === lineId)
+      .sort((a, b) =>
+        (a.planStartDate?.getTime() || 0) - (b.planStartDate?.getTime() || 0)
+      );
+  };
+
   return (
     <div className="flex-1 overflow-auto bg-background">
+      {/* PDF REPORTS (hidden, for each line) */}
+      {productionLines.map(line => {
+        const scheduledOrders = getScheduledOrdersForLine(line.id);
+        if (scheduledOrders.length === 0) return null;
+        return (
+          <div // This is the printable area. It's visually hidden but rendered in the DOM.
+            id={`line-pdf-report-${line.id}`}
+            key={`printable-${line.id}`}
+            style={{ position: 'absolute', left: -9999, top: 0, width: '800px', background: '#fff', color: '#111', padding: 24, zIndex: -1000, fontSize: 14 }}
+          >
+            <div style={{ borderBottom: '2px solid #111', paddingBottom: 8, marginBottom: 16 }}>
+              <h2 style={{ margin: 0, fontWeight: 700, fontSize: 18 }}>Production Plan Report</h2>
+              <div>Line: <b>{line.name}</b></div>
+              <div>Generated on: {new Date().toLocaleString()}</div>
+            </div>
+            <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>Order #</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>Style</th>
+                  <th style={{ textAlign: 'right', borderBottom: '1px solid #aaa', padding: 6 }}>Quantity</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>PSD (Plan Start)</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>PED (Plan End)</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>Delivery</th>
+                </tr>
+              </thead>
+              <tbody>
+                {scheduledOrders.map(order => (
+                  <tr key={order.id}>
+                    <td style={{ padding: 6 }}>{order.poNumber}</td>
+                    <td style={{ padding: 6 }}>{order.styleId}</td>
+                    <td style={{ padding: 6, textAlign: 'right' }}>{order.orderQuantity.toLocaleString()}</td>
+                    <td style={{ padding: 6 }}>
+                      {order.planStartDate ? order.planStartDate.toLocaleDateString() : '-'}
+                    </td>
+                    <td style={{ padding: 6 }}>
+                      {order.planEndDate ? order.planEndDate.toLocaleDateString() : '-'}
+                    </td>
+                    <td style={{ padding: 6 }}>
+                      {/* Delivery field: Use planEndDate+1 day if exists, or show '-' */}
+                      {order.planEndDate
+                        ? (() => {
+                            const d = new Date(order.planEndDate!);
+                            d.setDate(d.getDate() + 1);
+                            return d.toLocaleDateString();
+                          })()
+                        : '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ marginTop: 24, fontStyle: 'italic', fontSize: 13 }}>
+              * Delivery is estimated as one day after Plan End Date.
+            </div>
+          </div>
+        );
+      })}
+
       {/* Multi-select info bar */}
       {isMultiSelectMode && selectedOrders.size > 0 && (
         <div className="sticky top-0 z-20 bg-blue-100 border-b border-blue-300 p-2 text-center">
@@ -515,11 +591,13 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         {/* Header with dates */}
         <div className="sticky top-0 z-10 bg-card border-b border-border">
           <div className="flex">
+            {/* Line header with PDF button */}
             <div className="w-48 p-4 border-r border-border bg-card">
-              <div className="flex items-center space-x-2">
+              <div className="flex items-center space-x-2 mb-2">
                 <CalendarDays className="h-5 w-5 text-muted-foreground" />
                 <span className="font-medium">Production Lines</span>
               </div>
+              {/* Empty cell under line header to align with buttons per-line below */}
             </div>
             {dates.map((date) => (
               <div
@@ -546,12 +624,24 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         <div className="divide-y divide-border">
           {productionLines.map((line) => (
             <div key={line.id} className="flex">
-              <div className="w-48 p-4 border-r border-border bg-card">
+              {/* Left column: Line info + PDF download button */}
+              <div className="w-48 p-4 border-r border-border bg-card flex flex-col items-start">
                 <div className="font-medium">{line.name}</div>
                 <div className="text-sm text-muted-foreground">
                   Capacity: {line.capacity}
                 </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2 flex items-center gap-1"
+                  onClick={() => handleDownloadLinePdf(line.id, line.name)}
+                  title="Download Production Plan PDF"
+                >
+                  <FileDown className="w-4 h-4 mr-1" />
+                  <span>Plan PDF</span>
+                </Button>
               </div>
+              {/* ... keep grid cells ... */}
               {dates.map((date) => {
                 const cellKey = `${line.id}-${date.toISOString().split('T')[0]}`;
                 const isHighlighted = dragHighlight === cellKey;
