@@ -3,7 +3,7 @@ import React from 'react';
 import { Button } from './ui/button';
 import { FileDown, Plus } from 'lucide-react';
 import SchedulingOrderCell from './SchedulingOrderCell';
-import { Order, ProductionLine, Holiday } from '../types/scheduler';
+import { Order, ProductionLine } from '../types/scheduler';
 
 interface SchedulingBoardLineRowProps {
   line: ProductionLine;
@@ -48,8 +48,8 @@ export const SchedulingBoardLineRow: React.FC<SchedulingBoardLineRowProps> = ({
   selectedOrders,
   handleDownloadLinePdf,
 }) => (
-  <div className="flex">
-    {/* Left column: Line info + PDF download button. Not sticky, scrolls with rest of grid. */}
+  <div className="flex min-w-max">
+    {/* Line info + PDF download button -- scrolls with the rest of the grid; not sticky or frozen */}
     <div className="w-48 p-4 border-r border-border bg-card flex flex-col items-start">
       <div className="font-medium">{line.name}</div>
       <div className="text-sm text-muted-foreground">
@@ -66,6 +66,7 @@ export const SchedulingBoardLineRow: React.FC<SchedulingBoardLineRowProps> = ({
         <span>Plan PDF</span>
       </Button>
     </div>
+    {/* Date cells */}
     {dates.map((date) => {
       const cellKey = `${line.id}-${date.toISOString().split('T')[0]}`;
       const isHighlighted = dragHighlight === cellKey;
