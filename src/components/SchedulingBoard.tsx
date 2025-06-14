@@ -303,6 +303,41 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   }, [overlapDialog, productionLines, onOrderMovedToPending]);
 
   // --- When the scheduleDialog is confirmed, carry out any queued magnetic rescheduling ---
+
+  // PATCHED: Create a helper function for scheduling an order as a solid, contiguous block across working days
+  const getContiguousProductionPlan = (
+    qty: number,
+    lineCapacity: number,
+    startDate: Date,
+    isHolidayFn: (d: Date) => boolean,
+    fillFirstDay: number = 0 // if >0, fill partial on first day (due to leftover capacity)
+  ) => {
+    const plan: { [date: string]: number } = {};
+    let remainingQty = qty;
+    let currentDate = new Date(startDate);
+    let placedFirstDay = false;
+
+    while (remainingQty > 0) {
+      if (!isHolidayFn(currentDate)) {
+        const dayStr = currentDate.toISOString().split('T')[0];
+        let todayCapacity = lineCapacity;
+        if (!placedFirstDay && fillFirstDay > 0) {
+          todayCapacity = fillFirstDay;
+          placedFirstDay = true;
+        }
+        const planned = Math.min(remainingQty, todayCapacity);
+        if (planned > 0) {
+          plan[dayStr] = planned;
+          remainingQty -= planned;
+        }
+      }
+      currentDate.setDate(currentDate.getDate() + 1);
+      // To prevent infinite loop
+      if (Object.keys(plan).length > 366) break;
+    }
+    return plan;
+  };
+
   const handleScheduleConfirm = useCallback(async () => {
     const { order, lineId, startDate } = scheduleDialog;
     if (!order || !lineId || !startDate) return;
@@ -317,62 +352,51 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
       setPlanningMethod('capacity'); setSelectedRampUpPlanId('');
       
-      // --- PATCH HERE: Improved "before" handling to utilize last day open capacity ---
+      // PATCH: For any pending reschedules (after moving orders "before" a target), move them as a single contiguous block
       if (pendingReschedule.toSchedule.length > 0 && pendingReschedule.afterOrderId === order.id && pendingReschedule.lineId) {
         let newPlanEnd: Date | null = endDate;
         let magnetDate = new Date(newPlanEnd); // Start on newOrder's last day
         const newOrderLastDayStr = magnetDate.toISOString().split('T')[0];
         const lineObj = productionLines.find(l => l.id === pendingReschedule.lineId);
-        let lastDayAvailCapacity = lineObj ? lineObj.capacity - (dailyPlan[newOrderLastDayStr] || 0) : 0;
+        let lastDayAvailCapacity = lineObj ? lineObj.capacity - (dailyPlan[newOrderLastDayStr] || 0) : 0; // If >0, the first rescheduled order gets leftover on that day
 
         for (const [i, next] of pendingReschedule.toSchedule.entries()) {
           if (!lineObj) continue;
 
-          const remainingQty = next.orderQuantity;
-          const plan: { [date: string]: number } = {};
+          let qty = next.orderQuantity;
+          let plan: { [date: string]: number } = {};
 
-          let qtyLeft = remainingQty;
-          let planningDate = new Date(magnetDate); // start from last day
-
-          // (1) If there is leftover capacity on newOrder's last day, use it!
+          // (a) First, try to use leftover on the anchor day (new order's last day)
           if (i === 0 && lastDayAvailCapacity > 0) {
-            const cap = Math.min(qtyLeft, lastDayAvailCapacity);
-            if (cap > 0) {
-              plan[newOrderLastDayStr] = cap;
-              qtyLeft -= cap;
+            plan = getContiguousProductionPlan(
+              qty, lineObj.capacity,
+              magnetDate,         // anchor date
+              (d) => holidays.some(h => h.date.toDateString() === d.toDateString()),
+              lastDayAvailCapacity
+            );
+          } else {
+            // (b) Start on next available working day
+            const anchorNextDay = new Date(magnetDate);
+            if (! (i === 0 && lastDayAvailCapacity > 0) ) {
+              anchorNextDay.setDate(anchorNextDay.getDate() + 1);
             }
-            // next day will be after the last day
-            planningDate.setDate(planningDate.getDate() + 1);
-          } else if (i === 0 && lastDayAvailCapacity <= 0) {
-            // start on next day
-            planningDate.setDate(planningDate.getDate() + 1);
+            plan = getContiguousProductionPlan(
+              qty, lineObj.capacity,
+              anchorNextDay,
+              (d) => holidays.some(h => h.date.toDateString() === d.toDateString()),
+              0
+            );
           }
 
-          // (2) Fill subsequent days as normal (skip holidays if you use those in your capacity plan)
-          while (qtyLeft > 0) {
-            const dateStr = planningDate.toISOString().split('T')[0];
-            // Check for holidays, if needed (similar to isHoliday)
-            const isHolidayDay = holidays.some(h => h.date.toDateString() === planningDate.toDateString());
-            if (!isHolidayDay) {
-              const cap = lineObj.capacity;
-              const todayFill = Math.min(qtyLeft, cap);
-              plan[dateStr] = todayFill;
-              qtyLeft -= todayFill;
-            }
-            planningDate.setDate(planningDate.getDate() + 1);
-
-            // safety
-            if (Object.keys(plan).length > 366) break;
-          }
-
-          // The new end date for this order
-          const dates = Object.keys(plan);
-          const lastDay = dates.length > 0 ? new Date(Math.max(...dates.map(d => new Date(d).getTime()))) : magnetDate;
+          // Get proper plan window
+          const planDays = Object.keys(plan);
+          const firstPlanDay = planDays.length > 0 ? new Date(planDays[0]) : new Date(magnetDate);
+          const lastPlanDay = planDays.length > 0 ? new Date(planDays[planDays.length - 1]) : new Date(magnetDate);
           const nextOrder = { ...next, assignedLineId: lineObj.id };
-          await onOrderScheduled(nextOrder, new Date(Object.keys(plan)[0]), lastDay, plan);
-          
-          // For the next rescheduled order in chain: its magnetDate is the latest planned day of previous
-          magnetDate = new Date(lastDay);
+          await onOrderScheduled(nextOrder, firstPlanDay, lastPlanDay, plan);
+
+          // For subsequent orders
+          magnetDate = new Date(lastPlanDay);
         }
         setPendingReschedule({ toSchedule: [], afterOrderId: null, lineId: null });
       }
