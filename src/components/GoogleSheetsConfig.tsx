@@ -13,6 +13,7 @@ interface GoogleSheetsConfigProps {
   onSync: () => Promise<void>;
   onConfigure: () => void;
   onClearError: () => void;
+  onPushOrderDates?: () => Promise<void>; // <-- new prop
 }
 
 export const GoogleSheetsConfig: React.FC<GoogleSheetsConfigProps> = ({
@@ -21,7 +22,8 @@ export const GoogleSheetsConfig: React.FC<GoogleSheetsConfigProps> = ({
   isConfigured,
   onSync,
   onConfigure,
-  onClearError
+  onClearError,
+  onPushOrderDates
 }) => {
   const [apiKey, setApiKey] = useState('');
   const [spreadsheetId, setSpreadsheetId] = useState('');
@@ -86,6 +88,20 @@ export const GoogleSheetsConfig: React.FC<GoogleSheetsConfigProps> = ({
               </>
             )}
           </Button>
+
+          {onPushOrderDates && (
+            <Button 
+              onClick={onPushOrderDates}
+              disabled={isLoading}
+              className="w-full"
+              variant="outline"
+              type="button"
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Push Order Dates
+            </Button>
+          )}
+
         </CardContent>
       </Card>
     );

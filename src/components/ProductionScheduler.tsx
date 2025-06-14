@@ -13,6 +13,8 @@ import { ReportDialog } from './reports/ReportDialog';
 import { CuttingReportContent } from './reports/CuttingReportContent';
 import { DeliveryReportContent } from './reports/DeliveryReportContent';
 import { downloadElementAsPdf } from '../lib/pdfUtils';
+import { toast } from "@/hooks/use-toast";
+import { dataService } from "../services/dataService";
 
 export const ProductionScheduler: React.FC = () => {
   const [userRole, setUserRole] = useState<'planner' | 'superuser'>('planner');
@@ -40,6 +42,38 @@ export const ProductionScheduler: React.FC = () => {
     createOrderInDatabase,
     clearError
   } = useSupabaseProductionData();
+
+  // New: Handler to push scheduled order dates to Google Sheet
+  const handlePushOrderDatesToSheet = async () => {
+    try {
+      const scheduledOrders = orders.filter(
+        o =>
+          o.status === "scheduled" &&
+          o.poNumber &&
+          o.planStartDate &&
+          o.planEndDate
+      );
+      if (!scheduledOrders.length) {
+        toast({
+          title: "No scheduled orders",
+          description: "There are no scheduled orders to push.",
+        });
+        return;
+      }
+      // Call dataService to push dates to Google Sheets
+      await dataService.pushPsdPedToGoogleSheet(scheduledOrders);
+      toast({
+        title: "Order dates pushed",
+        description: "PSD and PED for scheduled orders were pushed to Google Sheet.",
+      });
+    } catch (err: any) {
+      toast({
+        title: "Failed to push order dates",
+        description: err?.message || "An error occurred pushing the order dates.",
+        variant: "destructive",
+      });
+    }
+  };
 
   const handleToggleAdmin = () => {
     setShowAdminPanel(!showAdminPanel);
@@ -429,6 +463,7 @@ export const ProductionScheduler: React.FC = () => {
                 onSync={fetchOrdersFromGoogleSheets}
                 onConfigure={configureGoogleSheets}
                 onClearError={clearError}
+                onPushOrderDates={handlePushOrderDatesToSheet}
               />
               
               <Button

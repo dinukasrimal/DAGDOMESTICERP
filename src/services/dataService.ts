@@ -183,6 +183,22 @@ export class DataService {
     await this.googleSheetsService.updateOrderSchedule(order, startDate, endDate);
   }
 
+  async pushPsdPedToGoogleSheet(scheduledOrders: Order[]) {
+    if (!this.googleSheetsService) {
+      throw new Error('Google Sheets service not initialized');
+    }
+    if (!scheduledOrders.length) {
+      throw new Error('No scheduled orders to push');
+    }
+    await this.googleSheetsService.updateOrdersScheduleBatch(
+      scheduledOrders.map(o => ({
+        poNumber: o.poNumber,
+        planStartDate: o.planStartDate,
+        planEndDate: o.planEndDate,
+      }))
+    );
+  }
+
   getOrders(): Order[] {
     return this.orders;
   }
