@@ -1,10 +1,32 @@
+
 import React, { useState, useCallback } from 'react';
 import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd';
 import { Order } from '../types/scheduler';
-import { ProductionLine, Holiday, RampUpPlan } from '../types/adminPanel';
 import { Card, CardContent } from './ui/card';
 import { format } from 'date-fns';
 import { CapacityPlanningDialog } from './CapacityPlanningDialog';
+
+interface ProductionLine {
+  id: string;
+  name: string;
+  capacity: number;
+}
+
+interface Holiday {
+  id: string;
+  date: Date;
+  name: string;
+  isGlobal: boolean;
+  affectedLineIds?: string[];
+}
+
+interface RampUpPlan {
+  id: string;
+  lineId: string;
+  startDate: Date;
+  endDate: Date;
+  capacity: number;
+}
 
 interface SchedulingBoardProps {
   orders: Order[];
@@ -73,58 +95,61 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return capacity - scheduledQuantity;
   }, [orders, productionLines, rampUpPlans]);
 
-  const onDragEnd = async (result: DropResult) => {
-    const { destination, source, draggableId } = result;
-
-    if (!destination) {
-      return;
+  const calculateProductionPlan = useCallback(async (
+    order: Order,
+    line: ProductionLine,
+    startDate: Date,
+    initialQuantity: number = 0
+  ) => {
+    const dailyPlan: { [date: string]: number } = {};
+    let remainingQty = order.orderQuantity - initialQuantity;
+    let currentDate = new Date(startDate);
+    
+    // If we have initial quantity for the start date, add it
+    if (initialQuantity > 0) {
+      dailyPlan[currentDate.toISOString().split('T')[0]] = initialQuantity;
     }
-
-    if (
-      destination.droppableId === source.droppableId &&
-      destination.index === source.index
-    ) {
-      return;
+    
+    // If we started with initial quantity, move to next day for remaining
+    if (initialQuantity > 0) {
+      currentDate.setDate(currentDate.getDate() + 1);
     }
-
-    const order = orders.find(order => order.id === draggableId);
-    if (!order) {
-      return;
+    
+    while (remainingQty > 0) {
+      // Check if current date is a holiday
+      const isHoliday = holidays.some(h => 
+        h.date.toDateString() === currentDate.toDateString()
+      );
+      
+      if (!isHoliday) {
+        // Get remaining capacity for this date on this line
+        const remainingCapacity = getRemainingCapacityForDate(currentDate, line.id);
+        const plannedQty = Math.min(remainingQty, remainingCapacity);
+        
+        if (plannedQty > 0) {
+          const dateKey = currentDate.toISOString().split('T')[0];
+          dailyPlan[dateKey] = (dailyPlan[dateKey] || 0) + plannedQty;
+          remainingQty -= plannedQty;
+        }
+      }
+      
+      currentDate.setDate(currentDate.getDate() + 1);
+      
+      // Safety check to prevent infinite loops
+      if (currentDate.getTime() - startDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
+        console.warn('Production planning exceeded 1 year, breaking loop');
+        break;
+      }
     }
-
-    const sourceLineId = source.droppableId;
-    const destLineId = destination.droppableId;
-
-    // Moving to pending
-    if (destLineId === 'pending-orders') {
-      await onOrderMovedToPending(order);
-      return;
-    }
-
-    // Moving within the same line
-    if (sourceLineId === destLineId) {
-      return; // Reordering logic can be added here if needed
-    }
-
-    // Moving to a new line
-    const targetDate = getDateForColumn(destination.index);
-    if (!targetDate) {
-      return;
-    }
-
-    await scheduleOrderAtDate(order, targetDate, destLineId, 'before');
-  };
-
-  const getDateForColumn = (columnIndex: number): Date | null => {
-    const startDate = new Date(); // Today's date
-    startDate.setDate(startDate.getDate() + columnIndex);
-    return startDate;
-  };
-
-  const getColumnHeader = (columnIndex: number): string => {
-    const date = getDateForColumn(columnIndex);
-    return date ? format(date, 'MMM d') : '';
-  };
+    
+    // Calculate end date
+    const planDates = Object.keys(dailyPlan);
+    const endDate = planDates.length > 0 
+      ? new Date(Math.max(...planDates.map(d => new Date(d).getTime())))
+      : startDate;
+    
+    return { dailyPlan, endDate };
+  }, [holidays, getRemainingCapacityForDate]);
 
   const scheduleOrderAtDate = useCallback(async (
     order: Order,
@@ -306,61 +331,58 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [orders, productionLines, onOrderScheduled, onOrderMovedToPending, calculateProductionPlan, getRemainingCapacityForDate]);
 
-  const calculateProductionPlan = useCallback(async (
-    order: Order,
-    line: any,
-    startDate: Date,
-    initialQuantity: number = 0
-  ) => {
-    const dailyPlan: { [date: string]: number } = {};
-    let remainingQty = order.orderQuantity - initialQuantity;
-    let currentDate = new Date(startDate);
-    
-    // If we have initial quantity for the start date, add it
-    if (initialQuantity > 0) {
-      dailyPlan[currentDate.toISOString().split('T')[0]] = initialQuantity;
+  const onDragEnd = async (result: DropResult) => {
+    const { destination, source, draggableId } = result;
+
+    if (!destination) {
+      return;
     }
-    
-    // If we started with initial quantity, move to next day for remaining
-    if (initialQuantity > 0) {
-      currentDate.setDate(currentDate.getDate() + 1);
+
+    if (
+      destination.droppableId === source.droppableId &&
+      destination.index === source.index
+    ) {
+      return;
     }
-    
-    while (remainingQty > 0) {
-      // Check if current date is a holiday
-      const isHoliday = holidays.some(h => 
-        h.date.toDateString() === currentDate.toDateString()
-      );
-      
-      if (!isHoliday) {
-        // Get remaining capacity for this date on this line
-        const remainingCapacity = getRemainingCapacityForDate(currentDate, line.id);
-        const plannedQty = Math.min(remainingQty, remainingCapacity);
-        
-        if (plannedQty > 0) {
-          const dateKey = currentDate.toISOString().split('T')[0];
-          dailyPlan[dateKey] = (dailyPlan[dateKey] || 0) + plannedQty;
-          remainingQty -= plannedQty;
-        }
-      }
-      
-      currentDate.setDate(currentDate.getDate() + 1);
-      
-      // Safety check to prevent infinite loops
-      if (currentDate.getTime() - startDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
-        console.warn('Production planning exceeded 1 year, breaking loop');
-        break;
-      }
+
+    const order = orders.find(order => order.id === draggableId);
+    if (!order) {
+      return;
     }
-    
-    // Calculate end date
-    const planDates = Object.keys(dailyPlan);
-    const endDate = planDates.length > 0 
-      ? new Date(Math.max(...planDates.map(d => new Date(d).getTime())))
-      : startDate;
-    
-    return { dailyPlan, endDate };
-  }, [holidays, getRemainingCapacityForDate]);
+
+    const sourceLineId = source.droppableId;
+    const destLineId = destination.droppableId;
+
+    // Moving to pending
+    if (destLineId === 'pending-orders') {
+      await onOrderMovedToPending(order);
+      return;
+    }
+
+    // Moving within the same line
+    if (sourceLineId === destLineId) {
+      return; // Reordering logic can be added here if needed
+    }
+
+    // Moving to a new line
+    const targetDate = getDateForColumn(destination.index);
+    if (!targetDate) {
+      return;
+    }
+
+    await scheduleOrderAtDate(order, targetDate, destLineId, 'before');
+  };
+
+  const getDateForColumn = (columnIndex: number): Date | null => {
+    const startDate = new Date(); // Today's date
+    startDate.setDate(startDate.getDate() + columnIndex);
+    return startDate;
+  };
+
+  const getColumnHeader = (columnIndex: number): string => {
+    const date = getDateForColumn(columnIndex);
+    return date ? format(date, 'MMM d') : '';
+  };
 
   return (
     <DragDropContext onDragEnd={onDragEnd}>

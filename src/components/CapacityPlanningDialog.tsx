@@ -3,8 +3,13 @@ import React from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { Button } from './ui/button';
 import { Order } from '../types/scheduler';
-import { ProductionLine } from '../types/adminPanel';
 import { format } from 'date-fns';
+
+interface ProductionLine {
+  id: string;
+  name: string;
+  capacity: number;
+}
 
 interface CapacityPlanningDialogProps {
   isOpen: boolean;
