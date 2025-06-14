@@ -1,3 +1,4 @@
+
 import { Order } from '../types/scheduler';
 
 export interface SheetOrder {
@@ -229,8 +230,10 @@ export class GoogleSheetsService {
       console.log('📊 Order sheet header row:', orderRows[0]);
 
       const orders: SheetOrder[] = [];
+      const processedPOs = new Set<string>(); // Track processed PO numbers to avoid duplicates
       let totalCount = 0;
       let excludedCount = 0;
+      let duplicateCount = 0;
       
       // Try to find the correct column indices by examining the header
       const headerRow = orderRows[0] || [];
@@ -262,15 +265,23 @@ export class GoogleSheetsService {
 
         totalCount++;
         
+        const poNumber = String(row[poIndex]).trim();
+        
+        // Check for duplicates
+        if (processedPOs.has(poNumber)) {
+          duplicateCount++;
+          console.log(`⏭️ Skipping duplicate PO: ${poNumber}`);
+          continue;
+        }
+        
         // Check if PED (Plan End Date) column has a value - if yes, exclude this order
         const planEndDate = row[pedIndex];
         if (planEndDate && planEndDate.trim() !== '') {
           excludedCount++;
-          console.log(`⏭️ Excluding order ${row[poIndex]} - already has PED: ${planEndDate}`);
+          console.log(`⏭️ Excluding order ${poNumber} - already has PED: ${planEndDate}`);
+          processedPOs.add(poNumber); // Mark as processed to avoid duplicates
           continue;
         }
-
-        const poNumber = String(row[poIndex]).trim();
 
         // Extract and parse quantity more robustly
         const rawQty = row[qtyIndex];
@@ -324,8 +335,9 @@ export class GoogleSheetsService {
 
         console.log(`📦 Order ${poNumber}: Qty=${qty}, Cut=${cutQuantity}, Issue=${issueQuantity}`);
 
-        // Only add orders with valid quantities
+        // Only add orders with valid quantities and mark as processed
         if (qty > 0) {
+          processedPOs.add(poNumber);
           orders.push({
             poNumber: poNumber,
             styleName: row[styleIndex] || '',
@@ -344,111 +356,13 @@ export class GoogleSheetsService {
 
       console.log(`📊 Total orders in sheet: ${totalCount}`);
       console.log(`⏭️ Orders excluded (have PED): ${excludedCount}`);
-      console.log(`✅ Orders loaded with valid quantities: ${orders.length}`);
+      console.log(`🔄 Duplicates skipped: ${duplicateCount}`);
+      console.log(`✅ Orders loaded with valid quantities (no duplicates): ${orders.length}`);
       
       return orders;
     } catch (error) {
       console.error('❌ Error in fetchOrders:', error);
       throw error;
-    }
-  }
-
-  async updateOrderSchedule(order: Order, startDate: Date, endDate: Date): Promise<void> {
-    console.log('📝 Google Sheets update schedule called for order:', order.poNumber);
-    // Note: This would require write permissions to the sheet
-    // For now, we'll just log the update attempt
-    console.log(`📅 Would update order ${order.poNumber} with start: ${startDate.toISOString()}, end: ${endDate.toISOString()}`);
-  }
-
-  /** Batch update PSD (column E) and PED (column F) for given orders by PO Number (column A) */
-  async updateOrdersScheduleBatch(ordersToUpdate: {
-    poNumber: string;
-    planStartDate: Date | null;
-    planEndDate: Date | null;
-  }[]): Promise<void> {
-    if (!ordersToUpdate || ordersToUpdate.length === 0) {
-      console.log('No orders to batch update PSD/PED.');
-      return;
-    }
-    try {
-      // 1. Fetch the ORDER SECTION data (to find row numbers)
-      const sheetName = this.orderSheetName;
-      const range = `'${sheetName}'!A:Z`;
-      const sheetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${this.spreadsheetId}/values/${range}?key=${this.apiKey}`;
-      const response = await fetch(sheetUrl);
-      const sheetData = await response.json();
-      const values: any[][] = sheetData.values || [];
-      if (values.length < 2) return;
-
-      // 2. Always use fixed indices for ORDER SECTION: PO = A (0), PSD = E (4), PED = F (5)
-      const poIndex = 0;
-      const psdIndex = 4;
-      const pedIndex = 5;
-
-      // 3. Build a list of updates for each order
-      const updates: { range: string; values: any[][] }[] = [];
-      ordersToUpdate.forEach((ord) => {
-        if (!ord.poNumber) return;
-        const rowIdx = values.findIndex(
-          (v, idx) =>
-            idx > 0 &&
-            v[poIndex] &&
-            String(v[poIndex]).trim() === ord.poNumber
-        );
-        if (rowIdx > 0) {
-          // Sheet API row is 1-based (header=1, data starts at 2)
-          const targetRow = rowIdx + 1;
-          // Prepare date strings in yyyy-mm-dd
-          const psdValue = ord.planStartDate
-            ? ord.planStartDate.toISOString().split('T')[0]
-            : '';
-          const pedValue = ord.planEndDate
-            ? ord.planEndDate.toISOString().split('T')[0]
-            : '';
-          // Use column letter (A=0=>A,... E=4=>E, F=5=>F)
-          const colLetter = (idx: number) => String.fromCharCode(65 + idx);
-          if (psdValue !== '') {
-            updates.push({
-              range: `${sheetName}!${colLetter(psdIndex)}${targetRow}`,
-              values: [[psdValue]]
-            });
-          }
-          if (pedValue !== '') {
-            updates.push({
-              range: `${sheetName}!${colLetter(pedIndex)}${targetRow}`,
-              values: [[pedValue]]
-            });
-          }
-          console.log(`[PSD/PED PUSH] Update PO ${ord.poNumber} => PSD(${psdValue}) to E${targetRow}, PED(${pedValue}) to F${targetRow}`);
-        }
-      });
-
-      // 4. Issue batchUpdate to Sheets API (via batchUpdate endpoint, using API key)
-      if (updates.length > 0) {
-        const batchBody = {
-          data: updates,
-          valueInputOption: 'USER_ENTERED',
-        };
-
-        const batchUrl = `https://sheets.googleapis.com/v4/spreadsheets/${this.spreadsheetId}/values:batchUpdate?key=${this.apiKey}`;
-        const batchResponse = await fetch(batchUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(batchBody),
-        });
-        if (!batchResponse.ok) {
-          const errMsg = await batchResponse.text();
-          throw new Error('Failed to batch update PSD/PED: ' + errMsg);
-        }
-        console.log(
-          `✅ Pushed ${ordersToUpdate.length} PSD/PED values to Google Sheets`
-        );
-      } else {
-        console.log('[PSD/PED PUSH] No matching rows found for update. Nothing to push.');
-      }
-    } catch (err) {
-      console.error('[PSD/PED PUSH] Failed to update schedules in Google Sheet:', err);
-      throw err;
     }
   }
 }

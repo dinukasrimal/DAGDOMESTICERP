@@ -1,3 +1,4 @@
+
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { GoogleSheetsService, SheetOrder } from './googleSheetsService';
 
@@ -54,9 +55,6 @@ export class DataService {
     // Generate a unique ID for the order
     const uniqueId = `sheet-${sheetOrder.poNumber}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
-    // Check if this order has schedule dates - if so, it's already scheduled
-    const hasScheduleDates = sheetOrder.planStartDate && sheetOrder.planEndDate;
-    
     console.log(`🔄 Converting sheet order: ${sheetOrder.poNumber} (Qty: ${sheetOrder.qty}, SMV: ${sheetOrder.smv}, Cut: ${sheetOrder.cutQuantity || 0}, Issue: ${sheetOrder.issueQuantity || 0})`);
     
     return {
@@ -68,9 +66,9 @@ export class DataService {
       moCount: sheetOrder.moCount,
       cutQuantity: sheetOrder.cutQuantity || 0,
       issueQuantity: sheetOrder.issueQuantity || 0,
-      status: hasScheduleDates ? 'scheduled' : 'pending',
-      planStartDate: sheetOrder.planStartDate ? new Date(sheetOrder.planStartDate) : null,
-      planEndDate: sheetOrder.planEndDate ? new Date(sheetOrder.planEndDate) : null,
+      status: 'pending', // All new orders from sheet are pending since we only load ones without PED
+      planStartDate: null,
+      planEndDate: null,
       actualProduction: {}
     };
   }
@@ -80,26 +78,7 @@ export class DataService {
       throw new Error('Google Sheets service not initialized');
     }
     try {
-      console.log('📡 Sync PSD/PED with Google Sheets before pulling orders ...');
-      // NEW: Sync local scheduled orders' PSD/PED before pulling sheet
-      const scheduled = existingOrders.filter(
-        (o) =>
-          o.status === 'scheduled' &&
-          o.poNumber &&
-          o.planStartDate &&
-          o.planEndDate
-      );
-      // --- ALWAYS sync ALL scheduled orders' PSD/PED by PO # at sync
-      await this.googleSheetsService.updateOrdersScheduleBatch(
-        scheduled.map((o) => ({
-          poNumber: o.poNumber,
-          planStartDate: o.planStartDate,
-          planEndDate: o.planEndDate,
-        }))
-      );
-      console.log('📡 PSD/PED sync (writeback) complete. Now fetching sheet orders ...');
-
-      console.log('📡 Fetching orders from Google Sheets...');
+      console.log('📡 Fetching orders from Google Sheets (READ ONLY)...');
       const sheetOrders = await this.googleSheetsService.fetchOrders();
       
       if (!sheetOrders || sheetOrders.length === 0) {
@@ -107,7 +86,7 @@ export class DataService {
         return existingOrders;
       }
       
-      console.log(`📋 Processing ${sheetOrders.length} orders from sheet`);
+      console.log(`📋 Processing ${sheetOrders.length} orders from sheet (only those without PED)`);
       
       // Create a map of existing orders by PO number for quick lookup
       const existingOrdersMap = new Map<string, Order>();
@@ -116,45 +95,54 @@ export class DataService {
       });
       
       const newOrders: Order[] = [];
-      let duplicateCount = 0;
-      let scheduledCount = 0;
+      let addedCount = 0;
+      let scheduledKeptCount = 0;
+      let updatedCount = 0;
       
+      // First, add all existing scheduled orders (preserve them)
+      existingOrders.forEach(existingOrder => {
+        if (existingOrder.status === 'scheduled' || existingOrder.assignedLineId) {
+          console.log(`⏭️ Keeping scheduled order: ${existingOrder.poNumber}`);
+          newOrders.push(existingOrder);
+          scheduledKeptCount++;
+        }
+      });
+      
+      // Then process sheet orders (only pending ones without PED)
       for (const sheetOrder of sheetOrders) {
         const existingOrder = existingOrdersMap.get(sheetOrder.poNumber);
         
-        if (existingOrder) {
-          // Order already exists - check if it's scheduled/assigned
-          if (existingOrder.status === 'scheduled' || existingOrder.assignedLineId) {
-            console.log(`⏭️ Skipping ${sheetOrder.poNumber} - already scheduled/assigned`);
-            scheduledCount++;
-            // Keep the existing scheduled order as-is
-            newOrders.push(existingOrder);
-          } else {
-            console.log(`🔄 Updating ${sheetOrder.poNumber} - was pending, updating with sheet data`);
-            // Update the pending order with fresh sheet data
-            const updatedOrder = {
-              ...existingOrder,
-              styleId: sheetOrder.styleName,
-              orderQuantity: sheetOrder.qty,
-              smv: sheetOrder.smv,
-              moCount: sheetOrder.moCount,
-              cutQuantity: sheetOrder.cutQuantity || 0,
-              issueQuantity: sheetOrder.issueQuantity || 0
-            };
-            newOrders.push(updatedOrder);
-          }
+        if (existingOrder && (existingOrder.status === 'scheduled' || existingOrder.assignedLineId)) {
+          // Skip - already added above as scheduled
+          continue;
+        } else if (existingOrder && existingOrder.status === 'pending') {
+          // Update existing pending order with fresh sheet data
+          console.log(`🔄 Updating pending order: ${sheetOrder.poNumber}`);
+          const updatedOrder = {
+            ...existingOrder,
+            styleId: sheetOrder.styleName,
+            orderQuantity: sheetOrder.qty,
+            smv: sheetOrder.smv,
+            moCount: sheetOrder.moCount,
+            cutQuantity: sheetOrder.cutQuantity || 0,
+            issueQuantity: sheetOrder.issueQuantity || 0
+          };
+          newOrders.push(updatedOrder);
+          updatedCount++;
         } else {
           // New order from sheet
-          console.log(`➕ Adding new order: ${sheetOrder.poNumber}`);
+          console.log(`➕ Adding new pending order: ${sheetOrder.poNumber}`);
           const newOrder = this.convertSheetOrderToOrder(sheetOrder);
           newOrders.push(newOrder);
+          addedCount++;
         }
       }
       
-      // Add any existing orders that weren't found in the sheet (they might be manually created)
+      // Add any existing pending orders that weren't found in the sheet (manually created)
       existingOrders.forEach(existingOrder => {
-        if (!sheetOrders.some(sheetOrder => sheetOrder.poNumber === existingOrder.poNumber)) {
-          console.log(`📋 Keeping existing order not found in sheet: ${existingOrder.poNumber}`);
+        if (existingOrder.status === 'pending' && 
+            !sheetOrders.some(sheetOrder => sheetOrder.poNumber === existingOrder.poNumber)) {
+          console.log(`📋 Keeping manual pending order: ${existingOrder.poNumber}`);
           newOrders.push(existingOrder);
         }
       });
@@ -164,39 +152,16 @@ export class DataService {
       const pendingCount = this.orders.filter(o => o.status === 'pending').length;
       const totalScheduledCount = this.orders.filter(o => o.status === 'scheduled').length;
       
-      console.log(`✅ Sync complete: ${this.orders.length} total orders`);
+      console.log(`✅ Read-only sync complete: ${this.orders.length} total orders`);
       console.log(`📊 Status: ${pendingCount} pending, ${totalScheduledCount} scheduled`);
-      console.log(`🔄 ${scheduledCount} scheduled orders preserved, ${duplicateCount} duplicates skipped`);
+      console.log(`🔄 ${scheduledKeptCount} scheduled orders preserved, ${addedCount} new orders added, ${updatedCount} pending orders updated`);
+      console.log(`📝 NO DATA WRITTEN TO GOOGLE SHEETS (read-only mode)`);
       
       return this.orders;
     } catch (error) {
       console.error('❌ Error fetching orders from sheet:', error);
       throw error;
     }
-  }
-
-  async updateOrderSchedule(order: Order, startDate: Date, endDate: Date): Promise<void> {
-    if (!this.googleSheetsService) {
-      throw new Error('Google Sheets service not initialized');
-    }
-
-    await this.googleSheetsService.updateOrderSchedule(order, startDate, endDate);
-  }
-
-  async pushPsdPedToGoogleSheet(scheduledOrders: Order[]) {
-    if (!this.googleSheetsService) {
-      throw new Error('Google Sheets service not initialized');
-    }
-    if (!scheduledOrders.length) {
-      throw new Error('No scheduled orders to push');
-    }
-    await this.googleSheetsService.updateOrdersScheduleBatch(
-      scheduledOrders.map(o => ({
-        poNumber: o.poNumber,
-        planStartDate: o.planStartDate,
-        planEndDate: o.planEndDate,
-      }))
-    );
   }
 
   getOrders(): Order[] {

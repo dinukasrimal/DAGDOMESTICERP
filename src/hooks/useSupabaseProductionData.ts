@@ -113,13 +113,13 @@ export const useSupabaseProductionData = () => {
     setError(null);
 
     try {
-      console.log('🔄 Starting to fetch orders from Google Sheets...');
+      console.log('🔄 Starting to fetch orders from Google Sheets (READ-ONLY)...');
       
       // Pass current orders to preserve scheduled ones
       const currentOrders = await supabaseDataService.getOrders();
       const fetchedOrders = await dataService.fetchOrdersFromSheet(currentOrders);
       
-      console.log(`📥 Processed ${fetchedOrders.length} orders from Google Sheets sync`);
+      console.log(`📥 Processed ${fetchedOrders.length} orders from Google Sheets sync (READ-ONLY)`);
       
       if (fetchedOrders.length === 0) {
         console.log('⚠️ No orders processed from Google Sheets sync');
@@ -153,6 +153,7 @@ export const useSupabaseProductionData = () => {
       const scheduledCount = allOrders.filter(o => o.status === 'scheduled').length;
       
       console.log(`📊 Final state: ${allOrders.length} total orders (${pendingCount} pending, ${scheduledCount} scheduled)`);
+      console.log(`🚫 NO DATA WRITTEN TO GOOGLE SHEETS - READ ONLY MODE`);
       
     } catch (err) {
       console.error('❌ Error in fetchOrdersFromGoogleSheets:', err);
@@ -172,17 +173,6 @@ export const useSupabaseProductionData = () => {
       fetchOrdersFromGoogleSheets();
     }
   }, [fetchOrdersFromGoogleSheets]);
-
-  const updateOrderSchedule = useCallback(async (order: Order, startDate: Date, endDate: Date) => {
-    if (!isGoogleSheetsConfigured) return;
-
-    try {
-      await dataService.updateOrderSchedule(order, startDate, endDate);
-    } catch (err) {
-      console.error('Failed to update order schedule in Google Sheets:', err);
-      throw err;
-    }
-  }, [isGoogleSheetsConfigured]);
 
   const updateOrderInDatabase = useCallback(async (orderId: string, updates: Partial<Order>) => {
     try {
@@ -267,7 +257,6 @@ export const useSupabaseProductionData = () => {
     setRampUpPlans: updateRampUpPlansInDatabase,
     fetchOrdersFromGoogleSheets,
     configureGoogleSheets,
-    updateOrderSchedule,
     updateOrderStatus,
     updateOrderInDatabase,
     createOrderInDatabase,

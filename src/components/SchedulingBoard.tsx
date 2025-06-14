@@ -66,12 +66,34 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [hoveredCard, setHoveredCard] = useState<string | null>(null);
 
-  // Generate date range (next 30 days)
-  const dates = Array.from({ length: 30 }, (_, i) => {
-    const date = new Date();
-    date.setDate(date.getDate() + i);
-    return date;
-  });
+  // Generate date range dynamically based on scheduled orders
+  const dates = useMemo(() => {
+    const today = new Date();
+    let maxEndDate = new Date(today);
+    maxEndDate.setDate(maxEndDate.getDate() + 30); // Default minimum 30 days
+
+    // Find the latest end date from all scheduled orders
+    const scheduledOrders = orders.filter(order => order.status === 'scheduled' && order.planEndDate);
+    if (scheduledOrders.length > 0) {
+      const latestEndDate = Math.max(...scheduledOrders.map(order => order.planEndDate!.getTime()));
+      const calculatedMaxDate = new Date(latestEndDate);
+      calculatedMaxDate.setDate(calculatedMaxDate.getDate() + 14); // Add 2 weeks buffer
+      
+      if (calculatedMaxDate > maxEndDate) {
+        maxEndDate = calculatedMaxDate;
+      }
+    }
+
+    // Calculate number of days from today to maxEndDate
+    const daysDiff = Math.ceil((maxEndDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    const numberOfDays = Math.max(30, daysDiff); // Ensure at least 30 days
+
+    return Array.from({ length: numberOfDays }, (_, i) => {
+      const date = new Date(today);
+      date.setDate(date.getDate() + i);
+      return date;
+    });
+  }, [orders]);
 
   // Filter orders based on search query
   const filteredOrders = useMemo(() => {
