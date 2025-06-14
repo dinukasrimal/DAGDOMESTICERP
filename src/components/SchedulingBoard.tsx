@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
@@ -28,6 +28,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   onOrderMovedToPending,
   onOrderSplit
 }) => {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  
   const [scheduleDialog, setScheduleDialog] = useState<{
     isOpen: boolean;
     order: Order | null;
@@ -68,6 +70,48 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     date.setDate(date.getDate() + i);
     return date;
   });
+
+  // Add scroll event handling to prevent page navigation
+  useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      if (scrollContainerRef.current && scrollContainerRef.current.contains(e.target as Node)) {
+        // If scrolling horizontally or if we can scroll horizontally, prevent default page behavior
+        if (Math.abs(e.deltaX) > Math.abs(e.deltaY) || 
+            scrollContainerRef.current.scrollWidth > scrollContainerRef.current.clientWidth) {
+          e.preventDefault();
+          scrollContainerRef.current.scrollLeft += e.deltaX || e.deltaY;
+        }
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Prevent page navigation with arrow keys when focused on scroll container
+      if (scrollContainerRef.current && 
+          document.activeElement && 
+          scrollContainerRef.current.contains(document.activeElement) &&
+          (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End')) {
+        e.preventDefault();
+        const scrollAmount = 200;
+        if (e.key === 'ArrowLeft') {
+          scrollContainerRef.current.scrollLeft -= scrollAmount;
+        } else if (e.key === 'ArrowRight') {
+          scrollContainerRef.current.scrollLeft += scrollAmount;
+        } else if (e.key === 'Home') {
+          scrollContainerRef.current.scrollLeft = 0;
+        } else if (e.key === 'End') {
+          scrollContainerRef.current.scrollLeft = scrollContainerRef.current.scrollWidth;
+        }
+      }
+    };
+
+    document.addEventListener('wheel', handleWheel, { passive: false });
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('wheel', handleWheel);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
 
   // Helper functions
   const isHoliday = useCallback((date: Date) => {
@@ -507,13 +551,22 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   };
 
   return (
-    <div className="flex-1 overflow-auto bg-background">
+    <div 
+      ref={scrollContainerRef}
+      className="flex-1 overflow-auto bg-background"
+      tabIndex={0}
+      style={{ 
+        scrollBehavior: 'smooth',
+        overscrollBehaviorX: 'contain',
+        WebkitOverflowScrolling: 'touch'
+      }}
+    >
       {/* PDF REPORTS (hidden, for each line) */}
       {productionLines.map(line => {
         const scheduledOrders = getScheduledOrdersForLine(line.id);
         if (scheduledOrders.length === 0) return null;
         return (
-          <div // This is the printable area. It's visually hidden but rendered in the DOM.
+          <div 
             id={`line-pdf-report-${line.id}`}
             key={`printable-${line.id}`}
             style={{ position: 'absolute', left: -9999, top: 0, width: '800px', background: '#fff', color: '#111', padding: 24, zIndex: -1000, fontSize: 14 }}
@@ -547,7 +600,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                       {order.planEndDate ? order.planEndDate.toLocaleDateString() : '-'}
                     </td>
                     <td style={{ padding: 6 }}>
-                      {/* Delivery field: Use planEndDate+1 day if exists, or show '-' */}
                       {order.planEndDate
                         ? (() => {
                             const d = new Date(order.planEndDate!);
