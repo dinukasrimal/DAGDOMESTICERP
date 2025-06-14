@@ -1,20 +1,20 @@
+
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
-import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd';
-import { format, addDays, differenceInDays, isWeekend, parseISO, isSameDay } from 'date-fns';
+import { Order, ProductionLine, Holiday } from '../types/scheduler';
+import { DragDropContext, Droppable, DropResult } from 'react-beautiful-dnd';
+import { format, differenceInDays, isWeekend, isSameDay } from 'date-fns';
 import { Card } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
-import { Calendar, Clock, AlertTriangle, Info, FileText } from 'lucide-react';
-import { downloadElementAsPdf } from '../lib/pdfUtils';
+import { Calendar, AlertTriangle } from 'lucide-react';
 import { LinePdfExportButton } from './reports/LinePdfExportButton';
 
 interface SchedulingBoardProps {
   orders: Order[];
   productionLines: ProductionLine[];
   holidays: Holiday[];
-  rampUpPlans: RampUpPlan[];
+  // rampUpPlans: RampUpPlan[]; // REMOVED: We no longer use it for now.
   onOrderScheduled: (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => void;
   onOrderMovedToPending: (order: Order) => void;
   onOrderSplit: (orderId: string, splitQuantity: number) => void;
@@ -24,7 +24,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   orders,
   productionLines,
   holidays,
-  rampUpPlans,
+  // rampUpPlans, // REMOVED: rampUpPlan logic is removed pending correct definition
   onOrderScheduled,
   onOrderMovedToPending,
   onOrderSplit
@@ -61,15 +61,12 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   useEffect(() => {
     const board = boardRef.current;
     const dateHeader = dateHeaderRef.current;
-    
     if (!board || !dateHeader) return;
-    
     const handleScroll = () => {
       if (dateHeader) {
         dateHeader.scrollLeft = board.scrollLeft;
       }
     };
-    
     board.addEventListener('scroll', handleScroll);
     return () => {
       board.removeEventListener('scroll', handleScroll);
@@ -83,7 +80,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     setHoveredLineId(null);
     
     const { destination, source, draggableId } = result;
-    
     if (!destination) return;
     
     // Find the order being dragged
@@ -106,7 +102,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     
     const startDate = new Date(dateStr);
     
-    // Calculate end date based on order quantity and line capacity
+    // Calculate end date based on order quantity and line capacity (NO ramp-up used)
     let remainingQuantity = order.orderQuantity;
     let currentDate = new Date(startDate);
     const dailyPlan: { [date: string]: number } = {};
@@ -114,40 +110,25 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     while (remainingQuantity > 0) {
       // Skip weekends and holidays
       const isHoliday = holidays.some(h => isSameDay(h.date, currentDate));
-      
       if (!isWeekend(currentDate) && !isHoliday) {
-        // Check for ramp-up plan
-        const rampUp = rampUpPlans.find(r => r.lineId === line.id);
-        let dailyCapacity = line.capacity;
-        
-        if (rampUp) {
-          const daysSinceStart = differenceInDays(currentDate, startDate);
-          if (daysSinceStart < rampUp.days.length) {
-            dailyCapacity = Math.floor(line.capacity * rampUp.days[daysSinceStart]);
-          }
-        }
-        
+        const dailyCapacity = line.capacity;
         const dailyProduction = Math.min(remainingQuantity, dailyCapacity);
         const dateKey = format(currentDate, 'yyyy-MM-dd');
         dailyPlan[dateKey] = dailyProduction;
         remainingQuantity -= dailyProduction;
       }
-      
       // Move to next day
       currentDate.setDate(currentDate.getDate() + 1);
-      
       // Safety check to prevent infinite loop
       if (differenceInDays(currentDate, startDate) > 365) {
         break;
       }
     }
-    
     // Calculate end date as the last day in the daily plan
     const planDates = Object.keys(dailyPlan).map(d => new Date(d));
     const endDate = planDates.length > 0 
       ? new Date(Math.max(...planDates.map(d => d.getTime())))
       : startDate;
-    
     // Update order with new schedule
     onOrderScheduled({
       ...order,
@@ -167,7 +148,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const handleSplitOrder = (orderId: string) => {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
-    
     setSplitOrderId(orderId);
     setSplitQuantity(Math.floor(order.orderQuantity / 2)); // Default to half
   };
@@ -232,16 +212,13 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   // Calculate daily production for visualization
   const getDailyProduction = (order: Order) => {
     if (!order.actualProduction) return {};
-    
     return Object.entries(order.actualProduction).reduce<Record<string, number>>((acc, [date, qty]) => {
       // Only include dates within our visible range
       const orderDate = new Date(date);
       const diffFromStart = differenceInDays(orderDate, startDate);
-      
       if (diffFromStart >= 0 && diffFromStart < daysToShow) {
         acc[date] = qty;
       }
-      
       return acc;
     }, {});
   };
@@ -259,7 +236,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             const isWeekendDay = isWeekend(date);
             const isHoliday = isHolidayDate(date);
             const holidayName = getHolidayName(date);
-            
             return (
               <div 
                 key={index}
@@ -333,7 +309,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                       const isHovered = hoveredLineId === line.id && 
                                        hoveredDate && 
                                        isSameDay(hoveredDate, date);
-                      
                       return (
                         <Droppable
                           key={dateIndex}
@@ -359,15 +334,12 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                       );
                     })}
                   </div>
-                  
                   {/* Orders positioned on the timeline */}
                   {ordersByLine[line.id]?.map(order => {
                     const position = getOrderPosition(order);
                     if (!position) return null;
-                    
                     const dailyProduction = getDailyProduction(order);
                     const isBeingDragged = draggingOrderId === order.id;
-                    
                     return (
                       <div
                         key={order.id}
@@ -397,7 +369,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                               {order.planEndDate && format(new Date(order.planEndDate), 'MMM d')}
                             </span>
                           </div>
-                          
                           {/* Daily production visualization */}
                           {Object.keys(dailyProduction).length > 0 && (
                             <div className="mt-1 flex gap-1 overflow-hidden">
@@ -415,7 +386,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                               ))}
                             </div>
                           )}
-                          
                           {/* Expanded details */}
                           {showOrderDetails === order.id && (
                             <div className="mt-2 text-xs border-t pt-1">
@@ -455,7 +425,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           </div>
         </div>
       </div>
-      
       {/* Split order dialog */}
       {splitOrderId && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
