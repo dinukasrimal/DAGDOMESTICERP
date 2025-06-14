@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -627,8 +628,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       )}
 
       <div className="min-w-max">
-        {/* Header with dates */}
-        <div className="sticky top-0 z-10 bg-card border-b border-border">
+        {/* Header with dates - now sticky */}
+        <div className="sticky top-0 z-30 bg-card border-b border-border shadow-sm">
           <div className="flex">
             {/* Line header with PDF button */}
             <div className="w-48 p-4 border-r border-border bg-card">
