@@ -16,6 +16,13 @@ import { LinePlanReportDialog } from './reports/LinePlanReportDialog';
 import { downloadElementAsPdf } from '../lib/pdfUtils';
 import { toast } from "@/hooks/use-toast";
 import { dataService } from "../services/dataService";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/select";
 
 export const ProductionScheduler: React.FC = () => {
   const [userRole, setUserRole] = useState<'planner' | 'superuser'>('planner');
@@ -25,6 +32,7 @@ export const ProductionScheduler: React.FC = () => {
   const [showDeliveryReport, setShowDeliveryReport] = useState(false);
   const [showLinePlanReport, setShowLinePlanReport] = useState(false);
   const [selectedProductionLine, setSelectedProductionLine] = useState<ProductionLine | null>(null);
+  const [selectedLineIds, setSelectedLineIds] = useState<string[]>([]);
   
   const {
     orders,
@@ -47,6 +55,13 @@ export const ProductionScheduler: React.FC = () => {
     clearError
   } = useSupabaseProductionData();
 
+  // Initialize selected lines when production lines are loaded
+  React.useEffect(() => {
+    if (productionLines.length > 0 && selectedLineIds.length === 0) {
+      setSelectedLineIds(productionLines.map(line => line.id));
+    }
+  }, [productionLines, selectedLineIds.length]);
+
   const handleToggleAdmin = () => {
     setShowAdminPanel(!showAdminPanel);
   };
@@ -57,6 +72,19 @@ export const ProductionScheduler: React.FC = () => {
       setShowAdminPanel(false);
     }
   };
+
+  const handleLineFilterChange = (value: string) => {
+    if (value === 'all') {
+      setSelectedLineIds(productionLines.map(line => line.id));
+    } else {
+      setSelectedLineIds([value]);
+    }
+  };
+
+  // Filter production lines based on selection
+  const filteredProductionLines = productionLines.filter(line => 
+    selectedLineIds.includes(line.id)
+  );
 
   // Helper function to find magnetically connected orders
   const findMagneticChain = useCallback((startOrder: Order, allOrders: Order[]): Order[] => {
@@ -438,6 +466,37 @@ export const ProductionScheduler: React.FC = () => {
           onRoleChange={handleRoleChange}
         />
         
+        {/* Line Filter Dropdown */}
+        <div className="p-4 border-b border-border bg-card">
+          <div className="flex items-center gap-4">
+            <label className="text-sm font-medium text-muted-foreground">
+              Show Lines:
+            </label>
+            <Select
+              value={selectedLineIds.length === productionLines.length ? 'all' : selectedLineIds[0] || ''}
+              onValueChange={handleLineFilterChange}
+            >
+              <SelectTrigger className="w-48">
+                <SelectValue placeholder="Select lines to show" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Lines</SelectItem>
+                {productionLines.map(line => (
+                  <SelectItem key={line.id} value={line.id}>
+                    {line.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span className="text-xs text-muted-foreground">
+              {selectedLineIds.length === productionLines.length 
+                ? `Showing all ${productionLines.length} lines`
+                : `Showing ${selectedLineIds.length} of ${productionLines.length} lines`
+              }
+            </span>
+          </div>
+        </div>
+        
         <div className="flex-1 flex overflow-hidden">
           {/* Sidebar container: Now scrollable if content overflows, fix width */}
           <div className="w-80 h-full border-r border-border bg-card flex flex-col overflow-y-auto">
@@ -515,7 +574,7 @@ export const ProductionScheduler: React.FC = () => {
           <div className="flex-1 overflow-auto">
             <SchedulingBoard
               orders={orders}
-              productionLines={productionLines}
+              productionLines={filteredProductionLines}
               holidays={holidays}
               rampUpPlans={rampUpPlans}
               onOrderScheduled={handleOrderScheduled}
