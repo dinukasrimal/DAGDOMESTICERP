@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useCallback } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -589,53 +590,58 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
       {/* Main Schedule Grid */}
       <div className="flex-1 overflow-auto bg-background">
-        <div className="grid grid-cols-[280px_repeat(30,_140px)] min-w-max">
-          {/* Header Row - Sticky */}
-          <div className="sticky top-0 z-20 bg-card border-b-2 border-border shadow-sm">
-            <div className="h-20 p-4 border-r border-border flex items-center bg-card">
-              <div className="flex items-center space-x-2">
-                <CalendarDays className="h-6 w-6 text-muted-foreground" />
-                <span className="font-bold text-lg text-foreground">Production Lines</span>
+        <div className="min-w-max">
+          {/* Header Row */}
+          <div className="sticky top-0 z-30 bg-white border-b-2 border-gray-200 shadow-sm flex">
+            {/* Production Lines Header - Fixed at front */}
+            <div className="sticky left-0 z-40 w-80 bg-white border-r-2 border-gray-300 shadow-lg">
+              <div className="h-20 p-4 flex items-center justify-center bg-gradient-to-r from-blue-50 to-blue-100 border-r border-gray-300">
+                <div className="flex items-center space-x-3">
+                  <CalendarDays className="h-6 w-6 text-blue-600" />
+                  <span className="font-bold text-lg text-gray-800">Production Lines</span>
+                </div>
               </div>
+            </div>
+            
+            {/* Date Headers */}
+            <div className="flex">
+              {dates.map(date => (
+                <div
+                  key={date.toISOString()}
+                  className={`w-40 h-20 p-3 border-r border-gray-200 flex flex-col justify-center items-center text-center ${
+                    isHoliday(date) ? 'bg-red-50 border-red-200' : 'bg-white'
+                  }`}
+                >
+                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                    {date.toLocaleDateString('en-US', { weekday: 'short' })}
+                  </div>
+                  <div className="text-lg font-bold text-gray-800 mt-1">
+                    {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  </div>
+                  {isHoliday(date) && (
+                    <div className="text-xs text-red-600 font-semibold mt-1">Holiday</div>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
-          
-          {/* Date Headers */}
-          {dates.map(date => (
-            <div
-              key={date.toISOString()}
-              className={`sticky top-0 z-20 h-20 p-3 border-r border-border flex flex-col justify-center items-center text-center shadow-sm ${
-                isHoliday(date) ? 'bg-red-50 border-red-200' : 'bg-card'
-              }`}
-            >
-              <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                {date.toLocaleDateString('en-US', { weekday: 'short' })}
-              </div>
-              <div className="text-lg font-bold text-foreground mt-1">
-                {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-              </div>
-              {isHoliday(date) && (
-                <div className="text-xs text-red-600 font-semibold mt-1">Holiday</div>
-              )}
-            </div>
-          ))}
 
           {/* Production Line Rows */}
           {productionLines.map(line => (
-            <React.Fragment key={line.id}>
-              {/* Line Header - Sticky Left */}
-              <div className="sticky left-0 z-10 bg-card border-r-2 border-border border-b border-border shadow-sm">
-                <div className="h-40 p-4 flex flex-col justify-between">
+            <div key={line.id} className="flex border-b border-gray-200">
+              {/* Line Header - Fixed at front */}
+              <div className="sticky left-0 z-20 w-80 bg-white border-r-2 border-gray-300 shadow-md">
+                <div className="h-40 p-4 flex flex-col justify-between bg-gradient-to-r from-gray-50 to-gray-100">
                   <div className="space-y-2">
-                    <div className="font-bold text-foreground text-lg">{line.name}</div>
-                    <div className="text-sm text-muted-foreground">
-                      Capacity: <span className="font-semibold text-foreground">{line.capacity}</span>
+                    <div className="font-bold text-gray-800 text-lg">{line.name}</div>
+                    <div className="text-sm text-gray-600">
+                      Capacity: <span className="font-semibold text-gray-800">{line.capacity}</span>
                     </div>
                   </div>
                   <Button
                     variant="outline"
                     size="sm"
-                    className="w-full text-xs h-9 flex items-center gap-2 font-medium"
+                    className="w-full text-xs h-9 flex items-center gap-2 font-medium border-gray-300 hover:bg-blue-50 hover:border-blue-300"
                     onClick={() => handleDownloadLinePdf(line.id, line.name)}
                     title="Download Production Plan PDF"
                   >
@@ -646,131 +652,150 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
               </div>
 
               {/* Date Cells for this Line */}
-              {dates.map(date => {
-                const cellKey = `${line.id}-${date.toISOString().split('T')[0]}`;
-                const isHighlighted = dragHighlight === cellKey;
-                const utilizationPercent = calculateTotalUtilization(line.id, date);
-                const ordersInCell = getOrdersForCell(line.id, date);
-                const isHolidayCell = isHoliday(date);
-                const availableCapacity = getAvailableCapacity(line.id, date);
+              <div className="flex">
+                {dates.map(date => {
+                  const cellKey = `${line.id}-${date.toISOString().split('T')[0]}`;
+                  const isHighlighted = dragHighlight === cellKey;
+                  const utilizationPercent = calculateTotalUtilization(line.id, date);
+                  const ordersInCell = getOrdersForCell(line.id, date);
+                  const isHolidayCell = isHoliday(date);
+                  const availableCapacity = getAvailableCapacity(line.id, date);
 
-                return (
-                  <div
-                    key={cellKey}
-                    className={`h-40 border-r border-b border-border relative transition-all duration-200 ${
-                      isHolidayCell
-                        ? 'bg-red-50/50'
-                        : isHighlighted
-                          ? 'bg-blue-100 border-blue-300 border-2'
-                          : 'bg-background hover:bg-gray-50'
-                    }`}
-                    onDrop={(e) => handleDrop(e, line.id, date)}
-                    onDragOver={handleDragOver}
-                    onDragEnter={(e) => handleDragEnter(e, line.id, date)}
-                    onDragLeave={handleDragLeave}
-                  >
-                    {/* Utilization Bar */}
-                    {utilizationPercent > 0 && !isHolidayCell && (
-                      <div
-                        className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-blue-200 to-blue-100 transition-all duration-300 opacity-60"
-                        style={{ height: `${Math.min(utilizationPercent, 100)}%` }}
-                      />
-                    )}
+                  return (
+                    <div
+                      key={cellKey}
+                      className={`w-40 h-40 border-r border-gray-200 relative transition-all duration-200 ${
+                        isHolidayCell
+                          ? 'bg-red-50/50'
+                          : isHighlighted
+                            ? 'bg-blue-100 border-blue-300 border-2'
+                            : 'bg-white hover:bg-gray-50'
+                      }`}
+                      onDrop={(e) => handleDrop(e, line.id, date)}
+                      onDragOver={handleDragOver}
+                      onDragEnter={(e) => handleDragEnter(e, line.id, date)}
+                      onDragLeave={handleDragLeave}
+                    >
+                      {/* Utilization Bar */}
+                      {utilizationPercent > 0 && !isHolidayCell && (
+                        <div
+                          className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-blue-200 to-blue-100 transition-all duration-300 opacity-60"
+                          style={{ height: `${Math.min(utilizationPercent, 100)}%` }}
+                        />
+                      )}
 
-                    {/* Empty Cell Plus Icon */}
-                    {!isHolidayCell && ordersInCell.length === 0 && (
-                      <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
-                        <Plus className="h-6 w-6 text-muted-foreground" />
-                      </div>
-                    )}
+                      {/* Empty Cell Plus Icon */}
+                      {!isHolidayCell && ordersInCell.length === 0 && (
+                        <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
+                          <Plus className="h-6 w-6 text-gray-400" />
+                        </div>
+                      )}
 
-                    {/* Available Capacity Badge */}
-                    {!isHolidayCell && availableCapacity > 0 && ordersInCell.length > 0 && (
-                      <div className="absolute top-2 right-2 text-xs bg-green-100 text-green-700 px-2 py-1 rounded-md font-semibold">
-                        {availableCapacity}
-                      </div>
-                    )}
+                      {/* Available Capacity Badge */}
+                      {!isHolidayCell && availableCapacity > 0 && ordersInCell.length > 0 && (
+                        <div className="absolute top-2 right-2 text-xs bg-green-100 text-green-700 px-2 py-1 rounded-md font-semibold shadow-sm">
+                          {availableCapacity}
+                        </div>
+                      )}
 
-                    {/* Drop Highlight */}
-                    {isHighlighted && !isHolidayCell && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-blue-50 border-2 border-blue-300 border-dashed rounded-sm">
-                        <div className="text-sm font-semibold text-blue-600 bg-white px-3 py-2 rounded-md shadow-sm">
-                          Drop Here
+                      {/* Drop Highlight */}
+                      {isHighlighted && !isHolidayCell && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-blue-50 border-2 border-blue-300 border-dashed rounded-sm">
+                          <div className="text-sm font-semibold text-blue-600 bg-white px-3 py-2 rounded-md shadow-sm">
+                            Drop Here
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Orders in Cell - Improved layout */}
+                      <div className="p-2 h-full overflow-y-auto">
+                        <div className="space-y-1">
+                          {ordersInCell.map((scheduledOrder, index) => {
+                            const dateStr = date.toISOString().split('T')[0];
+                            const dailyQty = scheduledOrder.actualProduction?.[dateStr] || 0;
+                            const shouldHighlight = shouldHighlightRed(scheduledOrder, date);
+                            const isSelected = selectedOrders.has(scheduledOrder.id);
+
+                            return (
+                              <div
+                                key={`${scheduledOrder.id}-${dateStr}`}
+                                className={`rounded-lg text-xs p-2 group cursor-move transition-all duration-200 border ${
+                                  isSelected
+                                    ? 'ring-2 ring-blue-500 bg-blue-50 shadow-md border-blue-300'
+                                    : shouldHighlight
+                                      ? 'bg-red-100 border-red-400 text-red-800 shadow-md'
+                                      : index % 2 === 0
+                                        ? 'bg-blue-50 border-blue-200 text-blue-800 hover:bg-blue-100 shadow-sm'
+                                        : 'bg-green-50 border-green-200 text-green-800 hover:bg-green-100 shadow-sm'
+                                }`}
+                                draggable
+                                onDragStart={(e) => handleOrderDragStart(e, scheduledOrder)}
+                                onDragEnd={handleOrderDragEnd}
+                                onClick={(e) => handleOrderClick(e, scheduledOrder.id)}
+                              >
+                                {/* Order Header */}
+                                <div className="flex items-center justify-between mb-1">
+                                  <div className="flex items-center space-x-1 min-w-0 flex-1">
+                                    <GripVertical className="h-3 w-3 opacity-60 flex-shrink-0" />
+                                    <span className="truncate font-semibold text-xs">{scheduledOrder.poNumber}</span>
+                                  </div>
+                                  <div className="opacity-0 group-hover:opacity-100 flex space-x-1 flex-shrink-0">
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="h-4 w-4 p-0 hover:bg-red-100"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onOrderMovedToPending(scheduledOrder);
+                                      }}
+                                      title="Move back to pending"
+                                    >
+                                      <ArrowLeft className="h-3 w-3" />
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="h-4 w-4 p-0 hover:bg-gray-100"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onOrderSplit(scheduledOrder.id, Math.floor(scheduledOrder.orderQuantity / 2));
+                                      }}
+                                      title="Split order"
+                                    >
+                                      <Scissors className="h-3 w-3" />
+                                    </Button>
+                                  </div>
+                                </div>
+
+                                {/* Order Details */}
+                                <div className="space-y-0.5 text-xs">
+                                  <div className="truncate opacity-90">
+                                    <span className="font-medium">Style:</span> {scheduledOrder.styleId}
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span className="opacity-90">
+                                      <span className="font-medium">Qty:</span> {dailyQty.toLocaleString()}
+                                    </span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span className="opacity-90">
+                                      <span className="font-medium">Cut:</span> {scheduledOrder.cutQuantity.toLocaleString()}
+                                    </span>
+                                    <span className="opacity-90">
+                                      <span className="font-medium">Issue:</span> {scheduledOrder.issueQuantity.toLocaleString()}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
-                    )}
-
-                    {/* Orders in Cell */}
-                    <div className="p-2 space-y-2 relative z-10 h-full flex flex-col">
-                      {ordersInCell.map((scheduledOrder, index) => {
-                        const dateStr = date.toISOString().split('T')[0];
-                        const dailyQty = scheduledOrder.actualProduction?.[dateStr] || 0;
-                        const shouldHighlight = shouldHighlightRed(scheduledOrder, date);
-                        const isSelected = selectedOrders.has(scheduledOrder.id);
-
-                        return (
-                          <div
-                            key={`${scheduledOrder.id}-${dateStr}`}
-                            className={`rounded-md text-xs p-2 group cursor-move transition-all duration-200 flex-1 min-h-[32px] ${
-                              isSelected
-                                ? 'ring-2 ring-blue-500 bg-blue-50 shadow-md'
-                                : shouldHighlight
-                                  ? 'bg-red-100 border border-red-400 text-red-800 shadow-md'
-                                  : index % 2 === 0
-                                    ? 'bg-blue-50 border border-blue-200 text-blue-800 hover:bg-blue-100 shadow-sm'
-                                    : 'bg-green-50 border border-green-200 text-green-800 hover:bg-green-100 shadow-sm'
-                            }`}
-                            draggable
-                            onDragStart={(e) => handleOrderDragStart(e, scheduledOrder)}
-                            onDragEnd={handleOrderDragEnd}
-                            onClick={(e) => handleOrderClick(e, scheduledOrder.id)}
-                          >
-                            <div className="flex items-center justify-between mb-2">
-                              <div className="flex items-center space-x-1">
-                                <GripVertical className="h-3 w-3 opacity-60" />
-                                <span className="truncate font-semibold text-xs">{scheduledOrder.poNumber}</span>
-                              </div>
-                              <div className="opacity-0 group-hover:opacity-100 flex space-x-1">
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="h-5 w-5 p-0 hover:bg-red-100"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onOrderMovedToPending(scheduledOrder);
-                                  }}
-                                  title="Move back to pending"
-                                >
-                                  <ArrowLeft className="h-3 w-3" />
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="h-5 w-5 p-0 hover:bg-gray-100"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onOrderSplit(scheduledOrder.id, Math.floor(scheduledOrder.orderQuantity / 2));
-                                  }}
-                                  title="Split order"
-                                >
-                                  <Scissors className="h-3 w-3" />
-                                </Button>
-                              </div>
-                            </div>
-                            <div className="space-y-1 text-xs">
-                              <div className="truncate opacity-80 font-medium">Style: {scheduledOrder.styleId}</div>
-                              <div className="truncate opacity-80">Qty: <span className="font-semibold">{dailyQty.toLocaleString()}</span></div>
-                              <div className="truncate opacity-80">Cut: <span className="font-semibold">{scheduledOrder.cutQuantity.toLocaleString()}</span></div>
-                              <div className="truncate opacity-80">Issue: <span className="font-semibold">{scheduledOrder.issueQuantity.toLocaleString()}</span></div>
-                            </div>
-                          </div>
-                        );
-                      })}
                     </div>
-                  </div>
-                );
-              })}
-            </React.Fragment>
+                  );
+                })}
+              </div>
+            </div>
           ))}
         </div>
       </div>
