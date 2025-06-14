@@ -112,11 +112,13 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   // --- OVERLAP: Helper to get all affected orders for overlap
   const getOverlappingOrders = useCallback((order: Order, lineId: string, date: Date) => {
-    const line = productionLines.find(l => l.id === lineId); if (!line) return [];
+    const line = productionLines.find(l => l.id === lineId);
+    if (!line) return [];
     const dailyCapacity = line.capacity;
     const totalDays = Math.ceil(order.orderQuantity / dailyCapacity);
     const overlappingOrders: Order[] = [];
-    const newOrderEndDate = new Date(date); newOrderEndDate.setDate(newOrderEndDate.getDate() + totalDays - 1);
+    const newOrderEndDate = new Date(date);
+    newOrderEndDate.setDate(newOrderEndDate.getDate() + totalDays - 1);
     orders.forEach(existing => {
       if (existing.status === 'scheduled' &&
           existing.assignedLineId === lineId &&
@@ -222,7 +224,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent, lineId: string, date: Date) => {
-    e.preventDefault(); setDragHighlight(null);
+    e.preventDefault();
+    setDragHighlight(null);
     if (isHoliday(date)) return;
     try {
       const orderData = JSON.parse(e.dataTransfer.getData('text/plain'));
@@ -250,7 +253,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     } catch (error) {
       console.error('❌ Failed to parse dropped order data:', error);
     }
-  }, [isHoliday, getOverlappingOrders, productionLines, isMultiSelectMode, selectedOrders]);
+  }, [isHoliday, getOverlappingOrders, productionLines]);
 
   // --- Revised "before" Overlap Handling Workflow ---
   // 1. onConfirm(before): move all overlapping orders to pending, only schedule the new order first.
@@ -271,7 +274,9 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
     if (placement === 'before') {
       // Step 1: move all overlappers to pending
-      for (const order of overlappingOrders) { await onOrderMovedToPending(order); }
+      for (const order of overlappingOrders) { 
+        await onOrderMovedToPending(order); 
+      }
       // Step 2: just schedule the newOrder at originalTargetDate
       setScheduleDialog({
         isOpen: true,
@@ -362,7 +367,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const handleScheduleConfirm = useCallback(async () => {
     const { order, lineId, startDate, fillFirstDay } = scheduleDialog;
     if (!order || !lineId || !startDate) return;
-    const selectedLine = productionLines.find(l => l.id === lineId); if (!selectedLine) return;
+    const selectedLine = productionLines.find(l => l.id === lineId);
+    if (!selectedLine) return;
     if (planningMethod === 'rampup' && !selectedRampUpPlanId) return;
     try {
       let dailyPlan: { [date: string]: number };
@@ -382,7 +388,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const updatedOrder = { ...order, assignedLineId: lineId };
       await onOrderScheduled(updatedOrder, startDate, endDate, dailyPlan);
       setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
-      setPlanningMethod('capacity'); setSelectedRampUpPlanId('');
+      setPlanningMethod('capacity');
+      setSelectedRampUpPlanId('');
 
       if (pendingReschedule.toSchedule.length > 0 && pendingReschedule.afterOrderId === order.id && pendingReschedule.lineId) {
         let newPlanEnd: Date | null = endDate;
@@ -582,13 +589,13 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
       {/* Main Schedule Grid */}
       <div className="flex-1 overflow-auto bg-background">
-        <div className="grid grid-cols-[240px_repeat(30,_140px)] min-w-max">
+        <div className="grid grid-cols-[280px_repeat(30,_140px)] min-w-max">
           {/* Header Row - Sticky */}
           <div className="sticky top-0 z-20 bg-card border-b-2 border-border shadow-sm">
-            <div className="h-16 p-3 border-r border-border flex items-center bg-card">
+            <div className="h-20 p-4 border-r border-border flex items-center bg-card">
               <div className="flex items-center space-x-2">
-                <CalendarDays className="h-5 w-5 text-muted-foreground" />
-                <span className="font-semibold text-foreground">Production Lines</span>
+                <CalendarDays className="h-6 w-6 text-muted-foreground" />
+                <span className="font-bold text-lg text-foreground">Production Lines</span>
               </div>
             </div>
           </div>
@@ -597,18 +604,18 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           {dates.map(date => (
             <div
               key={date.toISOString()}
-              className={`sticky top-0 z-20 h-16 p-2 border-r border-border flex flex-col justify-center items-center text-center shadow-sm ${
+              className={`sticky top-0 z-20 h-20 p-3 border-r border-border flex flex-col justify-center items-center text-center shadow-sm ${
                 isHoliday(date) ? 'bg-red-50 border-red-200' : 'bg-card'
               }`}
             >
-              <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                 {date.toLocaleDateString('en-US', { weekday: 'short' })}
               </div>
-              <div className="text-sm font-semibold text-foreground">
+              <div className="text-lg font-bold text-foreground mt-1">
                 {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
               </div>
               {isHoliday(date) && (
-                <div className="text-xs text-red-600 font-medium">Holiday</div>
+                <div className="text-xs text-red-600 font-semibold mt-1">Holiday</div>
               )}
             </div>
           ))}
@@ -617,23 +624,23 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           {productionLines.map(line => (
             <React.Fragment key={line.id}>
               {/* Line Header - Sticky Left */}
-              <div className="sticky left-0 z-10 bg-card border-r border-border border-b border-border">
-                <div className="h-32 p-3 flex flex-col justify-between">
-                  <div>
-                    <div className="font-semibold text-foreground text-sm mb-1">{line.name}</div>
-                    <div className="text-xs text-muted-foreground mb-2">
-                      Capacity: <span className="font-medium">{line.capacity}</span>
+              <div className="sticky left-0 z-10 bg-card border-r-2 border-border border-b border-border shadow-sm">
+                <div className="h-40 p-4 flex flex-col justify-between">
+                  <div className="space-y-2">
+                    <div className="font-bold text-foreground text-lg">{line.name}</div>
+                    <div className="text-sm text-muted-foreground">
+                      Capacity: <span className="font-semibold text-foreground">{line.capacity}</span>
                     </div>
                   </div>
                   <Button
                     variant="outline"
                     size="sm"
-                    className="w-full text-xs h-8 flex items-center gap-1"
+                    className="w-full text-xs h-9 flex items-center gap-2 font-medium"
                     onClick={() => handleDownloadLinePdf(line.id, line.name)}
                     title="Download Production Plan PDF"
                   >
-                    <FileDown className="w-3 h-3" />
-                    Plan PDF
+                    <FileDown className="w-4 h-4" />
+                    Download Plan
                   </Button>
                 </div>
               </div>
@@ -650,7 +657,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                 return (
                   <div
                     key={cellKey}
-                    className={`h-32 border-r border-b border-border relative transition-all duration-200 ${
+                    className={`h-40 border-r border-b border-border relative transition-all duration-200 ${
                       isHolidayCell
                         ? 'bg-red-50/50'
                         : isHighlighted
@@ -673,13 +680,13 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                     {/* Empty Cell Plus Icon */}
                     {!isHolidayCell && ordersInCell.length === 0 && (
                       <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
-                        <Plus className="h-5 w-5 text-muted-foreground" />
+                        <Plus className="h-6 w-6 text-muted-foreground" />
                       </div>
                     )}
 
                     {/* Available Capacity Badge */}
                     {!isHolidayCell && availableCapacity > 0 && ordersInCell.length > 0 && (
-                      <div className="absolute top-1 right-1 text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">
+                      <div className="absolute top-2 right-2 text-xs bg-green-100 text-green-700 px-2 py-1 rounded-md font-semibold">
                         {availableCapacity}
                       </div>
                     )}
@@ -687,14 +694,14 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                     {/* Drop Highlight */}
                     {isHighlighted && !isHolidayCell && (
                       <div className="absolute inset-0 flex items-center justify-center bg-blue-50 border-2 border-blue-300 border-dashed rounded-sm">
-                        <div className="text-xs font-medium text-blue-600 bg-white px-2 py-1 rounded shadow-sm">
+                        <div className="text-sm font-semibold text-blue-600 bg-white px-3 py-2 rounded-md shadow-sm">
                           Drop Here
                         </div>
                       </div>
                     )}
 
                     {/* Orders in Cell */}
-                    <div className="p-1 space-y-1 relative z-10 h-full flex flex-col">
+                    <div className="p-2 space-y-2 relative z-10 h-full flex flex-col">
                       {ordersInCell.map((scheduledOrder, index) => {
                         const dateStr = date.toISOString().split('T')[0];
                         const dailyQty = scheduledOrder.actualProduction?.[dateStr] || 0;
@@ -704,30 +711,30 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                         return (
                           <div
                             key={`${scheduledOrder.id}-${dateStr}`}
-                            className={`rounded-sm text-xs p-1.5 group cursor-move transition-all duration-200 flex-1 min-h-[24px] ${
+                            className={`rounded-md text-xs p-2 group cursor-move transition-all duration-200 flex-1 min-h-[32px] ${
                               isSelected
-                                ? 'ring-2 ring-blue-500 bg-blue-50 shadow-sm'
+                                ? 'ring-2 ring-blue-500 bg-blue-50 shadow-md'
                                 : shouldHighlight
-                                  ? 'bg-red-100 border border-red-400 text-red-800 shadow-sm'
+                                  ? 'bg-red-100 border border-red-400 text-red-800 shadow-md'
                                   : index % 2 === 0
-                                    ? 'bg-blue-50 border border-blue-200 text-blue-800 hover:bg-blue-100'
-                                    : 'bg-green-50 border border-green-200 text-green-800 hover:bg-green-100'
+                                    ? 'bg-blue-50 border border-blue-200 text-blue-800 hover:bg-blue-100 shadow-sm'
+                                    : 'bg-green-50 border border-green-200 text-green-800 hover:bg-green-100 shadow-sm'
                             }`}
                             draggable
                             onDragStart={(e) => handleOrderDragStart(e, scheduledOrder)}
                             onDragEnd={handleOrderDragEnd}
                             onClick={(e) => handleOrderClick(e, scheduledOrder.id)}
                           >
-                            <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center space-x-1">
-                                <GripVertical className="h-3 w-3 opacity-50" />
-                                <span className="truncate font-medium text-xs">{scheduledOrder.poNumber}</span>
+                                <GripVertical className="h-3 w-3 opacity-60" />
+                                <span className="truncate font-semibold text-xs">{scheduledOrder.poNumber}</span>
                               </div>
                               <div className="opacity-0 group-hover:opacity-100 flex space-x-1">
                                 <Button
                                   size="sm"
                                   variant="ghost"
-                                  className="h-4 w-4 p-0 hover:bg-red-100"
+                                  className="h-5 w-5 p-0 hover:bg-red-100"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     onOrderMovedToPending(scheduledOrder);
@@ -739,7 +746,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                                 <Button
                                   size="sm"
                                   variant="ghost"
-                                  className="h-4 w-4 p-0 hover:bg-gray-100"
+                                  className="h-5 w-5 p-0 hover:bg-gray-100"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     onOrderSplit(scheduledOrder.id, Math.floor(scheduledOrder.orderQuantity / 2));
@@ -750,11 +757,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                                 </Button>
                               </div>
                             </div>
-                            <div className="space-y-0.5 text-xs">
-                              <div className="truncate opacity-75">Style: {scheduledOrder.styleId}</div>
-                              <div className="truncate opacity-75">Qty: {dailyQty.toLocaleString()}</div>
-                              <div className="truncate opacity-75">Cut: {scheduledOrder.cutQuantity.toLocaleString()}</div>
-                              <div className="truncate opacity-75">Issue: {scheduledOrder.issueQuantity.toLocaleString()}</div>
+                            <div className="space-y-1 text-xs">
+                              <div className="truncate opacity-80 font-medium">Style: {scheduledOrder.styleId}</div>
+                              <div className="truncate opacity-80">Qty: <span className="font-semibold">{dailyQty.toLocaleString()}</span></div>
+                              <div className="truncate opacity-80">Cut: <span className="font-semibold">{scheduledOrder.cutQuantity.toLocaleString()}</span></div>
+                              <div className="truncate opacity-80">Issue: <span className="font-semibold">{scheduledOrder.issueQuantity.toLocaleString()}</span></div>
                             </div>
                           </div>
                         );
