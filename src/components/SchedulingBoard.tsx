@@ -63,6 +63,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const [dragHighlight, setDragHighlight] = useState<string | null>(null);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+  const [hoveredCard, setHoveredCard] = useState<string | null>(null);
 
   // Generate date range (next 30 days)
   const dates = Array.from({ length: 30 }, (_, i) => {
@@ -111,7 +112,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return Math.max(0, line.capacity - totalUsed);
   }, [productionLines, getOrdersForCell]);
 
-  // --- OVERLAP: Helper to get all affected orders for overlap
   const getOverlappingOrders = useCallback((order: Order, lineId: string, date: Date) => {
     const line = productionLines.find(l => l.id === lineId);
     if (!line) return [];
@@ -135,7 +135,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return overlappingOrders;
   }, [orders, productionLines]);
 
-  // Helper for daily production (same, but can be improved by extracting to smaller file in the future)
   const calculateDailyProductionWithSharing = useCallback((order: Order, line: ProductionLine, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
@@ -204,7 +203,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [selectedOrders]);
 
-  // --- Drag & Drop ---
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
@@ -256,10 +254,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [isHoliday, getOverlappingOrders, productionLines]);
 
-  // --- Revised "before" Overlap Handling Workflow ---
-  // 1. onConfirm(before): move all overlapping orders to pending, only schedule the new order first.
-  // 2. Once that schedule completes, THEN schedule previous overlappers after new planEndDate.
-  // This requires tracking what needs to be scheduled next after current dialog closes!
   const [pendingReschedule, setPendingReschedule] = useState<{
     toSchedule: Order[];
     afterOrderId: string | null;
@@ -274,36 +268,29 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     if (!lineId) return;
 
     if (placement === 'before') {
-      // Step 1: move all overlappers to pending
       for (const order of overlappingOrders) { 
         await onOrderMovedToPending(order); 
       }
-      // Step 2: just schedule the newOrder at originalTargetDate
       setScheduleDialog({
         isOpen: true,
         order: newOrder,
         lineId,
-        startDate: originalTargetDate // this is the "before" drop date!
+        startDate: originalTargetDate
       });
-      // Step 3: queue up magnetically rescheduling the overlappers after newOrder
       setPendingReschedule({ toSchedule: overlappingOrders, afterOrderId: newOrder.id, lineId });
     } else {
-      // "After" logic: move new order after overlappers' latest end date,
-      // but utilize capacity on the last day if space allows!
       let latestEnd: Date | null = targetDate;
       overlappingOrders.forEach(o => o.planEndDate && o.planEndDate > latestEnd! && (latestEnd = new Date(o.planEndDate)));
       if (!latestEnd) return;
       const selectedLine = productionLines.find(l => l.id === lineId);
       if (!selectedLine) return;
 
-      // Find available capacity on the last day of the overlap
       const lastDayStr = latestEnd.toISOString().split('T')[0];
       const usedCapacityOnLastDay = getOrdersForCell(lineId, latestEnd).reduce(
         (sum, order) => sum + (order.actualProduction?.[lastDayStr] || 0), 0
       );
       const availableCapacityOnLastDay = Math.max(0, selectedLine.capacity - usedCapacityOnLastDay);
 
-      // If we have capacity, start from latestEnd, else start from next day
       let startDateForNewOrder = new Date(latestEnd);
       let fillFirstDay = 0;
       if (availableCapacityOnLastDay > 0) {
@@ -320,7 +307,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         fillFirstDay: fillFirstDay
       });
 
-      setPendingReschedule({ toSchedule: [], afterOrderId: null, lineId: null }); // no post-hook
+      setPendingReschedule({ toSchedule: [], afterOrderId: null, lineId: null });
     }
     setOverlapDialog({
       isOpen: false,
@@ -332,7 +319,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     });
   }, [overlapDialog, productionLines, onOrderMovedToPending, getOrdersForCell]);
 
-  // PATCHED: Create a helper function for scheduling an order as a solid, contiguous block across working days
   const getContiguousProductionPlan = (
     qty: number,
     lineCapacity: number,
@@ -464,12 +450,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       e.currentTarget.style.opacity = '1';
     }
 
-    // Clear selection after drag
     setSelectedOrders(new Set());
     setIsMultiSelectMode(false);
   }, []);
 
-  // Helper function to check if order should be highlighted in red
   const shouldHighlightRed = useCallback((order: Order, date: Date) => {
     const now = new Date();
     const startOfWeek = new Date(now);
@@ -490,14 +474,12 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
            date.toDateString() === order.planStartDate.toDateString();
   }, []);
 
-  // New handler to download plan PDF for a single line
   const handleDownloadLinePdf = async (lineId: string, lineName: string) => {
     const reportId = `line-pdf-report-${lineId}`;
     const fileName = `${lineName.replace(/\s+/g, '_')}_Production_Plan`;
     await downloadElementAsPdf(reportId, fileName);
   };
 
-  // Helper: Get all scheduled orders (distinct by orderId) for a line
   const getScheduledOrdersForLine = (lineId: string) => {
     return orders
       .filter(order => order.status === 'scheduled' && order.assignedLineId === lineId)
@@ -707,83 +689,122 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                         </div>
                       )}
 
-                      {/* Orders in Cell - Improved layout */}
-                      <div className="p-2 h-full overflow-y-auto">
-                        <div className="space-y-1">
+                      {/* Orders in Cell - Properly sized with hover effects */}
+                      <div className="absolute inset-0 p-1 overflow-hidden">
+                        <div className="h-full flex flex-col gap-0.5">
                           {ordersInCell.map((scheduledOrder, index) => {
                             const dateStr = date.toISOString().split('T')[0];
                             const dailyQty = scheduledOrder.actualProduction?.[dateStr] || 0;
                             const shouldHighlight = shouldHighlightRed(scheduledOrder, date);
                             const isSelected = selectedOrders.has(scheduledOrder.id);
+                            const cardKey = `${scheduledOrder.id}-${dateStr}`;
+                            const isHovered = hoveredCard === cardKey;
+
+                            // Calculate available height for each card
+                            const cardCount = ordersInCell.length;
+                            const availableHeight = 152; // 160px - 8px padding
+                            const cardHeight = Math.max(32, Math.floor(availableHeight / cardCount) - 2);
 
                             return (
                               <div
-                                key={`${scheduledOrder.id}-${dateStr}`}
-                                className={`rounded-lg text-xs p-2 group cursor-move transition-all duration-200 border ${
+                                key={cardKey}
+                                className={`relative rounded-md text-xs cursor-move transition-all duration-300 border overflow-hidden ${
                                   isSelected
-                                    ? 'ring-2 ring-blue-500 bg-blue-50 shadow-md border-blue-300'
+                                    ? 'ring-2 ring-blue-500 bg-blue-50 shadow-lg border-blue-300 z-30'
                                     : shouldHighlight
-                                      ? 'bg-red-100 border-red-400 text-red-800 shadow-md'
+                                      ? 'bg-red-100 border-red-400 text-red-800 shadow-md z-20'
                                       : index % 2 === 0
-                                        ? 'bg-blue-50 border-blue-200 text-blue-800 hover:bg-blue-100 shadow-sm'
-                                        : 'bg-green-50 border-green-200 text-green-800 hover:bg-green-100 shadow-sm'
+                                        ? 'bg-blue-50 border-blue-200 text-blue-800 hover:bg-blue-100 shadow-sm z-10'
+                                        : 'bg-green-50 border-green-200 text-green-800 hover:bg-green-100 shadow-sm z-10'
+                                } ${
+                                  isHovered 
+                                    ? 'scale-110 shadow-2xl z-40 bg-white border-gray-400 text-gray-900' 
+                                    : ''
                                 }`}
+                                style={{
+                                  height: isHovered ? 'auto' : `${cardHeight}px`,
+                                  minHeight: isHovered ? '120px' : `${cardHeight}px`,
+                                  maxHeight: isHovered ? '200px' : `${cardHeight}px`
+                                }}
                                 draggable
                                 onDragStart={(e) => handleOrderDragStart(e, scheduledOrder)}
                                 onDragEnd={handleOrderDragEnd}
                                 onClick={(e) => handleOrderClick(e, scheduledOrder.id)}
+                                onMouseEnter={() => setHoveredCard(cardKey)}
+                                onMouseLeave={() => setHoveredCard(null)}
                               >
-                                {/* Order Header */}
-                                <div className="flex items-center justify-between mb-1">
-                                  <div className="flex items-center space-x-1 min-w-0 flex-1">
-                                    <GripVertical className="h-3 w-3 opacity-60 flex-shrink-0" />
-                                    <span className="truncate font-semibold text-xs">{scheduledOrder.poNumber}</span>
+                                <div className="p-1.5 h-full flex flex-col">
+                                  {/* Order Header - Always visible */}
+                                  <div className="flex items-center justify-between mb-1 flex-shrink-0">
+                                    <div className="flex items-center space-x-1 min-w-0 flex-1">
+                                      <GripVertical className="h-2.5 w-2.5 opacity-60 flex-shrink-0" />
+                                      <span className="truncate font-semibold text-xs">{scheduledOrder.poNumber}</span>
+                                    </div>
+                                    {isHovered && (
+                                      <div className="flex space-x-1 flex-shrink-0">
+                                        <Button
+                                          size="sm"
+                                          variant="ghost"
+                                          className="h-4 w-4 p-0 hover:bg-red-100"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            onOrderMovedToPending(scheduledOrder);
+                                          }}
+                                          title="Move back to pending"
+                                        >
+                                          <ArrowLeft className="h-2.5 w-2.5" />
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="ghost"
+                                          className="h-4 w-4 p-0 hover:bg-gray-100"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            onOrderSplit(scheduledOrder.id, Math.floor(scheduledOrder.orderQuantity / 2));
+                                          }}
+                                          title="Split order"
+                                        >
+                                          <Scissors className="h-2.5 w-2.5" />
+                                        </Button>
+                                      </div>
+                                    )}
                                   </div>
-                                  <div className="opacity-0 group-hover:opacity-100 flex space-x-1 flex-shrink-0">
-                                    <Button
-                                      size="sm"
-                                      variant="ghost"
-                                      className="h-4 w-4 p-0 hover:bg-red-100"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        onOrderMovedToPending(scheduledOrder);
-                                      }}
-                                      title="Move back to pending"
-                                    >
-                                      <ArrowLeft className="h-3 w-3" />
-                                    </Button>
-                                    <Button
-                                      size="sm"
-                                      variant="ghost"
-                                      className="h-4 w-4 p-0 hover:bg-gray-100"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        onOrderSplit(scheduledOrder.id, Math.floor(scheduledOrder.orderQuantity / 2));
-                                      }}
-                                      title="Split order"
-                                    >
-                                      <Scissors className="h-3 w-3" />
-                                    </Button>
-                                  </div>
-                                </div>
 
-                                {/* Order Details */}
-                                <div className="space-y-0.5 text-xs">
-                                  <div className="truncate opacity-90">
-                                    <span className="font-medium">Style:</span> {scheduledOrder.styleId}
-                                  </div>
-                                  <div className="flex justify-between">
-                                    <span className="opacity-90">
-                                      <span className="font-medium">Qty:</span> {dailyQty.toLocaleString()}
-                                    </span>
-                                  </div>
-                                  <div className="flex justify-between">
-                                    <span className="opacity-90">
-                                      <span className="font-medium">Cut:</span> {scheduledOrder.cutQuantity.toLocaleString()}
-                                    </span>
-                                    <span className="opacity-90">
-                                      <span className="font-medium">Issue:</span> {scheduledOrder.issueQuantity.toLocaleString()}
-                                    </span>
+                                  {/* Order Details - Show more when hovered */}
+                                  <div className="flex-1 overflow-hidden">
+                                    {!isHovered ? (
+                                      // Minimal info when not hovered
+                                      <div className="space-y-0.5 text-xs">
+                                        <div className="truncate opacity-90 font-medium">
+                                          {dailyQty.toLocaleString()}
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      // Full info when hovered
+                                      <div className="space-y-1 text-xs">
+                                        <div className="truncate opacity-90">
+                                          <span className="font-medium">Style:</span> {scheduledOrder.styleId}
+                                        </div>
+                                        <div className="flex justify-between">
+                                          <span className="opacity-90">
+                                            <span className="font-medium">Daily:</span> {dailyQty.toLocaleString()}
+                                          </span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                          <span className="opacity-90">
+                                            <span className="font-medium">Total:</span> {scheduledOrder.orderQuantity.toLocaleString()}
+                                          </span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                          <span className="opacity-90">
+                                            <span className="font-medium">Cut:</span> {scheduledOrder.cutQuantity.toLocaleString()}
+                                          </span>
+                                          <span className="opacity-90">
+                                            <span className="font-medium">Issue:</span> {scheduledOrder.issueQuantity.toLocaleString()}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               </div>
