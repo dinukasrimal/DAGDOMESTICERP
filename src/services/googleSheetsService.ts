@@ -360,7 +360,7 @@ export class GoogleSheetsService {
     console.log(`📅 Would update order ${order.poNumber} with start: ${startDate.toISOString()}, end: ${endDate.toISOString()}`);
   }
 
-  /** Batch update PSD (planStartDate) and PED (planEndDate) for given orders by PO Number. */
+  /** Batch update PSD (column E) and PED (column F) for given orders by PO Number (column A) */
   async updateOrdersScheduleBatch(ordersToUpdate: {
     poNumber: string;
     planStartDate: Date | null;
@@ -371,7 +371,7 @@ export class GoogleSheetsService {
       return;
     }
     try {
-      // 1. Fetch the ORDER SECTION data (get row numbers)
+      // 1. Fetch the ORDER SECTION data (to find row numbers)
       const sheetName = this.orderSheetName;
       const range = `'${sheetName}'!A:Z`;
       const sheetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${this.spreadsheetId}/values/${range}?key=${this.apiKey}`;
@@ -380,28 +380,12 @@ export class GoogleSheetsService {
       const values: any[][] = sheetData.values || [];
       if (values.length < 2) return;
 
-      // 2. Find column indices: PO, PSD, PED
-      const headerRow = values[0];
-      // Flexible search
-      const findIndex = (search: string[]) =>
-        headerRow.findIndex((h) =>
-          h &&
-          search.some((s) =>
-            String(h).toLowerCase().replace(/[_\s]/g, '').includes(s.replace(/[_\s]/g, '').toLowerCase())
-          )
-        );
-      const poIndex = findIndex(['po', 'order', 'number']);
-      const psdIndex = findIndex(['psd', 'planstart', 'plan start', 'start']);
-      const pedIndex = findIndex(['ped', 'planend', 'plan end', 'end']);
+      // 2. Always use fixed indices for ORDER SECTION: PO = A (0), PSD = E (4), PED = F (5)
+      const poIndex = 0;
+      const psdIndex = 4;
+      const pedIndex = 5;
 
-      // If any are not found, abort.
-      if (poIndex === -1 || psdIndex === -1 || pedIndex === -1) {
-        console.warn('Could not find PO, PSD, or PED columns in order sheet');
-        return;
-      }
-      console.log('[PSD/PED SYNC] Found PO index:', poIndex, ' PSD index:', psdIndex, ' PED index:', pedIndex);
-
-      // 3. Build a list of updates - map PO to row number in the sheet (skipping header row 0)
+      // 3. Build a list of updates for each order
       const updates: { range: string; values: any[][] }[] = [];
       ordersToUpdate.forEach((ord) => {
         if (!ord.poNumber) return;
@@ -421,22 +405,25 @@ export class GoogleSheetsService {
           const pedValue = ord.planEndDate
             ? ord.planEndDate.toISOString().split('T')[0]
             : '';
-          // Use column letter (A=0, B=1, etc.)
-          const colLetter = (idx: number) =>
-            String.fromCharCode(65 + idx);
-          updates.push({
-            range: `${sheetName}!${colLetter(psdIndex)}${targetRow}`,
-            values: [[psdValue]],
-          });
-          updates.push({
-            range: `${sheetName}!${colLetter(pedIndex)}${targetRow}`,
-            values: [[pedValue]],
-          });
-          console.log(`[PSD/PED SYNC] Prepare update for PO ${ord.poNumber} -> PSD(${psdValue}), PED(${pedValue}) @ row ${targetRow}`);
+          // Use column letter (A=0=>A,... E=4=>E, F=5=>F)
+          const colLetter = (idx: number) => String.fromCharCode(65 + idx);
+          if (psdValue !== '') {
+            updates.push({
+              range: `${sheetName}!${colLetter(psdIndex)}${targetRow}`,
+              values: [[psdValue]]
+            });
+          }
+          if (pedValue !== '') {
+            updates.push({
+              range: `${sheetName}!${colLetter(pedIndex)}${targetRow}`,
+              values: [[pedValue]]
+            });
+          }
+          console.log(`[PSD/PED PUSH] Update PO ${ord.poNumber} => PSD(${psdValue}) to E${targetRow}, PED(${pedValue}) to F${targetRow}`);
         }
       });
 
-      // 4. Issue batchUpdate to Sheets API (via batchUpdate endpoint)
+      // 4. Issue batchUpdate to Sheets API (via batchUpdate endpoint, using API key)
       if (updates.length > 0) {
         const batchBody = {
           data: updates,
@@ -454,13 +441,14 @@ export class GoogleSheetsService {
           throw new Error('Failed to batch update PSD/PED: ' + errMsg);
         }
         console.log(
-          `✅ Synced ${ordersToUpdate.length} orders' PSD/PED to Google Sheets`
+          `✅ Pushed ${ordersToUpdate.length} PSD/PED values to Google Sheets`
         );
       } else {
-        console.log('[PSD/PED SYNC] No matching rows found for update. Nothing to sync.');
+        console.log('[PSD/PED PUSH] No matching rows found for update. Nothing to push.');
       }
     } catch (err) {
-      console.error('[PSD/PED SYNC] Failed to update schedules in Google Sheet:', err);
+      console.error('[PSD/PED PUSH] Failed to update schedules in Google Sheet:', err);
+      throw err;
     }
   }
 }
