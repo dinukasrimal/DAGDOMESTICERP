@@ -216,23 +216,23 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     originalTargetDate: Date
   ) => {
     console.log(`📋 Moving ${overlappingOrders.length} orders for ${placement} placement`);
-    
+
     if (placement === 'before') {
       // Move ALL overlapping orders to pending - they'll be magnetically rescheduled
       console.log(`🔄 Moving ${overlappingOrders.length} overlapping orders to pending for magnetic rescheduling`);
-      
+
       // Sort overlapping orders by their original start dates to maintain sequence
       const sortedOverlapping = [...overlappingOrders].sort((a, b) => {
         const dateA = a.planStartDate ? new Date(a.planStartDate).getTime() : 0;
         const dateB = b.planStartDate ? new Date(b.planStartDate).getTime() : 0;
         return dateA - dateB;
       });
-      
+
       for (const order of sortedOverlapping) {
         console.log(`  - Moving ${order.poNumber} to pending`);
         await onOrderMovedToPending(order);
       }
-      
+
       // Schedule new order at the original target date
       setScheduleDialog({
         isOpen: true,
@@ -240,12 +240,108 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         lineId: targetLineId,
         startDate: originalTargetDate
       });
-      
+
       // After new order is scheduled, we'll reschedule the overlapping orders magnetically
       setTimeout(async () => {
-        await rescheduleOrdersMagnetically(sortedOverlapping, newOrder, targetLineId);
+        // 1. Get the scheduled new order with latest data (should have planEndDate).
+        const newlyScheduledOrder = orders.find(o => o.id === newOrder.id);
+        let lastDate = null;
+        let newOrderProduction: { [date: string]: number } = {};
+        let newOrderEndDate: Date | null = null;
+        let line = productionLines.find(l => l.id === targetLineId);
+
+        if (newlyScheduledOrder && newlyScheduledOrder.planEndDate && line) {
+          newOrderEndDate = new Date(newlyScheduledOrder.planEndDate);
+          newOrderProduction = newlyScheduledOrder.actualProduction || {};
+          lastDate = newOrderEndDate;
+        } else {
+          // Fallback: use original dialog/planning
+          newOrderEndDate = null;
+          // collect dailyPlan fallback
+        }
+        // Fallback: determine last scheduled day using the dialog's dailyPlan if needed
+        if (!lastDate) {
+          const dailyPlan = {}; // should be fetched from dialog if possible
+          const planDates = Object.keys(dailyPlan);
+          lastDate = planDates.length > 0 
+            ? new Date(Math.max(...planDates.map(d => new Date(d).getTime())))
+            : originalTargetDate;
+        }
+        let firstRescheduleDate = lastDate ? new Date(lastDate) : new Date(originalTargetDate);
+        if (firstRescheduleDate && line) {
+          // Check available capacity on last day
+          const lastDayKey = firstRescheduleDate.toISOString().split('T')[0];
+          const usedCapacity = newOrderProduction[lastDayKey] || 0;
+          const availableCapacity = line.capacity - usedCapacity;
+          let pendingOrdersQueue = [...sortedOverlapping];
+
+          for (const order of pendingOrdersQueue) {
+            // Try to utilize any remaining capacity for the rescheduled order's first day
+            let quantityToSchedule = order.orderQuantity;
+            let currentDate = new Date(firstRescheduleDate);
+
+            if (availableCapacity > 0) {
+              const plannedQty = Math.min(quantityToSchedule, availableCapacity);
+              // Place as much as possible on the last day
+              const partialDailyPlan: { [date: string]: number } = {};
+              partialDailyPlan[lastDayKey] = plannedQty;
+              quantityToSchedule -= plannedQty;
+
+              let remainderPlan: { [date: string]: number } = {};
+              if (quantityToSchedule > 0) {
+                let nextDate = new Date(firstRescheduleDate);
+                nextDate.setDate(nextDate.getDate() + 1);
+                let rem = quantityToSchedule;
+                while (rem > 0) {
+                  const dateKey = nextDate.toISOString().split('T')[0];
+                  const dayCap = line.capacity;
+                  const dayPlanQty = Math.min(rem, dayCap);
+                  remainderPlan[dateKey] = dayPlanQty;
+                  rem -= dayPlanQty;
+                  nextDate.setDate(nextDate.getDate() + 1);
+                }
+              }
+              // Combine partial and remainder plans
+              const fullPlan = { ...partialDailyPlan, ...remainderPlan };
+              const planDates = Object.keys(fullPlan);
+              const endDate = planDates.length > 0
+                ? new Date(Math.max(...planDates.map(d => new Date(d).getTime())))
+                : firstRescheduleDate;
+              const updatedOrder = { ...order, assignedLineId: targetLineId };
+              await onOrderScheduled(updatedOrder, firstRescheduleDate, endDate, fullPlan);
+              // The next order (if any) should start the day after this order ends
+              firstRescheduleDate = new Date(endDate);
+              firstRescheduleDate.setDate(firstRescheduleDate.getDate() + 1);
+            } else {
+              // No capacity left on last day, start this order on the next day
+              let startDate = new Date(firstRescheduleDate);
+              startDate.setDate(startDate.getDate() + 1);
+              let fullPlan: { [date: string]: number } = {};
+              let rem = order.orderQuantity;
+              let current = new Date(startDate);
+              while (rem > 0) {
+                const dateKey = current.toISOString().split('T')[0];
+                const dayCap = line.capacity;
+                const qty = Math.min(rem, dayCap);
+                fullPlan[dateKey] = qty;
+                rem -= qty;
+                current.setDate(current.getDate() + 1);
+              }
+              const planDates = Object.keys(fullPlan);
+              const endDate = planDates.length > 0
+                ? new Date(Math.max(...planDates.map(d => new Date(d).getTime())))
+                : startDate;
+              const updatedOrder = { ...order, assignedLineId: targetLineId };
+              await onOrderScheduled(updatedOrder, startDate, endDate, fullPlan);
+              // Next overlapping order starts after this rescheduled one
+              firstRescheduleDate = new Date(endDate);
+              firstRescheduleDate.setDate(firstRescheduleDate.getDate() + 1);
+            }
+          }
+        }
+
       }, 100);
-      
+
     } else {
       // For "after" placement, find the last end date and check for remaining capacity
       let latestEndDate = targetDate;
@@ -254,7 +350,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           latestEndDate = order.planEndDate;
         }
       });
-      
+
       // Check if the last day has remaining capacity
       const line = productionLines.find(l => l.id === targetLineId);
       if (line) {
@@ -285,7 +381,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         }
       }
     }
-  }, [onOrderMovedToPending, productionLines, getAvailableCapacity]);
+  }, [onOrderMovedToPending, productionLines, getAvailableCapacity, orders, onOrderScheduled]);
 
   // Function to reschedule orders magnetically after a new order is placed
   const rescheduleOrdersMagnetically = useCallback(async (
