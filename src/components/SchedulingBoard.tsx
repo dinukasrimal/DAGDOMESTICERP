@@ -10,6 +10,9 @@ import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
 import { downloadElementAsPdf } from '../lib/pdfUtils';
 import SchedulingBoardHeader from './SchedulingBoardHeader';
 import SchedulingBoardLineRow from './SchedulingBoardLineRow';
+import SchedulingBoardScheduleDialog from './SchedulingBoardScheduleDialog';
+import { useHandleOverlapDialog } from './useHandleOverlapDialog';
+import SchedulingBoardLinePdfReportContainers from './SchedulingBoardLinePdfReportContainers';
 
 interface SchedulingBoardProps {
   orders: Order[];
@@ -571,62 +574,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       }}
     >
       {/* PDF REPORTS (hidden, for each line) */}
-      {productionLines.map(line => {
-        const scheduledOrders = getScheduledOrdersForLine(line.id);
-        if (scheduledOrders.length === 0) return null;
-        return (
-          <div 
-            id={`line-pdf-report-${line.id}`}
-            key={`printable-${line.id}`}
-            style={{ position: 'absolute', left: -9999, top: 0, width: '800px', background: '#fff', color: '#111', padding: 24, zIndex: -1000, fontSize: 14 }}
-          >
-            <div style={{ borderBottom: '2px solid #111', paddingBottom: 8, marginBottom: 16 }}>
-              <h2 style={{ margin: 0, fontWeight: 700, fontSize: 18 }}>Production Plan Report</h2>
-              <div>Line: <b>{line.name}</b></div>
-              <div>Generated on: {new Date().toLocaleString()}</div>
-            </div>
-            <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>Order #</th>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>Style</th>
-                  <th style={{ textAlign: 'right', borderBottom: '1px solid #aaa', padding: 6 }}>Quantity</th>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>PSD (Plan Start)</th>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>PED (Plan End)</th>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>Delivery</th>
-                </tr>
-              </thead>
-              <tbody>
-                {scheduledOrders.map(order => (
-                  <tr key={order.id}>
-                    <td style={{ padding: 6 }}>{order.poNumber}</td>
-                    <td style={{ padding: 6 }}>{order.styleId}</td>
-                    <td style={{ padding: 6, textAlign: 'right' }}>{order.orderQuantity.toLocaleString()}</td>
-                    <td style={{ padding: 6 }}>
-                      {order.planStartDate ? order.planStartDate.toLocaleDateString() : '-'}
-                    </td>
-                    <td style={{ padding: 6 }}>
-                      {order.planEndDate ? order.planEndDate.toLocaleDateString() : '-'}
-                    </td>
-                    <td style={{ padding: 6 }}>
-                      {order.planEndDate
-                        ? (() => {
-                            const d = new Date(order.planEndDate!);
-                            d.setDate(d.getDate() + 1);
-                            return d.toLocaleDateString();
-                          })()
-                        : '-'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div style={{ marginTop: 24, fontStyle: 'italic', fontSize: 13 }}>
-              * Delivery is estimated as one day after Plan End Date.
-            </div>
-          </div>
-        );
-      })}
+      <SchedulingBoardLinePdfReportContainers
+        productionLines={productionLines}
+        orders={orders}
+        downloadElementAsPdf={downloadElementAsPdf}
+      />
 
       {/* Multi-select info bar */}
       {isMultiSelectMode && selectedOrders.size > 0 && (
@@ -682,91 +634,23 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       </div>
 
       {/* Schedule Dialog */}
-      <Dialog open={scheduleDialog.isOpen} onOpenChange={(open) => !open && handleDialogClose()}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Schedule Order</DialogTitle>
-          </DialogHeader>
-          {scheduleDialog.order && (
-            <div className="space-y-4">
-              <div className="bg-muted/50 p-3 rounded">
-                <h3 className="font-medium">{scheduleDialog.order.poNumber}</h3>
-                <p className="text-sm text-muted-foreground">
-                  Style: {scheduleDialog.order.styleId}
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  Quantity: {scheduleDialog.order.orderQuantity.toLocaleString()} | SMV: {scheduleDialog.order.smv} | MO: {scheduleDialog.order.moCount}
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  Cut: {scheduleDialog.order.cutQuantity.toLocaleString()} | Issue: {scheduleDialog.order.issueQuantity.toLocaleString()}
-                </p>
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <label className="font-medium">Start Date:</label>
-                  <div>{scheduleDialog.startDate?.toLocaleDateString()}</div>
-                </div>
-                <div>
-                  <label className="font-medium">Production Line:</label>
-                  <div>{productionLines.find(l => l.id === scheduleDialog.lineId)?.name}</div>
-                </div>
-              </div>
+      <SchedulingBoardScheduleDialog
+        isOpen={scheduleDialog.isOpen}
+        order={scheduleDialog.order}
+        lineId={scheduleDialog.lineId}
+        startDate={scheduleDialog.startDate}
+        productionLines={productionLines}
+        planningMethod={planningMethod}
+        setPlanningMethod={setPlanningMethod}
+        rampUpPlans={rampUpPlans}
+        selectedRampUpPlanId={selectedRampUpPlanId}
+        setSelectedRampUpPlanId={setSelectedRampUpPlanId}
+        onConfirm={handleScheduleConfirm}
+        onCancel={handleDialogClose}
+        disableConfirm={planningMethod === 'rampup' && !selectedRampUpPlanId}
+      />
 
-              <div>
-                <label className="text-sm font-medium">Planning Method:</label>
-                <RadioGroup value={planningMethod} onValueChange={(value: 'capacity' | 'rampup') => setPlanningMethod(value)}>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="capacity" id="capacity" />
-                    <Label htmlFor="capacity">Based on Line Capacity</Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="rampup" id="rampup" />
-                    <Label htmlFor="rampup">Based on Ramp-Up Plan</Label>
-                  </div>
-                </RadioGroup>
-              </div>
-              
-              {planningMethod === 'rampup' && (
-                <div>
-                  <label className="text-sm font-medium">Ramp-Up Plan:</label>
-                  <Select value={selectedRampUpPlanId} onValueChange={setSelectedRampUpPlanId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select a ramp-up plan" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {rampUpPlans.map((plan) => (
-                        <SelectItem key={plan.id} value={plan.id}>
-                          {plan.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-              
-              <div className="flex space-x-2 pt-4">
-                <Button
-                  onClick={handleScheduleConfirm}
-                  disabled={planningMethod === 'rampup' && !selectedRampUpPlanId}
-                  className="flex-1"
-                >
-                  Schedule Order
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={handleDialogClose}
-                  className="flex-1"
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Overlap Confirmation Dialog */}
+      {/* Overlap Confirmation Dialog with logic wiring moved to useHandleOverlapDialog */}
       <OverlapConfirmationDialog
         isOpen={overlapDialog.isOpen}
         onClose={() => setOverlapDialog(prev => ({ ...prev, isOpen: false }))}
