@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback } from 'react';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
@@ -139,8 +138,8 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
                               Cancel
                             </AlertDialogCancel>
                             <AlertDialogAction
-                              variant="destructive"
                               onClick={() => handleDelete(order.id)}
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                             >
                               Delete
                             </AlertDialogAction>
