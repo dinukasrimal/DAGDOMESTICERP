@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback } from 'react';
 import { useSupabaseProductionData } from '../hooks/useSupabaseProductionData';
 import { SchedulingBoard } from './SchedulingBoard';
@@ -6,7 +7,7 @@ import { AdminPanel } from './AdminPanel';
 import { GoogleSheetsConfig } from './GoogleSheetsConfig';
 import { Header } from './Header';
 import { Button } from './ui/button';
-import { RefreshCw, FileText } from 'lucide-react';
+import { RefreshCw, FileText, ChevronDown } from 'lucide-react';
 import { TooltipProvider } from './ui/tooltip';
 import { Order, ProductionLine } from '../types/scheduler';
 import { ReportDialog } from './reports/ReportDialog';
@@ -17,12 +18,14 @@ import { downloadElementAsPdf } from '../lib/pdfUtils';
 import { toast } from "@/hooks/use-toast";
 import { dataService } from "../services/dataService";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./ui/select";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuCheckboxItem,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
 
 export const ProductionScheduler: React.FC = () => {
   const [userRole, setUserRole] = useState<'planner' | 'superuser'>('planner');
@@ -73,12 +76,20 @@ export const ProductionScheduler: React.FC = () => {
     }
   };
 
-  const handleLineFilterChange = (value: string) => {
-    if (value === 'all') {
-      setSelectedLineIds(productionLines.map(line => line.id));
+  const handleLineToggle = (lineId: string, checked: boolean) => {
+    if (checked) {
+      setSelectedLineIds(prev => [...prev, lineId]);
     } else {
-      setSelectedLineIds([value]);
+      setSelectedLineIds(prev => prev.filter(id => id !== lineId));
     }
+  };
+
+  const handleSelectAll = () => {
+    setSelectedLineIds(productionLines.map(line => line.id));
+  };
+
+  const handleDeselectAll = () => {
+    setSelectedLineIds([]);
   };
 
   // Filter production lines based on selection
@@ -472,22 +483,39 @@ export const ProductionScheduler: React.FC = () => {
             <label className="text-sm font-medium text-muted-foreground">
               Show Lines:
             </label>
-            <Select
-              value={selectedLineIds.length === productionLines.length ? 'all' : selectedLineIds[0] || ''}
-              onValueChange={handleLineFilterChange}
-            >
-              <SelectTrigger className="w-48">
-                <SelectValue placeholder="Select lines to show" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Lines</SelectItem>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" className="w-64 justify-between">
+                  {selectedLineIds.length === productionLines.length
+                    ? "All Lines Selected"
+                    : selectedLineIds.length === 0
+                    ? "No Lines Selected"
+                    : `${selectedLineIds.length} Lines Selected`
+                  }
+                  <ChevronDown className="h-4 w-4 ml-2" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="w-64 max-h-80 overflow-y-auto">
+                <DropdownMenuLabel>Select Production Lines</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleSelectAll} className="cursor-pointer">
+                  Select All
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleDeselectAll} className="cursor-pointer">
+                  Deselect All
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
                 {productionLines.map(line => (
-                  <SelectItem key={line.id} value={line.id}>
+                  <DropdownMenuCheckboxItem
+                    key={line.id}
+                    checked={selectedLineIds.includes(line.id)}
+                    onCheckedChange={(checked) => handleLineToggle(line.id, checked)}
+                  >
                     {line.name}
-                  </SelectItem>
+                  </DropdownMenuCheckboxItem>
                 ))}
-              </SelectContent>
-            </Select>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <span className="text-xs text-muted-foreground">
               {selectedLineIds.length === productionLines.length 
                 ? `Showing all ${productionLines.length} lines`
