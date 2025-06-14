@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { Button } from './ui/button';
 import { FileDown, Plus } from 'lucide-react';
@@ -48,8 +49,13 @@ export const SchedulingBoardLineRow: React.FC<SchedulingBoardLineRowProps> = ({
   handleDownloadLinePdf,
 }) => (
   <div className="flex">
-    {/* Left column: Line info + PDF download button */}
-    <div className="w-48 p-4 border-r border-border bg-card flex flex-col items-start">
+    {/* 
+      Make the left column sticky only vertically (does not freeze horizontally). 
+      This lets the line-info remain visible when scrolling vertically, but allows it to scroll out horizontally.
+      z-10 ensures it draws above the date/grid cells. 
+      bg-card ensures no see-through effect.
+    */}
+    <div className="w-48 p-4 border-r border-border bg-card flex flex-col items-start sticky left-0 z-10">
       <div className="font-medium">{line.name}</div>
       <div className="text-sm text-muted-foreground">
         Capacity: {line.capacity}
@@ -155,3 +161,4 @@ export const SchedulingBoardLineRow: React.FC<SchedulingBoardLineRowProps> = ({
 );
 
 export default SchedulingBoardLineRow;
+
