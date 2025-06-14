@@ -280,16 +280,42 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       // Step 3: queue up magnetically rescheduling the overlappers after newOrder
       setPendingReschedule({ toSchedule: overlappingOrders, afterOrderId: newOrder.id, lineId });
     } else {
-      // "After" logic: move new order after overlappers' latest end date
+      // "After" logic: move new order after overlappers' latest end date,
+      // but utilize capacity on the last day if space allows!
       let latestEnd: Date | null = targetDate;
       overlappingOrders.forEach(o => o.planEndDate && o.planEndDate > latestEnd! && (latestEnd = new Date(o.planEndDate)));
-      let nextStart = new Date(latestEnd!); nextStart.setDate(nextStart.getDate() + 1);
+      if (!latestEnd) return;
+      const selectedLine = productionLines.find(l => l.id === lineId);
+      if (!selectedLine) return;
+
+      // Find available capacity on the last day of the overlap
+      const lastDayStr = latestEnd.toISOString().split('T')[0];
+      const usedCapacityOnLastDay = getOrdersForCell(lineId, latestEnd).reduce(
+        (sum, order) => sum + (order.actualProduction?.[lastDayStr] || 0), 0
+      );
+      const availableCapacityOnLastDay = Math.max(0, selectedLine.capacity - usedCapacityOnLastDay);
+
+      // If we have capacity, start from latestEnd, else start from next day
+      let startDateForNewOrder = new Date(latestEnd);
+      let fillFirstDay = 0;
+      if (availableCapacityOnLastDay > 0) {
+        fillFirstDay = availableCapacityOnLastDay;
+      } else {
+        startDateForNewOrder.setDate(startDateForNewOrder.getDate() + 1);
+      }
+
+      // We'll need to pass fillFirstDay to the Schedule dialog so it starts the assignment on the last day,
+      // but the dialog and scheduling code expect only startDate. Instead,
+      // We can store this as a property on scheduleDialog state.
       setScheduleDialog({
         isOpen: true,
         order: newOrder,
         lineId,
-        startDate: nextStart
-      });
+        startDate: startDateForNewOrder,
+        // Let's add fillFirstDay as an optional property, safe for rest of code
+        fillFirstDay: fillFirstDay
+      } as any);
+
       setPendingReschedule({ toSchedule: [], afterOrderId: null, lineId: null }); // no post-hook
     }
     setOverlapDialog({
@@ -300,7 +326,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       targetLine: '',
       originalTargetDate: null
     });
-  }, [overlapDialog, productionLines, onOrderMovedToPending]);
+  }, [overlapDialog, productionLines, onOrderMovedToPending, getOrdersForCell]);
 
   // --- When the scheduleDialog is confirmed, carry out any queued magnetic rescheduling ---
 
@@ -340,22 +366,22 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   };
 
   const handleScheduleConfirm = useCallback(async () => {
-    const { order, lineId, startDate } = scheduleDialog;
+    const { order, lineId, startDate, fillFirstDay } = scheduleDialog as any;
     if (!order || !lineId || !startDate) return;
     const selectedLine = productionLines.find(l => l.id === lineId); if (!selectedLine) return;
     if (planningMethod === 'rampup' && !selectedRampUpPlanId) return;
     try {
-      // Use the solid block planning logic for single and multi-order
       let dailyPlan: { [date: string]: number };
       if (planningMethod === 'capacity') {
+        // Pass fillFirstDay to getContiguousProductionPlan if it exists
         dailyPlan = getContiguousProductionPlan(
           order.orderQuantity,
           selectedLine.capacity,
           startDate,
-          isHoliday
+          isHoliday,
+          fillFirstDay || 0
         );
       } else {
-        // keep rampup logic, but should still be contiguous over non-holiday days!
         dailyPlan = calculateDailyProductionWithSharing(order, selectedLine, startDate);
       }
       const planDates = Object.keys(dailyPlan);
@@ -364,11 +390,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       await onOrderScheduled(updatedOrder, startDate, endDate, dailyPlan);
       setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
       setPlanningMethod('capacity'); setSelectedRampUpPlanId('');
-      
-      // PATCH: For pending reschedules (after moving orders "before"), also solid block
+
       if (pendingReschedule.toSchedule.length > 0 && pendingReschedule.afterOrderId === order.id && pendingReschedule.lineId) {
         let newPlanEnd: Date | null = endDate;
-        let magnetDate = new Date(newPlanEnd); // Start on newOrder's last day
+        let magnetDate = new Date(newPlanEnd);
         const newOrderLastDayStr = magnetDate.toISOString().split('T')[0];
         const lineObj = productionLines.find(l => l.id === pendingReschedule.lineId);
         let lastDayAvailCapacity = lineObj ? lineObj.capacity - (dailyPlan[newOrderLastDayStr] || 0) : 0;
