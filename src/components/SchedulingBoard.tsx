@@ -199,129 +199,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [selectedOrders]);
 
-  // PATCHED: Create a helper function for scheduling an order as a solid, contiguous block across working days
-  const getContiguousProductionPlan = (
-    qty: number,
-    lineCapacity: number,
-    startDate: Date,
-    isHolidayFn: (d: Date) => boolean,
-    fillFirstDay: number = 0 // left for multi-order move edge cases
-  ) => {
-    const plan: { [date: string]: number } = {};
-    let remainingQty = qty;
-    let currentDate = new Date(startDate);
-    let placedFirstDay = false;
-
-    while (remainingQty > 0) {
-      if (!isHolidayFn(currentDate)) {
-        const dayStr = currentDate.toISOString().split('T')[0];
-        let todayCapacity = lineCapacity;
-        if (!placedFirstDay && fillFirstDay > 0) {
-          todayCapacity = fillFirstDay;
-          placedFirstDay = true;
-        }
-        const planned = Math.min(remainingQty, todayCapacity);
-        if (planned > 0) {
-          plan[dayStr] = planned;
-          remainingQty -= planned;
-        }
-      }
-      // Only increment to next day (contiguous) regardless unless it's a holiday:
-      currentDate.setDate(currentDate.getDate() + 1);
-      // To prevent infinite loops
-      if (Object.keys(plan).length > 366) break;
-    }
-    return plan;
-  };
-
-  // Helper to find index/date for an order within a line
-  const findFirstPlannedDate = useCallback((order: Order) => {
-    if (!order.actualProduction) return null;
-    const allDates = Object.keys(order.actualProduction).filter(d => order.actualProduction[d] > 0);
-    if (allDates.length === 0) return null;
-    return new Date(allDates.sort()[0]);
-  }, []);
-  
-  // Helper to get lineId for scheduled order
-  const getLineIdForOrder = useCallback((order: Order) => {
-    return order.assignedLineId || null;
-  }, []);
-  
-  // -- PATCH: Drag End with Inline Plan Recalc --
-  const handleOrderDragEnd = useCallback(
-    async (e: React.DragEvent) => {
-      // Restore opacity
-      if (e.currentTarget instanceof HTMLElement) {
-        e.currentTarget.style.opacity = '1';
-      }
-      // (Leave multi-select/selection reset as-is)
-      setSelectedOrders(new Set());
-      setIsMultiSelectMode(false);
-
-      // Only adjust if this was an intra-line move where order's block is now on a different date
-      try {
-        const orderData = JSON.parse(e.dataTransfer.getData('text/plain'));
-        const draggedOrder: Order = orderData;
-        const origLineId = getLineIdForOrder(draggedOrder);
-        if (!origLineId) return;
-        // Only apply if the drag ended up in another production cell with a new date.
-        // (Otherwise, do nothing extra.)
-        // We'll handle onDrop as source of truth for startDate, so don't replan here.
-
-        // (No-op: schedule is done onDrop; code left here for future expansion.)
-
-      } catch (err) {
-        // Silently ignore, fallback to regular dragEnd logic
-      }
-    },
-    [setSelectedOrders, setIsMultiSelectMode, getLineIdForOrder]
-  );
-
-  // -- PATCH: Use getContiguousProductionPlan for all inline moves --
-  // Update handleDrop: always schedule the moved order(s) as a solid block contiguous from the new start date, skipping holidays.
-
-  const handleDrop = useCallback((e: React.DragEvent, lineId: string, date: Date) => {
-    e.preventDefault(); setDragHighlight(null);
-    if (isHoliday(date)) return;
-    try {
-      const orderData = JSON.parse(e.dataTransfer.getData('text/plain'));
-      if (orderData && orderData.id && orderData.poNumber) {
-        const overlappingOrders = getOverlappingOrders(orderData, lineId, date);
-        const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
-        if (overlappingOrders.length > 0) {
-          setOverlapDialog({
-            isOpen: true,
-            newOrder: orderData,
-            overlappingOrders,
-            targetDate: date,
-            targetLine: lineName,
-            originalTargetDate: date
-          });
-        } else {
-          // PATCH: Always recalculate solid contiguous plan for dropped order!
-          (async () => {
-            const movedOrder: Order = orderData;
-            const selectedLine = productionLines.find(l => l.id === lineId);
-            if (!selectedLine) return;
-            // We'll use a contiguous plan (capacity mode) for the drop.
-            const dailyPlan = getContiguousProductionPlan(
-              movedOrder.orderQuantity,
-              selectedLine.capacity,
-              date,
-              isHoliday
-            );
-            const planDates = Object.keys(dailyPlan);
-            const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
-            const updatedOrder = { ...movedOrder, assignedLineId: lineId };
-            await onOrderScheduled(updatedOrder, date, endDate, dailyPlan);
-          })();
-        }
-      }
-    } catch (error) {
-      console.error('❌ Failed to parse dropped order data:', error);
-    }
-  }, [isHoliday, getOverlappingOrders, productionLines, onOrderScheduled, setOverlapDialog, setDragHighlight, getContiguousProductionPlan]);
-
   // --- Drag & Drop ---
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -342,6 +219,37 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, []);
 
+  const handleDrop = useCallback((e: React.DragEvent, lineId: string, date: Date) => {
+    e.preventDefault(); setDragHighlight(null);
+    if (isHoliday(date)) return;
+    try {
+      const orderData = JSON.parse(e.dataTransfer.getData('text/plain'));
+      if (orderData && orderData.id && orderData.poNumber) {
+        const overlappingOrders = getOverlappingOrders(orderData, lineId, date);
+        const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
+        if (overlappingOrders.length > 0) {
+          setOverlapDialog({
+            isOpen: true,
+            newOrder: orderData,
+            overlappingOrders,
+            targetDate: date,
+            targetLine: lineName,
+            originalTargetDate: date
+          });
+        } else {
+          setScheduleDialog({
+            isOpen: true,
+            order: orderData,
+            lineId,
+            startDate: date
+          });
+        }
+      }
+    } catch (error) {
+      console.error('❌ Failed to parse dropped order data:', error);
+    }
+  }, [isHoliday, getOverlappingOrders, productionLines, isMultiSelectMode, selectedOrders]);
+  
   // --- Revised "before" Overlap Handling Workflow ---
   // 1. onConfirm(before): move all overlapping orders to pending, only schedule the new order first.
   // 2. Once that schedule completes, THEN schedule previous overlappers after new planEndDate.
@@ -395,6 +303,41 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   }, [overlapDialog, productionLines, onOrderMovedToPending]);
 
   // --- When the scheduleDialog is confirmed, carry out any queued magnetic rescheduling ---
+
+  // PATCHED: Create a helper function for scheduling an order as a solid, contiguous block across working days
+  const getContiguousProductionPlan = (
+    qty: number,
+    lineCapacity: number,
+    startDate: Date,
+    isHolidayFn: (d: Date) => boolean,
+    fillFirstDay: number = 0 // left for multi-order move edge cases
+  ) => {
+    const plan: { [date: string]: number } = {};
+    let remainingQty = qty;
+    let currentDate = new Date(startDate);
+    let placedFirstDay = false;
+
+    while (remainingQty > 0) {
+      if (!isHolidayFn(currentDate)) {
+        const dayStr = currentDate.toISOString().split('T')[0];
+        let todayCapacity = lineCapacity;
+        if (!placedFirstDay && fillFirstDay > 0) {
+          todayCapacity = fillFirstDay;
+          placedFirstDay = true;
+        }
+        const planned = Math.min(remainingQty, todayCapacity);
+        if (planned > 0) {
+          plan[dayStr] = planned;
+          remainingQty -= planned;
+        }
+      }
+      // Only increment to next day (contiguous) regardless unless it's a holiday:
+      currentDate.setDate(currentDate.getDate() + 1);
+      // To prevent infinite loops
+      if (Object.keys(plan).length > 366) break;
+    }
+    return plan;
+  };
 
   const handleScheduleConfirm = useCallback(async () => {
     const { order, lineId, startDate } = scheduleDialog;
@@ -488,6 +431,16 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     if (e.currentTarget instanceof HTMLElement) {
       e.currentTarget.style.opacity = '0.5';
     }
+  }, []);
+
+  const handleOrderDragEnd = useCallback((e: React.DragEvent) => {
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '1';
+    }
+    
+    // Clear selection after drag
+    setSelectedOrders(new Set());
+    setIsMultiSelectMode(false);
   }, []);
 
   // Helper function to check if order should be highlighted in red
