@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
@@ -332,7 +332,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         lineId,
         startDate: originalTargetDate // this is the "before" drop date!
       });
-      // Step 3: queue up magnetically rescheduling the overlappers after newOrder
+      // Step 3: queue up magnetically rescheduling the overlappers after new planEndDate
       setPendingReschedule({ toSchedule: overlappingOrders, afterOrderId: newOrder.id, lineId });
     } else {
       // "After" logic: move new order after overlappers' latest end date,
@@ -561,51 +561,25 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   };
 
   return (
-    <div 
-      ref={scrollContainerRef}
-      className="flex-1 bg-background"
-      tabIndex={0}
-      style={{ 
-        overscrollBehaviorX: 'contain',
-        WebkitOverflowScrolling: 'touch',
-        height: '100%',
-        display: 'flex',
-        flexDirection: 'column'
-      }}
-    >
-      {/* PDF REPORTS (hidden, for each line) */}
-      <SchedulingBoardLinePdfReportContainers
-        productionLines={productionLines}
-        orders={orders}
-        downloadElementAsPdf={downloadElementAsPdf}
-      />
+    <div className="flex flex-col h-full bg-background flex-1">
+      {/* Sticky Header */}
+      <div className="sticky top-0 z-10">
+        <SchedulingBoardHeader dates={dates} isHoliday={isHoliday} />
+      </div>
 
-      {/* Multi-select info bar */}
-      {isMultiSelectMode && selectedOrders.size > 0 && (
-        <div className="sticky top-0 z-20 bg-blue-100 border-b border-blue-300 p-2 text-center">
-          <span className="text-blue-800 font-medium">
-            {selectedOrders.size} orders selected - Drag to move together
-          </span>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="ml-2 text-blue-800"
-            onClick={() => {
-              setSelectedOrders(new Set());
-              setIsMultiSelectMode(false);
-            }}
-          >
-            Clear Selection
-          </Button>
-        </div>
-      )}
-
-      {/* Header with dates */}
-      <SchedulingBoardHeader dates={dates} isHoliday={isHoliday} />
-
-      {/* Production lines grid - Made scrollable */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="divide-y divide-border min-w-max">
+      {/* Scrollable grid for lines and dates */}
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 overflow-auto"
+        tabIndex={0}
+        style={{
+          overscrollBehaviorX: 'contain',
+          WebkitOverflowScrolling: 'touch',
+          minWidth: 0,
+          minHeight: 0,
+        }}
+      >
+        <div className="divide-y divide-border min-w-max w-fit">
           {productionLines.map((line) => (
             <SchedulingBoardLineRow
               key={line.id}
@@ -633,6 +607,33 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         </div>
       </div>
 
+      {/* PDF hidden containers */}
+      <SchedulingBoardLinePdfReportContainers
+        productionLines={productionLines}
+        orders={orders}
+        downloadElementAsPdf={downloadElementAsPdf}
+      />
+
+      {/* Multi-select bar */}
+      {isMultiSelectMode && selectedOrders.size > 0 && (
+        <div className="sticky bottom-0 z-20 bg-blue-100 border-t border-blue-300 p-2 text-center">
+          <span className="text-blue-800 font-medium">
+            {selectedOrders.size} orders selected - Drag to move together
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-2 text-blue-800"
+            onClick={() => {
+              setSelectedOrders(new Set());
+              setIsMultiSelectMode(false);
+            }}
+          >
+            Clear Selection
+          </Button>
+        </div>
+      )}
+
       {/* Schedule Dialog */}
       <SchedulingBoardScheduleDialog
         isOpen={scheduleDialog.isOpen}
@@ -650,7 +651,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         disableConfirm={planningMethod === 'rampup' && !selectedRampUpPlanId}
       />
 
-      {/* Overlap Confirmation Dialog with logic wiring moved to useHandleOverlapDialog */}
+      {/* Overlap Confirmation Dialog */}
       <OverlapConfirmationDialog
         isOpen={overlapDialog.isOpen}
         onClose={() => setOverlapDialog(prev => ({ ...prev, isOpen: false }))}
