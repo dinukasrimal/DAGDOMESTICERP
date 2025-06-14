@@ -1,5 +1,3 @@
-
-
 import React, { useState, useCallback } from 'react';
 import { useSupabaseProductionData } from '../hooks/useSupabaseProductionData';
 import { SchedulingBoard } from './SchedulingBoard';
@@ -85,13 +83,13 @@ export const ProductionScheduler: React.FC = () => {
     }
   };
 
-  const handleSelectAll = (e: React.MouseEvent) => {
+  const handleSelectAll = (e: Event) => {
     e.preventDefault();
     e.stopPropagation();
     setSelectedLineIds(productionLines.map(line => line.id));
   };
 
-  const handleDeselectAll = (e: React.MouseEvent) => {
+  const handleDeselectAll = (e: Event) => {
     e.preventDefault();
     e.stopPropagation();
     setSelectedLineIds([]);
@@ -662,4 +660,3 @@ export const ProductionScheduler: React.FC = () => {
 };
 
 export default ProductionScheduler;
-
