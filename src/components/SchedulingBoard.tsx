@@ -1,7 +1,14 @@
-import React, { useRef, useEffect, useState, useCallback } from "react";
-import { DateHeader } from "./scheduling-board/DateHeader";
-import { LineNamesColumn } from "./scheduling-board/LineNamesColumn";
-import { ProductionGrid } from "./scheduling-board/ProductionGrid";
+
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { Button } from './ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
+import { RadioGroup, RadioGroupItem } from './ui/radio-group';
+import { Label } from './ui/label';
+import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
+import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown } from 'lucide-react';
+import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
+import { downloadElementAsPdf } from '../lib/pdfUtils';
 
 interface SchedulingBoardProps {
   orders: Order[];
@@ -23,7 +30,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   onOrderSplit
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const headerScrollRef = useRef<HTMLDivElement>(null);
   
   const [scheduleDialog, setScheduleDialog] = useState<{
     isOpen: boolean;
@@ -66,29 +72,31 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return date;
   });
 
-  // Scroll sync handler (horizontal)
+  // Improved scroll event handling for better performance
   useEffect(() => {
-    const handleContentScroll = () => {
-      if (scrollContainerRef.current && headerScrollRef.current) {
-        headerScrollRef.current.scrollLeft = scrollContainerRef.current.scrollLeft;
+    const handleWheel = (e: WheelEvent) => {
+      if (scrollContainerRef.current && scrollContainerRef.current.contains(e.target as Node)) {
+        e.preventDefault();
+        
+        // Increase scroll sensitivity for faster scrolling
+        const scrollMultiplier = 3;
+        const deltaX = e.deltaX * scrollMultiplier;
+        const deltaY = e.deltaY * scrollMultiplier;
+        
+        // Use deltaX for horizontal scroll, fallback to deltaY if no horizontal movement
+        const scrollAmount = Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : deltaY;
+        
+        scrollContainerRef.current.scrollLeft += scrollAmount;
       }
     };
 
-    const scrollContainer = scrollContainerRef.current;
-    if (scrollContainer) {
-      scrollContainer.addEventListener('scroll', handleContentScroll);
-      return () => scrollContainer.removeEventListener('scroll', handleContentScroll);
-    }
-  }, []);
-
-  // Keyboard navigation
-  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (scrollContainerRef.current && 
           document.activeElement && 
           scrollContainerRef.current.contains(document.activeElement) &&
           (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End')) {
         e.preventDefault();
+        // Increase scroll amount for faster keyboard navigation
         const scrollAmount = 400;
         if (e.key === 'ArrowLeft') {
           scrollContainerRef.current.scrollLeft -= scrollAmount;
@@ -102,8 +110,13 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       }
     };
 
+    document.addEventListener('wheel', handleWheel, { passive: false });
     document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('wheel', handleWheel);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, []);
 
   // Helper functions
@@ -315,7 +328,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         lineId,
         startDate: originalTargetDate // this is the "before" drop date!
       });
-      // Step 3: queue up magnetically rescheduling the overlappers after new planEndDate.
+      // Step 3: queue up magnetically rescheduling the overlappers after newOrder
       setPendingReschedule({ toSchedule: overlappingOrders, afterOrderId: newOrder.id, lineId });
     } else {
       // "After" logic: move new order after overlappers' latest end date,
@@ -477,7 +490,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [
     scheduleDialog, productionLines, planningMethod, selectedRampUpPlanId,
-    calculateDailyProductionWithSharing, onOrderScheduled, pendingReschedule, holidays, isHoliday
+    calculateDailyProductionWithSharing, onOrderScheduled, pendingReschedule, holidays, getContiguousProductionPlan, isHoliday
   ]);
   
   const handleDialogClose = useCallback(() => {
@@ -544,7 +557,15 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-background h-full">
+    <div 
+      ref={scrollContainerRef}
+      className="flex-1 overflow-auto bg-background"
+      tabIndex={0}
+      style={{ 
+        overscrollBehaviorX: 'contain',
+        WebkitOverflowScrolling: 'touch'
+      }}
+    >
       {/* PDF REPORTS (hidden, for each line) */}
       {productionLines.map(line => {
         const scheduledOrders = getScheduledOrdersForLine(line.id);
@@ -601,11 +622,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             </div>
           </div>
         );
-      })
+      })}
 
       {/* Multi-select info bar */}
       {isMultiSelectMode && selectedOrders.size > 0 && (
-        <div className="bg-blue-100 border-b border-blue-300 p-2 text-center flex-shrink-0">
+        <div className="sticky top-0 z-20 bg-blue-100 border-b border-blue-300 p-2 text-center">
           <span className="text-blue-800 font-medium">
             {selectedOrders.size} orders selected - Drag to move together
           </span>
@@ -623,79 +644,200 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         </div>
       )}
 
-      {/* BOARD CONTAINER */}
-      <div className="flex-1 min-h-0 flex flex-col relative overflow-x-auto">
-        <div
-          className="grid"
-          style={{
-            gridTemplateColumns: "192px 1fr",
-            // 192px matches .w-48 or minWidth in LineNamesColumn/DateHeader
-            width: "100%",
-          }}
-        >
-          {/* HEADER ROW: sticky at top! */}
-          <div
-            className="sticky top-0 z-30 bg-card border-b border-border"
-            style={{ gridColumn: "1", gridRow: "1" }}
-          >
-            {/* Empty for icon/label alignment */}
-            <div className="w-48 h-16 p-4 flex items-center border-r border-border bg-card"></div>
+      <div className="min-w-max">
+        {/* Header with dates */}
+        <div className="sticky top-0 z-10 bg-card border-b border-border">
+          <div className="flex">
+            {/* Line header with PDF button */}
+            <div className="w-48 p-4 border-r border-border bg-card">
+              <div className="flex items-center space-x-2 mb-2">
+                <CalendarDays className="h-5 w-5 text-muted-foreground" />
+                <span className="font-medium">Production Lines</span>
+              </div>
+              {/* Empty cell under line header to align with buttons per-line below */}
+            </div>
+            {dates.map((date) => (
+              <div
+                key={date.toISOString()}
+                className={`w-32 p-2 border-r border-border text-center ${
+                  isHoliday(date) ? 'bg-muted' : 'bg-card'
+                }`}
+              >
+                <div className="text-xs font-medium">
+                  {date.toLocaleDateString('en-US', { weekday: 'short' })}
+                </div>
+                <div className="text-sm">
+                  {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </div>
+                {isHoliday(date) && (
+                  <div className="text-xs text-destructive">Holiday</div>
+                )}
+              </div>
+            ))}
           </div>
-          <div
-            className="sticky top-0 z-20 bg-card border-b border-border overflow-hidden"
-            style={{ gridColumn: "2", gridRow: "1" }}
-          >
-            {/* DateHeader shifts left (no line column) */}
-            <DateHeader dates={dates} isHoliday={isHoliday} />
-          </div>
+        </div>
 
-          {/* For each line: render a grid row with both the left and right */}
-          {productionLines.map((line, rowIdx) => (
-            <React.Fragment key={line.id}>
-              {/* LINE NAMES COLUMN */}
-              <div
-                className="sticky left-0 z-20 bg-card border-r border-border"
-                style={{
-                  gridColumn: "1",
-                  gridRow: rowIdx + 2,
-                  minWidth: 192,
-                  top: 64, // pushes below header (height of header row)
-                }}
-              >
-                <LineNamesColumn
-                  lines={[line]}
-                  handleDownloadLinePdf={handleDownloadLinePdf}
-                />
+        {/* Production lines grid */}
+        <div className="divide-y divide-border">
+          {productionLines.map((line) => (
+            <div key={line.id} className="flex">
+              {/* Left column: Line info + PDF download button */}
+              <div className="w-48 p-4 border-r border-border bg-card flex flex-col items-start">
+                <div className="font-medium">{line.name}</div>
+                <div className="text-sm text-muted-foreground">
+                  Capacity: {line.capacity}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2 flex items-center gap-1"
+                  onClick={() => handleDownloadLinePdf(line.id, line.name)}
+                  title="Download Production Plan PDF"
+                >
+                  <FileDown className="w-4 h-4 mr-1" />
+                  <span>Plan PDF</span>
+                </Button>
               </div>
-              {/* PRODUCTION GRID ROW (for this line) */}
-              <div
-                className=""
-                style={{ gridColumn: "2", gridRow: rowIdx + 2 }}
-              >
-                <ProductionGrid
-                  line={line}
-                  dates={dates}
-                  // pass only this line's props
-                  isHoliday={isHoliday}
-                  getOrdersForCell={getOrdersForCell}
-                  calculateTotalUtilization={calculateTotalUtilization}
-                  getAvailableCapacity={getAvailableCapacity}
-                  dragHighlight={dragHighlight}
-                  handleDrop={handleDrop}
-                  handleDragOver={handleDragOver}
-                  handleDragEnter={handleDragEnter}
-                  handleDragLeave={handleDragLeave}
-                  onOrderMovedToPending={onOrderMovedToPending}
-                  onOrderSplit={onOrderSplit}
-                  handleOrderDragStart={handleOrderDragStart}
-                  handleOrderDragEnd={handleOrderDragEnd}
-                  handleOrderClick={handleOrderClick}
-                  selectedOrders={selectedOrders}
-                  isMultiSelectMode={isMultiSelectMode}
-                  shouldHighlightRed={shouldHighlightRed}
-                />
-              </div>
-            </React.Fragment>
+              {/* ... keep grid cells ... */}
+              {dates.map((date) => {
+                const cellKey = `${line.id}-${date.toISOString().split('T')[0]}`;
+                const isHighlighted = dragHighlight === cellKey;
+                const utilizationPercent = calculateTotalUtilization(line.id, date);
+                const ordersInCell = getOrdersForCell(line.id, date);
+                const isHolidayCell = isHoliday(date);
+                const availableCapacity = getAvailableCapacity(line.id, date);
+                
+                return (
+                  <div
+                    key={cellKey}
+                    className={`w-32 min-h-[120px] border-r border-border relative transition-all duration-200 ${
+                      isHolidayCell 
+                        ? 'bg-muted/50' 
+                        : isHighlighted 
+                          ? 'bg-primary/20 border-primary border-2' 
+                          : 'bg-background hover:bg-muted/20'
+                    }`}
+                    onDrop={(e) => handleDrop(e, line.id, date)}
+                    onDragOver={handleDragOver}
+                    onDragEnter={(e) => handleDragEnter(e, line.id, date)}
+                    onDragLeave={handleDragLeave}
+                  >
+                    {/* Capacity utilization bar */}
+                    {utilizationPercent > 0 && !isHolidayCell && (
+                      <div 
+                        className="absolute bottom-0 left-0 right-0 bg-primary/30 transition-all duration-300"
+                        style={{ height: `${Math.min(utilizationPercent, 100)}%` }}
+                      />
+                    )}
+                    
+                    {/* Drop zone indicator */}
+                    {!isHolidayCell && ordersInCell.length === 0 && (
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
+                        <Plus className="h-4 w-4 text-muted-foreground" />
+                      </div>
+                    )}
+                    
+                    {/* Available capacity indicator */}
+                    {!isHolidayCell && availableCapacity > 0 && ordersInCell.length > 0 && (
+                      <div className="absolute top-1 right-1 text-xs bg-green-100 text-green-800 px-1 rounded">
+                        {availableCapacity}
+                      </div>
+                    )}
+                    
+                    {/* Drag highlight indicator */}
+                    {isHighlighted && !isHolidayCell && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-primary border-dashed rounded">
+                        <div className="text-xs font-medium text-primary bg-background px-2 py-1 rounded shadow">
+                          Drop Here
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Orders in cell */}
+                    <div className="p-1 space-y-1 relative z-10 h-full flex flex-col">
+                      {ordersInCell.map((scheduledOrder, index) => {
+                        const dateStr = date.toISOString().split('T')[0];
+                        const dailyQty = scheduledOrder.actualProduction?.[dateStr] || 0;
+                        const shouldHighlight = shouldHighlightRed(scheduledOrder, date);
+                        const orderUtilization = (dailyQty / line.capacity) * 100;
+                        const isSelected = selectedOrders.has(scheduledOrder.id);
+                        
+                        return (
+                          <div 
+                            key={`${scheduledOrder.id}-${dateStr}`}
+                            className={`rounded text-xs p-1 group cursor-move transition-colors flex-1 min-h-[60px] ${
+                              isSelected 
+                                ? 'ring-2 ring-blue-500 bg-blue-50' 
+                                : shouldHighlight 
+                                  ? 'bg-red-100 border-2 border-red-500 text-red-800' 
+                                  : index % 2 === 0
+                                    ? 'bg-blue-100 border border-blue-300 text-blue-800'
+                                    : 'bg-green-100 border border-green-300 text-green-800'
+                            }`}
+                            draggable
+                            onDragStart={(e) => handleOrderDragStart(e, scheduledOrder)}
+                            onDragEnd={handleOrderDragEnd}
+                            onClick={(e) => handleOrderClick(e, scheduledOrder.id)}
+                            style={{ 
+                              height: `${Math.max(orderUtilization, 20)}%`,
+                              minHeight: '60px'
+                            }}
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center space-x-1">
+                                <GripVertical className="h-3 w-3 opacity-60" />
+                                <span className="truncate font-medium text-xs">{scheduledOrder.poNumber}</span>
+                              </div>
+                              <div className="opacity-0 group-hover:opacity-100 flex space-x-1">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-4 w-4 p-0 hover:bg-destructive/10"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOrderMovedToPending(scheduledOrder);
+                                  }}
+                                  title="Move back to pending"
+                                >
+                                  <ArrowLeft className="h-3 w-3" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-4 w-4 p-0 hover:bg-secondary"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOrderSplit(scheduledOrder.id, Math.floor(scheduledOrder.orderQuantity / 2));
+                                  }}
+                                  title="Split order"
+                                >
+                                  <Scissors className="h-3 w-3" />
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="text-xs opacity-75 truncate mb-1">
+                              Style: {scheduledOrder.styleId}
+                            </div>
+                            <div className="text-xs opacity-75 mb-1">
+                              Qty: {dailyQty.toLocaleString()}
+                            </div>
+                            <div className="text-xs opacity-75 mb-1">
+                              Cut: {scheduledOrder.cutQuantity.toLocaleString()}
+                            </div>
+                            <div className="text-xs opacity-75 mb-1">
+                              Issue: {scheduledOrder.issueQuantity.toLocaleString()}
+                            </div>
+                            <div className="text-xs opacity-75">
+                              {orderUtilization.toFixed(1)}% used
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           ))}
         </div>
       </div>
