@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useCallback } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -689,7 +688,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                         </div>
                       )}
 
-                      {/* Orders in Cell - Properly sized with hover effects */}
+                      {/* Orders in Cell */}
                       <div className="absolute inset-0 p-1 overflow-hidden">
                         <div className="h-full flex flex-col gap-0.5">
                           {ordersInCell.map((scheduledOrder, index) => {
@@ -700,10 +699,16 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                             const cardKey = `${scheduledOrder.id}-${dateStr}`;
                             const isHovered = hoveredCard === cardKey;
 
-                            // Calculate available height for each card
+                            // Calculate completion percentage for the order
+                            const totalCompleted = Object.values(scheduledOrder.actualProduction || {}).reduce((sum, qty) => sum + qty, 0);
+                            const completionPercent = Math.round((totalCompleted / scheduledOrder.orderQuantity) * 100);
+
+                            // Calculate available height for each card - ensure minimum height
                             const cardCount = ordersInCell.length;
                             const availableHeight = 152; // 160px - 8px padding
-                            const cardHeight = Math.max(32, Math.floor(availableHeight / cardCount) - 2);
+                            const minCardHeight = 36; // Minimum height to show product and percentage
+                            const idealCardHeight = Math.max(minCardHeight, Math.floor(availableHeight / cardCount) - 2);
+                            const cardHeight = cardCount > 3 ? minCardHeight : idealCardHeight; // Force min height if too many cards
 
                             return (
                               <div
@@ -770,13 +775,25 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                                     )}
                                   </div>
 
-                                  {/* Order Details - Show more when hovered */}
+                                  {/* Order Details */}
                                   <div className="flex-1 overflow-hidden">
                                     {!isHovered ? (
-                                      // Minimal info when not hovered
+                                      // Show product and percentage in neutral stage
                                       <div className="space-y-0.5 text-xs">
                                         <div className="truncate opacity-90 font-medium">
-                                          {dailyQty.toLocaleString()}
+                                          {scheduledOrder.styleId}
+                                        </div>
+                                        <div className="flex justify-between items-center">
+                                          <span className="font-medium text-xs">
+                                            {dailyQty.toLocaleString()}
+                                          </span>
+                                          <span className={`text-xs font-semibold px-1 py-0.5 rounded ${
+                                            completionPercent >= 100 ? 'bg-green-100 text-green-700' :
+                                            completionPercent >= 50 ? 'bg-yellow-100 text-yellow-700' :
+                                            'bg-red-100 text-red-700'
+                                          }`}>
+                                            {completionPercent}%
+                                          </span>
                                         </div>
                                       </div>
                                     ) : (
@@ -801,6 +818,16 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                                           </span>
                                           <span className="opacity-90">
                                             <span className="font-medium">Issue:</span> {scheduledOrder.issueQuantity.toLocaleString()}
+                                          </span>
+                                        </div>
+                                        <div className="flex justify-between items-center pt-1 border-t border-gray-200">
+                                          <span className="font-medium">Progress:</span>
+                                          <span className={`font-semibold px-2 py-1 rounded ${
+                                            completionPercent >= 100 ? 'bg-green-100 text-green-700' :
+                                            completionPercent >= 50 ? 'bg-yellow-100 text-yellow-700' :
+                                            'bg-red-100 text-red-700'
+                                          }`}>
+                                            {completionPercent}%
                                           </span>
                                         </div>
                                       </div>
