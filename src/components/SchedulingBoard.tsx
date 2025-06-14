@@ -1,4 +1,5 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
@@ -8,11 +9,6 @@ import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown } from 'lucide-react';
 import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
 import { downloadElementAsPdf } from '../lib/pdfUtils';
-import SchedulingBoardHeader from './SchedulingBoardHeader';
-import SchedulingBoardLineRow from './SchedulingBoardLineRow';
-import SchedulingBoardScheduleDialog from './SchedulingBoardScheduleDialog';
-import { useHandleOverlapDialog } from './useHandleOverlapDialog';
-import SchedulingBoardLinePdfReportContainers from './SchedulingBoardLinePdfReportContainers';
 
 interface SchedulingBoardProps {
   orders: Order[];
@@ -332,7 +328,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         lineId,
         startDate: originalTargetDate // this is the "before" drop date!
       });
-      // Step 3: queue up magnetically rescheduling the overlappers after new planEndDate
+      // Step 3: queue up magnetically rescheduling the overlappers after newOrder
       setPendingReschedule({ toSchedule: overlappingOrders, afterOrderId: newOrder.id, lineId });
     } else {
       // "After" logic: move new order after overlappers' latest end date,
@@ -561,64 +557,76 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-full bg-background flex-1">
-      {/* Sticky Header */}
-      <div className="sticky top-0 z-10">
-        <SchedulingBoardHeader dates={dates} isHoliday={isHoliday} />
-      </div>
+    <div 
+      ref={scrollContainerRef}
+      className="flex-1 overflow-auto bg-background"
+      tabIndex={0}
+      style={{ 
+        overscrollBehaviorX: 'contain',
+        WebkitOverflowScrolling: 'touch'
+      }}
+    >
+      {/* PDF REPORTS (hidden, for each line) */}
+      {productionLines.map(line => {
+        const scheduledOrders = getScheduledOrdersForLine(line.id);
+        if (scheduledOrders.length === 0) return null;
+        return (
+          <div 
+            id={`line-pdf-report-${line.id}`}
+            key={`printable-${line.id}`}
+            style={{ position: 'absolute', left: -9999, top: 0, width: '800px', background: '#fff', color: '#111', padding: 24, zIndex: -1000, fontSize: 14 }}
+          >
+            <div style={{ borderBottom: '2px solid #111', paddingBottom: 8, marginBottom: 16 }}>
+              <h2 style={{ margin: 0, fontWeight: 700, fontSize: 18 }}>Production Plan Report</h2>
+              <div>Line: <b>{line.name}</b></div>
+              <div>Generated on: {new Date().toLocaleString()}</div>
+            </div>
+            <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>Order #</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>Style</th>
+                  <th style={{ textAlign: 'right', borderBottom: '1px solid #aaa', padding: 6 }}>Quantity</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>PSD (Plan Start)</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>PED (Plan End)</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>Delivery</th>
+                </tr>
+              </thead>
+              <tbody>
+                {scheduledOrders.map(order => (
+                  <tr key={order.id}>
+                    <td style={{ padding: 6 }}>{order.poNumber}</td>
+                    <td style={{ padding: 6 }}>{order.styleId}</td>
+                    <td style={{ padding: 6, textAlign: 'right' }}>{order.orderQuantity.toLocaleString()}</td>
+                    <td style={{ padding: 6 }}>
+                      {order.planStartDate ? order.planStartDate.toLocaleDateString() : '-'}
+                    </td>
+                    <td style={{ padding: 6 }}>
+                      {order.planEndDate ? order.planEndDate.toLocaleDateString() : '-'}
+                    </td>
+                    <td style={{ padding: 6 }}>
+                      {order.planEndDate
+                        ? (() => {
+                            const d = new Date(order.planEndDate!);
+                            d.setDate(d.getDate() + 1);
+                            return d.toLocaleDateString();
+                          })()
+                        : '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ marginTop: 24, fontStyle: 'italic', fontSize: 13 }}>
+              * Delivery is estimated as one day after Plan End Date.
+            </div>
+          </div>
+        );
+      })}
 
-      {/* Scrollable grid for lines and dates */}
-      <div
-        ref={scrollContainerRef}
-        className="flex-1 overflow-auto"
-        tabIndex={0}
-        style={{
-          overscrollBehaviorX: 'contain',
-          overscrollBehaviorY: 'contain',
-          WebkitOverflowScrolling: 'touch',
-          minWidth: 0,
-          minHeight: 0,
-          // Remove any other custom restrictive scroll settings
-        }}
-      >
-        <div className="min-w-max w-fit">
-          {productionLines.map((line) => (
-            <SchedulingBoardLineRow
-              key={line.id}
-              line={line}
-              dates={dates}
-              getOrdersForCell={getOrdersForCell}
-              isHoliday={isHoliday}
-              calculateTotalUtilization={calculateTotalUtilization}
-              getAvailableCapacity={getAvailableCapacity}
-              dragHighlight={dragHighlight}
-              handleDrop={handleDrop}
-              handleDragOver={handleDragOver}
-              handleDragEnter={handleDragEnter}
-              handleDragLeave={handleDragLeave}
-              onOrderMovedToPending={onOrderMovedToPending}
-              onOrderSplit={onOrderSplit}
-              handleOrderDragStart={handleOrderDragStart}
-              handleOrderDragEnd={handleOrderDragEnd}
-              handleOrderClick={handleOrderClick}
-              shouldHighlightRed={shouldHighlightRed}
-              selectedOrders={selectedOrders}
-              handleDownloadLinePdf={handleDownloadLinePdf}
-            />
-          ))}
-        </div>
-      </div>
-
-      {/* PDF hidden containers */}
-      <SchedulingBoardLinePdfReportContainers
-        productionLines={productionLines}
-        orders={orders}
-        downloadElementAsPdf={downloadElementAsPdf}
-      />
-
-      {/* Multi-select bar */}
+      {/* Multi-select info bar */}
       {isMultiSelectMode && selectedOrders.size > 0 && (
-        <div className="sticky bottom-0 z-20 bg-blue-100 border-t border-blue-300 p-2 text-center">
+        <div className="sticky top-0 z-20 bg-blue-100 border-b border-blue-300 p-2 text-center">
           <span className="text-blue-800 font-medium">
             {selectedOrders.size} orders selected - Drag to move together
           </span>
@@ -636,22 +644,288 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         </div>
       )}
 
+      <div className="min-w-max">
+        {/* Header with dates */}
+        <div className="sticky top-0 z-10 bg-card border-b border-border">
+          <div className="flex">
+            {/* Line header with PDF button */}
+            <div className="w-48 p-4 border-r border-border bg-card">
+              <div className="flex items-center space-x-2 mb-2">
+                <CalendarDays className="h-5 w-5 text-muted-foreground" />
+                <span className="font-medium">Production Lines</span>
+              </div>
+              {/* Empty cell under line header to align with buttons per-line below */}
+            </div>
+            {dates.map((date) => (
+              <div
+                key={date.toISOString()}
+                className={`w-32 p-2 border-r border-border text-center ${
+                  isHoliday(date) ? 'bg-muted' : 'bg-card'
+                }`}
+              >
+                <div className="text-xs font-medium">
+                  {date.toLocaleDateString('en-US', { weekday: 'short' })}
+                </div>
+                <div className="text-sm">
+                  {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </div>
+                {isHoliday(date) && (
+                  <div className="text-xs text-destructive">Holiday</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Production lines grid */}
+        <div className="divide-y divide-border">
+          {productionLines.map((line) => (
+            <div key={line.id} className="flex">
+              {/* Left column: Line info + PDF download button */}
+              <div className="w-48 p-4 border-r border-border bg-card flex flex-col items-start">
+                <div className="font-medium">{line.name}</div>
+                <div className="text-sm text-muted-foreground">
+                  Capacity: {line.capacity}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2 flex items-center gap-1"
+                  onClick={() => handleDownloadLinePdf(line.id, line.name)}
+                  title="Download Production Plan PDF"
+                >
+                  <FileDown className="w-4 h-4 mr-1" />
+                  <span>Plan PDF</span>
+                </Button>
+              </div>
+              {/* ... keep grid cells ... */}
+              {dates.map((date) => {
+                const cellKey = `${line.id}-${date.toISOString().split('T')[0]}`;
+                const isHighlighted = dragHighlight === cellKey;
+                const utilizationPercent = calculateTotalUtilization(line.id, date);
+                const ordersInCell = getOrdersForCell(line.id, date);
+                const isHolidayCell = isHoliday(date);
+                const availableCapacity = getAvailableCapacity(line.id, date);
+                
+                return (
+                  <div
+                    key={cellKey}
+                    className={`w-32 min-h-[120px] border-r border-border relative transition-all duration-200 ${
+                      isHolidayCell 
+                        ? 'bg-muted/50' 
+                        : isHighlighted 
+                          ? 'bg-primary/20 border-primary border-2' 
+                          : 'bg-background hover:bg-muted/20'
+                    }`}
+                    onDrop={(e) => handleDrop(e, line.id, date)}
+                    onDragOver={handleDragOver}
+                    onDragEnter={(e) => handleDragEnter(e, line.id, date)}
+                    onDragLeave={handleDragLeave}
+                  >
+                    {/* Capacity utilization bar */}
+                    {utilizationPercent > 0 && !isHolidayCell && (
+                      <div 
+                        className="absolute bottom-0 left-0 right-0 bg-primary/30 transition-all duration-300"
+                        style={{ height: `${Math.min(utilizationPercent, 100)}%` }}
+                      />
+                    )}
+                    
+                    {/* Drop zone indicator */}
+                    {!isHolidayCell && ordersInCell.length === 0 && (
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
+                        <Plus className="h-4 w-4 text-muted-foreground" />
+                      </div>
+                    )}
+                    
+                    {/* Available capacity indicator */}
+                    {!isHolidayCell && availableCapacity > 0 && ordersInCell.length > 0 && (
+                      <div className="absolute top-1 right-1 text-xs bg-green-100 text-green-800 px-1 rounded">
+                        {availableCapacity}
+                      </div>
+                    )}
+                    
+                    {/* Drag highlight indicator */}
+                    {isHighlighted && !isHolidayCell && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-primary border-dashed rounded">
+                        <div className="text-xs font-medium text-primary bg-background px-2 py-1 rounded shadow">
+                          Drop Here
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Orders in cell */}
+                    <div className="p-1 space-y-1 relative z-10 h-full flex flex-col">
+                      {ordersInCell.map((scheduledOrder, index) => {
+                        const dateStr = date.toISOString().split('T')[0];
+                        const dailyQty = scheduledOrder.actualProduction?.[dateStr] || 0;
+                        const shouldHighlight = shouldHighlightRed(scheduledOrder, date);
+                        const orderUtilization = (dailyQty / line.capacity) * 100;
+                        const isSelected = selectedOrders.has(scheduledOrder.id);
+                        
+                        return (
+                          <div 
+                            key={`${scheduledOrder.id}-${dateStr}`}
+                            className={`rounded text-xs p-1 group cursor-move transition-colors flex-1 min-h-[60px] ${
+                              isSelected 
+                                ? 'ring-2 ring-blue-500 bg-blue-50' 
+                                : shouldHighlight 
+                                  ? 'bg-red-100 border-2 border-red-500 text-red-800' 
+                                  : index % 2 === 0
+                                    ? 'bg-blue-100 border border-blue-300 text-blue-800'
+                                    : 'bg-green-100 border border-green-300 text-green-800'
+                            }`}
+                            draggable
+                            onDragStart={(e) => handleOrderDragStart(e, scheduledOrder)}
+                            onDragEnd={handleOrderDragEnd}
+                            onClick={(e) => handleOrderClick(e, scheduledOrder.id)}
+                            style={{ 
+                              height: `${Math.max(orderUtilization, 20)}%`,
+                              minHeight: '60px'
+                            }}
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center space-x-1">
+                                <GripVertical className="h-3 w-3 opacity-60" />
+                                <span className="truncate font-medium text-xs">{scheduledOrder.poNumber}</span>
+                              </div>
+                              <div className="opacity-0 group-hover:opacity-100 flex space-x-1">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-4 w-4 p-0 hover:bg-destructive/10"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOrderMovedToPending(scheduledOrder);
+                                  }}
+                                  title="Move back to pending"
+                                >
+                                  <ArrowLeft className="h-3 w-3" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-4 w-4 p-0 hover:bg-secondary"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOrderSplit(scheduledOrder.id, Math.floor(scheduledOrder.orderQuantity / 2));
+                                  }}
+                                  title="Split order"
+                                >
+                                  <Scissors className="h-3 w-3" />
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="text-xs opacity-75 truncate mb-1">
+                              Style: {scheduledOrder.styleId}
+                            </div>
+                            <div className="text-xs opacity-75 mb-1">
+                              Qty: {dailyQty.toLocaleString()}
+                            </div>
+                            <div className="text-xs opacity-75 mb-1">
+                              Cut: {scheduledOrder.cutQuantity.toLocaleString()}
+                            </div>
+                            <div className="text-xs opacity-75 mb-1">
+                              Issue: {scheduledOrder.issueQuantity.toLocaleString()}
+                            </div>
+                            <div className="text-xs opacity-75">
+                              {orderUtilization.toFixed(1)}% used
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Schedule Dialog */}
-      <SchedulingBoardScheduleDialog
-        isOpen={scheduleDialog.isOpen}
-        order={scheduleDialog.order}
-        lineId={scheduleDialog.lineId}
-        startDate={scheduleDialog.startDate}
-        productionLines={productionLines}
-        planningMethod={planningMethod}
-        setPlanningMethod={setPlanningMethod}
-        rampUpPlans={rampUpPlans}
-        selectedRampUpPlanId={selectedRampUpPlanId}
-        setSelectedRampUpPlanId={setSelectedRampUpPlanId}
-        onConfirm={handleScheduleConfirm}
-        onCancel={handleDialogClose}
-        disableConfirm={planningMethod === 'rampup' && !selectedRampUpPlanId}
-      />
+      <Dialog open={scheduleDialog.isOpen} onOpenChange={(open) => !open && handleDialogClose()}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Schedule Order</DialogTitle>
+          </DialogHeader>
+          {scheduleDialog.order && (
+            <div className="space-y-4">
+              <div className="bg-muted/50 p-3 rounded">
+                <h3 className="font-medium">{scheduleDialog.order.poNumber}</h3>
+                <p className="text-sm text-muted-foreground">
+                  Style: {scheduleDialog.order.styleId}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Quantity: {scheduleDialog.order.orderQuantity.toLocaleString()} | SMV: {scheduleDialog.order.smv} | MO: {scheduleDialog.order.moCount}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Cut: {scheduleDialog.order.cutQuantity.toLocaleString()} | Issue: {scheduleDialog.order.issueQuantity.toLocaleString()}
+                </p>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <label className="font-medium">Start Date:</label>
+                  <div>{scheduleDialog.startDate?.toLocaleDateString()}</div>
+                </div>
+                <div>
+                  <label className="font-medium">Production Line:</label>
+                  <div>{productionLines.find(l => l.id === scheduleDialog.lineId)?.name}</div>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium">Planning Method:</label>
+                <RadioGroup value={planningMethod} onValueChange={(value: 'capacity' | 'rampup') => setPlanningMethod(value)}>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="capacity" id="capacity" />
+                    <Label htmlFor="capacity">Based on Line Capacity</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="rampup" id="rampup" />
+                    <Label htmlFor="rampup">Based on Ramp-Up Plan</Label>
+                  </div>
+                </RadioGroup>
+              </div>
+              
+              {planningMethod === 'rampup' && (
+                <div>
+                  <label className="text-sm font-medium">Ramp-Up Plan:</label>
+                  <Select value={selectedRampUpPlanId} onValueChange={setSelectedRampUpPlanId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a ramp-up plan" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {rampUpPlans.map((plan) => (
+                        <SelectItem key={plan.id} value={plan.id}>
+                          {plan.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              
+              <div className="flex space-x-2 pt-4">
+                <Button
+                  onClick={handleScheduleConfirm}
+                  disabled={planningMethod === 'rampup' && !selectedRampUpPlanId}
+                  className="flex-1"
+                >
+                  Schedule Order
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleDialogClose}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Overlap Confirmation Dialog */}
       <OverlapConfirmationDialog
@@ -666,5 +940,3 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     </div>
   );
 };
-
-export default SchedulingBoard;
