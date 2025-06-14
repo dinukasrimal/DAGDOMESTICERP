@@ -6,14 +6,20 @@ import { AdminPanel } from './AdminPanel';
 import { GoogleSheetsConfig } from './GoogleSheetsConfig';
 import { Header } from './Header';
 import { Button } from './ui/button';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, FileText } from 'lucide-react';
 import { TooltipProvider } from './ui/tooltip';
 import { Order } from '../types/scheduler';
+import { ReportDialog } from './reports/ReportDialog';
+import { CuttingReportContent } from './reports/CuttingReportContent';
+import { DeliveryReportContent } from './reports/DeliveryReportContent';
+import { downloadElementAsPdf } from '../lib/pdfUtils';
 
 export const ProductionScheduler: React.FC = () => {
   const [userRole, setUserRole] = useState<'planner' | 'superuser'>('planner');
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [showCuttingReport, setShowCuttingReport] = useState(false);
+  const [showDeliveryReport, setShowDeliveryReport] = useState(false);
   
   const {
     orders,
@@ -412,7 +418,6 @@ export const ProductionScheduler: React.FC = () => {
         />
         
         <div className="flex-1 flex overflow-hidden">
-          {/* Simple sidebar - always visible */}
           <div className="w-80 border-r border-border bg-card flex flex-col">
             <div className="p-4 border-b border-border space-y-4">
               <GoogleSheetsConfig
@@ -424,7 +429,6 @@ export const ProductionScheduler: React.FC = () => {
                 onClearError={clearError}
               />
               
-              {/* Refresh Plan Button */}
               <Button
                 onClick={refreshPlan}
                 disabled={isRefreshing || isLoading}
@@ -433,6 +437,25 @@ export const ProductionScheduler: React.FC = () => {
               >
                 <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
                 {isRefreshing ? 'Refreshing Plan...' : 'Refresh Plan'}
+              </Button>
+
+              {/* Report Buttons */}
+              <h4 className="text-sm font-medium text-muted-foreground pt-2">Reports</h4>
+              <Button
+                onClick={() => setShowCuttingReport(true)}
+                className="w-full"
+                variant="outline"
+              >
+                <FileText className="h-4 w-4 mr-2" />
+                Cutting Report
+              </Button>
+              <Button
+                onClick={() => setShowDeliveryReport(true)}
+                className="w-full"
+                variant="outline"
+              >
+                <FileText className="h-4 w-4 mr-2" />
+                Delivery Report
               </Button>
             </div>
             
@@ -457,6 +480,32 @@ export const ProductionScheduler: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Report Dialogs */}
+      <ReportDialog
+        isOpen={showCuttingReport}
+        onClose={() => setShowCuttingReport(false)}
+        title="Cutting Report"
+        onDownloadPdf={() => downloadElementAsPdf('cutting-report-content', 'Cutting_Report')}
+      >
+        <CuttingReportContent
+          orders={orders.filter(o => o.planStartDate && (o.status === 'scheduled' || o.status === 'in_progress'))}
+          holidays={holidays}
+          reportId="cutting-report-content"
+        />
+      </ReportDialog>
+
+      <ReportDialog
+        isOpen={showDeliveryReport}
+        onClose={() => setShowDeliveryReport(false)}
+        title="Delivery Report"
+        onDownloadPdf={() => downloadElementAsPdf('delivery-report-content', 'Delivery_Report')}
+      >
+        <DeliveryReportContent
+          orders={orders.filter(o => o.status === 'completed' && o.planEndDate)}
+          reportId="delivery-report-content"
+        />
+      </ReportDialog>
     </TooltipProvider>
   );
 };
