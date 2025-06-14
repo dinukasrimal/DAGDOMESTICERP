@@ -418,7 +418,9 @@ export const ProductionScheduler: React.FC = () => {
         />
         
         <div className="flex-1 flex overflow-hidden">
-          <div className="w-80 border-r border-border bg-card flex flex-col">
+          {/* Sidebar container: Added overflow-y-auto for scrollability */}
+          <div className="w-80 border-r border-border bg-card flex flex-col overflow-y-auto">
+            {/* Top section: Google Sheets Config and Refresh Plan */}
             <div className="p-4 border-b border-border space-y-4">
               <GoogleSheetsConfig
                 isLoading={isLoading}
@@ -438,8 +440,18 @@ export const ProductionScheduler: React.FC = () => {
                 <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
                 {isRefreshing ? 'Refreshing Plan...' : 'Refresh Plan'}
               </Button>
+            </div>
+            
+            {/* Middle section: Pending Orders (takes remaining space and scrolls internally) */}
+            <div className="flex-1 overflow-hidden">
+              <PendingOrdersSidebar
+                orders={pendingOrders}
+                onOrderSplit={handleOrderSplit}
+              />
+            </div>
 
-              {/* Report Buttons */}
+            {/* Bottom section: Reports */}
+            <div className="p-4 border-t border-border space-y-2 mt-auto"> {/* mt-auto pushes to bottom if space available */}
               <h4 className="text-sm font-medium text-muted-foreground pt-2">Reports</h4>
               <Button
                 onClick={() => setShowCuttingReport(true)}
@@ -457,13 +469,6 @@ export const ProductionScheduler: React.FC = () => {
                 <FileText className="h-4 w-4 mr-2" />
                 Delivery Report
               </Button>
-            </div>
-            
-            <div className="flex-1 overflow-hidden">
-              <PendingOrdersSidebar
-                orders={pendingOrders}
-                onOrderSplit={handleOrderSplit}
-              />
             </div>
           </div>
           
