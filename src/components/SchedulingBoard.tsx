@@ -32,6 +32,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     order: Order | null;
     lineId: string;
     startDate: Date | null;
+    overlappingOrdersToReschedule?: Order[];
   }>({
     isOpen: false,
     order: null,
@@ -46,6 +47,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     targetDate: Date | null;
     targetLine: string;
     originalTargetDate: Date | null;
+    placement?: 'before' | 'after';
   }>({
     isOpen: false,
     newOrder: null,
@@ -206,7 +208,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return dailyPlan;
   }, [isHoliday, planningMethod, selectedRampUpPlanId, rampUpPlans, getAvailableCapacity]);
 
-  // Enhanced magnetic placement with capacity-aware scheduling
+  // Enhanced magnetic placement with proper sequencing
   const moveOrdersForPlacement = useCallback(async (
     newOrder: Order, 
     targetLineId: string, 
@@ -218,36 +220,27 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     console.log(`📋 Moving ${overlappingOrders.length} orders for ${placement} placement`);
     
     if (placement === 'before') {
-      // Move ALL overlapping orders to pending - they'll be magnetically rescheduled
-      console.log(`🔄 Moving ${overlappingOrders.length} overlapping orders to pending for magnetic rescheduling`);
+      // For "before" placement, schedule the new order first, then move overlapping orders
+      console.log(`📅 Scheduling new order ${newOrder.poNumber} first at target date`);
       
-      // Sort overlapping orders by their original start dates to maintain sequence
+      // Store overlapping orders info for later magnetic rescheduling
       const sortedOverlapping = [...overlappingOrders].sort((a, b) => {
         const dateA = a.planStartDate ? new Date(a.planStartDate).getTime() : 0;
         const dateB = b.planStartDate ? new Date(b.planStartDate).getTime() : 0;
         return dateA - dateB;
       });
       
-      for (const order of sortedOverlapping) {
-        console.log(`  - Moving ${order.poNumber} to pending`);
-        await onOrderMovedToPending(order);
-      }
-      
-      // Schedule new order at the original target date
+      // Set up the schedule dialog for the new order with callback to handle overlapping orders
       setScheduleDialog({
         isOpen: true,
         order: newOrder,
         lineId: targetLineId,
-        startDate: originalTargetDate
+        startDate: originalTargetDate,
+        overlappingOrdersToReschedule: sortedOverlapping
       });
       
-      // After new order is scheduled, we'll reschedule the overlapping orders magnetically
-      setTimeout(async () => {
-        await rescheduleOrdersMagnetically(sortedOverlapping, newOrder, targetLineId);
-      }, 100);
-      
     } else {
-      // For "after" placement, find the last end date and check for remaining capacity
+      // For "after" placement, find where to place the new order
       let latestEndDate = targetDate;
       overlappingOrders.forEach(order => {
         if (order.planEndDate && order.planEndDate > latestEndDate) {
@@ -285,7 +278,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         }
       }
     }
-  }, [onOrderMovedToPending, productionLines, getAvailableCapacity]);
+  }, [productionLines, getAvailableCapacity]);
 
   // Function to reschedule orders magnetically after a new order is placed
   const rescheduleOrdersMagnetically = useCallback(async (
@@ -413,7 +406,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   }, [isHoliday, checkForOverlaps, productionLines, isMultiSelectMode, selectedOrders]);
 
   const handleScheduleConfirm = useCallback(async () => {
-    const { order, lineId, startDate } = scheduleDialog;
+    const { order, lineId, startDate, overlappingOrdersToReschedule } = scheduleDialog;
     
     if (!order || !lineId || !startDate) return;
 
@@ -431,6 +424,22 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       
       await onOrderScheduled(updatedOrder, startDate, endDate, dailyPlan);
       
+      // Now handle overlapping orders if this was a "before" placement
+      if (overlappingOrdersToReschedule && overlappingOrdersToReschedule.length > 0) {
+        console.log(`🔄 Now moving ${overlappingOrdersToReschedule.length} overlapping orders to pending for magnetic rescheduling`);
+        
+        // Move overlapping orders to pending
+        for (const overlappingOrder of overlappingOrdersToReschedule) {
+          console.log(`  - Moving ${overlappingOrder.poNumber} to pending`);
+          await onOrderMovedToPending(overlappingOrder);
+        }
+        
+        // Schedule magnetic rescheduling after a brief delay
+        setTimeout(async () => {
+          await rescheduleOrdersMagnetically(overlappingOrdersToReschedule, updatedOrder, lineId);
+        }, 100);
+      }
+      
       setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
       setPlanningMethod('capacity');
       setSelectedRampUpPlanId('');
@@ -438,7 +447,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     } catch (error) {
       console.error('❌ Failed to schedule order:', error);
     }
-  }, [scheduleDialog, productionLines, planningMethod, selectedRampUpPlanId, calculateDailyProductionWithSharing, onOrderScheduled]);
+  }, [scheduleDialog, productionLines, planningMethod, selectedRampUpPlanId, calculateDailyProductionWithSharing, onOrderScheduled, onOrderMovedToPending]);
 
   const handleOverlapConfirm = useCallback(async (placement: 'before' | 'after') => {
     const { newOrder, overlappingOrders, targetDate, targetLine, originalTargetDate } = overlapDialog;
@@ -727,6 +736,19 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                   <div>{productionLines.find(l => l.id === scheduleDialog.lineId)?.name}</div>
                 </div>
               </div>
+
+              {scheduleDialog.overlappingOrdersToReschedule && scheduleDialog.overlappingOrdersToReschedule.length > 0 && (
+                <div className="bg-blue-50 p-3 rounded border border-blue-200">
+                  <p className="text-sm font-medium text-blue-800 mb-2">
+                    After scheduling, these orders will be moved magnetically:
+                  </p>
+                  <ul className="text-xs text-blue-700">
+                    {scheduleDialog.overlappingOrdersToReschedule.map(order => (
+                      <li key={order.id}>• {order.poNumber}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               <div>
                 <label className="text-sm font-medium">Planning Method:</label>
