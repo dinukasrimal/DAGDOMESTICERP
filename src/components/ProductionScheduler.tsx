@@ -15,6 +15,7 @@ import { DeliveryReportContent } from './reports/DeliveryReportContent';
 import { downloadElementAsPdf } from '../lib/pdfUtils';
 import { toast } from "@/hooks/use-toast";
 import { dataService } from "../services/dataService";
+import { LinePlanReportDialog } from "./reports/LinePlanReportDialog";
 
 export const ProductionScheduler: React.FC = () => {
   const [userRole, setUserRole] = useState<'planner' | 'superuser'>('planner');
@@ -22,7 +23,11 @@ export const ProductionScheduler: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showCuttingReport, setShowCuttingReport] = useState(false);
   const [showDeliveryReport, setShowDeliveryReport] = useState(false);
-  
+  const [showLineReport, setShowLineReport] = useState<{
+    isOpen: boolean;
+    lineId: string | null;
+  }>({ isOpen: false, lineId: null });
+
   const {
     orders,
     productionLines,
@@ -431,9 +436,8 @@ export const ProductionScheduler: React.FC = () => {
         />
         
         <div className="flex-1 flex overflow-hidden">
-          {/* Sidebar container: Now scrollable if content overflows, fix width */}
+          {/* Sidebar container */}
           <div className="w-80 h-full border-r border-border bg-card flex flex-col overflow-y-auto">
-            {/* Top section: Google Sheets Config and Refresh Plan */}
             <div className="p-4 border-b border-border space-y-4 flex-shrink-0">
               <GoogleSheetsConfig
                 isLoading={isLoading}
@@ -456,7 +460,6 @@ export const ProductionScheduler: React.FC = () => {
               </Button>
             </div>
             
-            {/* Middle section: Pending Orders */}
             <div className="flex-1 min-h-[350px] max-h-[none] overflow-y-auto py-4">
               <PendingOrdersSidebar
                 orders={pendingOrders}
@@ -465,7 +468,6 @@ export const ProductionScheduler: React.FC = () => {
               />
             </div>
 
-            {/* Bottom section: Reports */}
             <div className="p-4 border-t border-border space-y-2 mt-auto flex-shrink-0">
               <h4 className="text-sm font-medium text-muted-foreground pt-2">Reports</h4>
               <Button
@@ -484,6 +486,22 @@ export const ProductionScheduler: React.FC = () => {
                 <FileText className="h-4 w-4 mr-2" />
                 Delivery Report
               </Button>
+              <div className="pt-2">
+                <span className="text-xs font-semibold text-muted-foreground my-1 block">Line Reports</span>
+                <div className="flex flex-col gap-2">
+                  {productionLines.map(line => (
+                    <Button
+                      key={line.id}
+                      onClick={() => setShowLineReport({ isOpen: true, lineId: line.id })}
+                      className="w-full"
+                      variant="outline"
+                    >
+                      <FileText className="h-4 w-4 mr-2" />
+                      {line.name} Report
+                    </Button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
           
@@ -526,6 +544,14 @@ export const ProductionScheduler: React.FC = () => {
           reportId="delivery-report-content"
         />
       </ReportDialog>
+
+      {/* NEW: LinePlanReportDialog --- one dialog for all, we track lineId */}
+      <LinePlanReportDialog
+        isOpen={showLineReport.isOpen}
+        onClose={() => setShowLineReport({ isOpen: false, lineId: null })}
+        line={showLineReport.lineId ? productionLines.find(l => l.id === showLineReport.lineId) : null}
+        orders={orders}
+      />
     </TooltipProvider>
   );
 };
