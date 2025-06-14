@@ -316,28 +316,70 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       await onOrderScheduled(updatedOrder, startDate, endDate, dailyPlan);
       setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
       setPlanningMethod('capacity'); setSelectedRampUpPlanId('');
-      // If we have a pendingReschedule, and this dialog was for afterOrderId, now schedule those orders after the newly scheduled one
+      
+      // --- PATCH HERE: Improved "before" handling to utilize last day open capacity ---
       if (pendingReschedule.toSchedule.length > 0 && pendingReschedule.afterOrderId === order.id && pendingReschedule.lineId) {
-        // Find newOrder latest planEndDate, then schedule each overlapped after it
-        let newPlanEnd: Date | null = endDate; // Use the just assigned endDate for newOrder
-        let magnetDate = new Date(newPlanEnd); magnetDate.setDate(magnetDate.getDate() + 1);
-        for (const next of pendingReschedule.toSchedule) {
-          const lineObj = productionLines.find(l => l.id === pendingReschedule.lineId);
+        let newPlanEnd: Date | null = endDate;
+        let magnetDate = new Date(newPlanEnd); // Start on newOrder's last day
+        const newOrderLastDayStr = magnetDate.toISOString().split('T')[0];
+        const lineObj = productionLines.find(l => l.id === pendingReschedule.lineId);
+        let lastDayAvailCapacity = lineObj ? lineObj.capacity - (dailyPlan[newOrderLastDayStr] || 0) : 0;
+
+        for (const [i, next] of pendingReschedule.toSchedule.entries()) {
           if (!lineObj) continue;
-          const plan = calculateDailyProductionWithSharing(next, lineObj, magnetDate);
+
+          const remainingQty = next.orderQuantity;
+          const plan: { [date: string]: number } = {};
+
+          let qtyLeft = remainingQty;
+          let planningDate = new Date(magnetDate); // start from last day
+
+          // (1) If there is leftover capacity on newOrder's last day, use it!
+          if (i === 0 && lastDayAvailCapacity > 0) {
+            const cap = Math.min(qtyLeft, lastDayAvailCapacity);
+            if (cap > 0) {
+              plan[newOrderLastDayStr] = cap;
+              qtyLeft -= cap;
+            }
+            // next day will be after the last day
+            planningDate.setDate(planningDate.getDate() + 1);
+          } else if (i === 0 && lastDayAvailCapacity <= 0) {
+            // start on next day
+            planningDate.setDate(planningDate.getDate() + 1);
+          }
+
+          // (2) Fill subsequent days as normal (skip holidays if you use those in your capacity plan)
+          while (qtyLeft > 0) {
+            const dateStr = planningDate.toISOString().split('T')[0];
+            // Check for holidays, if needed (similar to isHoliday)
+            const isHolidayDay = holidays.some(h => h.date.toDateString() === planningDate.toDateString());
+            if (!isHolidayDay) {
+              const cap = lineObj.capacity;
+              const todayFill = Math.min(qtyLeft, cap);
+              plan[dateStr] = todayFill;
+              qtyLeft -= todayFill;
+            }
+            planningDate.setDate(planningDate.getDate() + 1);
+
+            // safety
+            if (Object.keys(plan).length > 366) break;
+          }
+
+          // The new end date for this order
           const dates = Object.keys(plan);
           const lastDay = dates.length > 0 ? new Date(Math.max(...dates.map(d => new Date(d).getTime()))) : magnetDate;
           const nextOrder = { ...next, assignedLineId: lineObj.id };
-          await onOrderScheduled(nextOrder, magnetDate, lastDay, plan);
-          // Next in series
-          magnetDate = new Date(lastDay); magnetDate.setDate(magnetDate.getDate() + 1);
+          await onOrderScheduled(nextOrder, new Date(Object.keys(plan)[0]), lastDay, plan);
+          
+          // For the next rescheduled order in chain: its magnetDate is the latest planned day of previous
+          magnetDate = new Date(lastDay);
         }
         setPendingReschedule({ toSchedule: [], afterOrderId: null, lineId: null });
       }
     } catch (error) {
       console.error('❌ Failed to schedule order:', error);
     }
-  }, [scheduleDialog, productionLines, planningMethod, selectedRampUpPlanId, calculateDailyProductionWithSharing, onOrderScheduled, pendingReschedule]);
+  }, [scheduleDialog, productionLines, planningMethod, selectedRampUpPlanId, calculateDailyProductionWithSharing, onOrderScheduled, pendingReschedule, holidays]);
   
   const handleDialogClose = useCallback(() => {
     setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
