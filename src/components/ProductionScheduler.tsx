@@ -83,15 +83,11 @@ export const ProductionScheduler: React.FC = () => {
     }
   };
 
-  const handleSelectAll = (e: Event) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleSelectAll = () => {
     setSelectedLineIds(productionLines.map(line => line.id));
   };
 
-  const handleDeselectAll = (e: Event) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleDeselectAll = () => {
     setSelectedLineIds([]);
   };
 
