@@ -1,4 +1,5 @@
 
+
 import React, { useState, useCallback } from 'react';
 import { useSupabaseProductionData } from '../hooks/useSupabaseProductionData';
 import { SchedulingBoard } from './SchedulingBoard';
@@ -84,11 +85,15 @@ export const ProductionScheduler: React.FC = () => {
     }
   };
 
-  const handleSelectAll = () => {
+  const handleSelectAll = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
     setSelectedLineIds(productionLines.map(line => line.id));
   };
 
-  const handleDeselectAll = () => {
+  const handleDeselectAll = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
     setSelectedLineIds([]);
   };
 
@@ -498,10 +503,10 @@ export const ProductionScheduler: React.FC = () => {
               <DropdownMenuContent className="w-64 max-h-80 overflow-y-auto">
                 <DropdownMenuLabel>Select Production Lines</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={handleSelectAll} className="cursor-pointer">
+                <DropdownMenuItem onSelect={handleSelectAll} className="cursor-pointer">
                   Select All
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleDeselectAll} className="cursor-pointer">
+                <DropdownMenuItem onSelect={handleDeselectAll} className="cursor-pointer">
                   Deselect All
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
@@ -657,3 +662,4 @@ export const ProductionScheduler: React.FC = () => {
 };
 
 export default ProductionScheduler;
+
