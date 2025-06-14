@@ -310,7 +310,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     lineCapacity: number,
     startDate: Date,
     isHolidayFn: (d: Date) => boolean,
-    fillFirstDay: number = 0 // if >0, fill partial on first day (due to leftover capacity)
+    fillFirstDay: number = 0 // left for multi-order move edge cases
   ) => {
     const plan: { [date: string]: number } = {};
     let remainingQty = qty;
@@ -331,8 +331,9 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           remainingQty -= planned;
         }
       }
+      // Only increment to next day (contiguous) regardless unless it's a holiday:
       currentDate.setDate(currentDate.getDate() + 1);
-      // To prevent infinite loop
+      // To prevent infinite loops
       if (Object.keys(plan).length > 366) break;
     }
     return plan;
@@ -344,7 +345,19 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     const selectedLine = productionLines.find(l => l.id === lineId); if (!selectedLine) return;
     if (planningMethod === 'rampup' && !selectedRampUpPlanId) return;
     try {
-      const dailyPlan = calculateDailyProductionWithSharing(order, selectedLine, startDate);
+      // Use the solid block planning logic for single and multi-order
+      let dailyPlan: { [date: string]: number };
+      if (planningMethod === 'capacity') {
+        dailyPlan = getContiguousProductionPlan(
+          order.orderQuantity,
+          selectedLine.capacity,
+          startDate,
+          isHoliday
+        );
+      } else {
+        // keep rampup logic, but should still be contiguous over non-holiday days!
+        dailyPlan = calculateDailyProductionWithSharing(order, selectedLine, startDate);
+      }
       const planDates = Object.keys(dailyPlan);
       const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
       const updatedOrder = { ...order, assignedLineId: lineId };
@@ -352,13 +365,13 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
       setPlanningMethod('capacity'); setSelectedRampUpPlanId('');
       
-      // PATCH: For any pending reschedules (after moving orders "before" a target), move them as a single contiguous block
+      // PATCH: For pending reschedules (after moving orders "before"), also solid block
       if (pendingReschedule.toSchedule.length > 0 && pendingReschedule.afterOrderId === order.id && pendingReschedule.lineId) {
         let newPlanEnd: Date | null = endDate;
         let magnetDate = new Date(newPlanEnd); // Start on newOrder's last day
         const newOrderLastDayStr = magnetDate.toISOString().split('T')[0];
         const lineObj = productionLines.find(l => l.id === pendingReschedule.lineId);
-        let lastDayAvailCapacity = lineObj ? lineObj.capacity - (dailyPlan[newOrderLastDayStr] || 0) : 0; // If >0, the first rescheduled order gets leftover on that day
+        let lastDayAvailCapacity = lineObj ? lineObj.capacity - (dailyPlan[newOrderLastDayStr] || 0) : 0;
 
         for (const [i, next] of pendingReschedule.toSchedule.entries()) {
           if (!lineObj) continue;
@@ -366,18 +379,16 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           let qty = next.orderQuantity;
           let plan: { [date: string]: number } = {};
 
-          // (a) First, try to use leftover on the anchor day (new order's last day)
           if (i === 0 && lastDayAvailCapacity > 0) {
             plan = getContiguousProductionPlan(
               qty, lineObj.capacity,
-              magnetDate,         // anchor date
+              magnetDate,
               (d) => holidays.some(h => h.date.toDateString() === d.toDateString()),
               lastDayAvailCapacity
             );
           } else {
-            // (b) Start on next available working day
             const anchorNextDay = new Date(magnetDate);
-            if (! (i === 0 && lastDayAvailCapacity > 0) ) {
+            if (!(i === 0 && lastDayAvailCapacity > 0)) {
               anchorNextDay.setDate(anchorNextDay.getDate() + 1);
             }
             plan = getContiguousProductionPlan(
@@ -388,14 +399,12 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             );
           }
 
-          // Get proper plan window
           const planDays = Object.keys(plan);
           const firstPlanDay = planDays.length > 0 ? new Date(planDays[0]) : new Date(magnetDate);
           const lastPlanDay = planDays.length > 0 ? new Date(planDays[planDays.length - 1]) : new Date(magnetDate);
           const nextOrder = { ...next, assignedLineId: lineObj.id };
           await onOrderScheduled(nextOrder, firstPlanDay, lastPlanDay, plan);
 
-          // For subsequent orders
           magnetDate = new Date(lastPlanDay);
         }
         setPendingReschedule({ toSchedule: [], afterOrderId: null, lineId: null });
@@ -403,7 +412,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     } catch (error) {
       console.error('❌ Failed to schedule order:', error);
     }
-  }, [scheduleDialog, productionLines, planningMethod, selectedRampUpPlanId, calculateDailyProductionWithSharing, onOrderScheduled, pendingReschedule, holidays]);
+  }, [
+    scheduleDialog, productionLines, planningMethod, selectedRampUpPlanId,
+    calculateDailyProductionWithSharing, onOrderScheduled, pendingReschedule, holidays, getContiguousProductionPlan, isHoliday
+  ]);
   
   const handleDialogClose = useCallback(() => {
     setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
