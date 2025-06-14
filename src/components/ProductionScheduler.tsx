@@ -418,10 +418,10 @@ export const ProductionScheduler: React.FC = () => {
         />
         
         <div className="flex-1 flex overflow-hidden">
-          {/* Sidebar container: Added overflow-y-auto for scrollability */}
-          <div className="w-80 border-r border-border bg-card flex flex-col">
+          {/* Sidebar container: Now scrollable if content overflows, fix width */}
+          <div className="w-80 h-full border-r border-border bg-card flex flex-col overflow-y-auto">
             {/* Top section: Google Sheets Config and Refresh Plan */}
-            <div className="p-4 border-b border-border space-y-4">
+            <div className="p-4 border-b border-border space-y-4 flex-shrink-0">
               <GoogleSheetsConfig
                 isLoading={isLoading}
                 error={error}
@@ -442,8 +442,8 @@ export const ProductionScheduler: React.FC = () => {
               </Button>
             </div>
             
-            {/* Middle section: Pending Orders (this should take all available space and be scrollable) */}
-            <div className="flex-1 min-h-0 overflow-y-auto">
+            {/* Middle section: Pending Orders (now takes most of the space and more visible) */}
+            <div className="flex-1 min-h-[350px] max-h-[none] overflow-y-auto py-4">
               <PendingOrdersSidebar
                 orders={pendingOrders}
                 onOrderSplit={handleOrderSplit}
@@ -451,7 +451,7 @@ export const ProductionScheduler: React.FC = () => {
             </div>
 
             {/* Bottom section: Reports (fixed at the bottom) */}
-            <div className="p-4 border-t border-border space-y-2 mt-auto">
+            <div className="p-4 border-t border-border space-y-2 mt-auto flex-shrink-0">
               <h4 className="text-sm font-medium text-muted-foreground pt-2">Reports</h4>
               <Button
                 onClick={() => setShowCuttingReport(true)}
