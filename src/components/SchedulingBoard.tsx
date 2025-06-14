@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -72,20 +71,9 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return date;
   });
 
-  // Improved scroll event handling for better performance
+  // Resetting scroll handling to be simpler and rely more on default browser behavior.
+  // The custom wheel handler has been removed to fix unconventional scrolling issues.
   useEffect(() => {
-    const handleWheel = (e: WheelEvent) => {
-      if (scrollContainerRef.current && scrollContainerRef.current.contains(e.target as Node)) {
-        e.preventDefault();
-        
-        // Swapping scroll axes based on user feedback for trackpad behavior.
-        // Vertical movement (deltaY) will now scroll horizontally.
-        // Horizontal movement (deltaX) will now scroll vertically.
-        scrollContainerRef.current.scrollTop += e.deltaX;
-        scrollContainerRef.current.scrollLeft += e.deltaY;
-      }
-    };
-
     const handleKeyDown = (e: KeyboardEvent) => {
       if (scrollContainerRef.current && 
           document.activeElement && 
@@ -106,11 +94,9 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       }
     };
 
-    document.addEventListener('wheel', handleWheel, { passive: false });
     document.addEventListener('keydown', handleKeyDown);
 
     return () => {
-      document.removeEventListener('wheel', handleWheel);
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, []);
