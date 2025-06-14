@@ -42,7 +42,6 @@ export const ProductionScheduler: React.FC = () => {
     setRampUpPlans,
     fetchOrdersFromGoogleSheets,
     configureGoogleSheets,
-    updateOrderSchedule,
     updateOrderInDatabase,
     createOrderInDatabase,
     deleteOrderFromDatabase,
@@ -312,17 +311,11 @@ export const ProductionScheduler: React.FC = () => {
       // Update in database
       await updateOrderInDatabase(order.id, updatedOrderData);
 
-      // Update the schedule in Google Sheets if configured
-      if (isGoogleSheetsConfigured) {
-        const updatedOrder = { ...order, ...updatedOrderData };
-        await updateOrderSchedule(updatedOrder, startDate, endDate);
-      }
-
       console.log('Order scheduled successfully:', order.poNumber, 'on line:', order.assignedLineId);
     } catch (error) {
       console.error('Failed to schedule order:', error);
     }
-  }, [updateOrderInDatabase, updateOrderSchedule, isGoogleSheetsConfigured]);
+  }, [updateOrderInDatabase]);
 
   const handleOrderMovedToPending = useCallback(async (order: Order) => {
     try {
@@ -491,7 +484,6 @@ export const ProductionScheduler: React.FC = () => {
                 onSync={fetchOrdersFromGoogleSheets}
                 onConfigure={configureGoogleSheets}
                 onClearError={clearError}
-                // Removed: onPushOrderDates
               />
               
               <Button
