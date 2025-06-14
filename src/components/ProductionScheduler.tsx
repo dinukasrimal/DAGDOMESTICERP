@@ -40,40 +40,9 @@ export const ProductionScheduler: React.FC = () => {
     updateOrderSchedule,
     updateOrderInDatabase,
     createOrderInDatabase,
+    deleteOrderFromDatabase,
     clearError
   } = useSupabaseProductionData();
-
-  // New: Handler to push scheduled order dates to Google Sheet
-  const handlePushOrderDatesToSheet = async () => {
-    try {
-      const scheduledOrders = orders.filter(
-        o =>
-          o.status === "scheduled" &&
-          o.poNumber &&
-          o.planStartDate &&
-          o.planEndDate
-      );
-      if (!scheduledOrders.length) {
-        toast({
-          title: "No scheduled orders",
-          description: "There are no scheduled orders to push.",
-        });
-        return;
-      }
-      // Call dataService to push dates to Google Sheets
-      await dataService.pushPsdPedToGoogleSheet(scheduledOrders);
-      toast({
-        title: "Order dates pushed",
-        description: "PSD and PED for scheduled orders were pushed to Google Sheet.",
-      });
-    } catch (err: any) {
-      toast({
-        title: "Failed to push order dates",
-        description: err?.message || "An error occurred pushing the order dates.",
-        variant: "destructive",
-      });
-    }
-  };
 
   const handleToggleAdmin = () => {
     setShowAdminPanel(!showAdminPanel);
@@ -424,6 +393,16 @@ export const ProductionScheduler: React.FC = () => {
     order.status === 'pending' && !order.planStartDate && !order.planEndDate
   );
 
+  const handleOrderDelete = useCallback(async (orderId: string) => {
+    try {
+      await deleteOrderFromDatabase(orderId);
+      // Optionally: show a toast notification if available
+    } catch (err: any) {
+      // Optionally: show a destructive toast notification
+      // toast({ title: "Failed to delete", description: err?.message || "An error occurred.", variant: "destructive" });
+    }
+  }, [deleteOrderFromDatabase]);
+
   if (showAdminPanel) {
     return (
       <TooltipProvider>
@@ -463,7 +442,7 @@ export const ProductionScheduler: React.FC = () => {
                 onSync={fetchOrdersFromGoogleSheets}
                 onConfigure={configureGoogleSheets}
                 onClearError={clearError}
-                onPushOrderDates={handlePushOrderDatesToSheet}
+                // Removed: onPushOrderDates
               />
               
               <Button
@@ -477,15 +456,16 @@ export const ProductionScheduler: React.FC = () => {
               </Button>
             </div>
             
-            {/* Middle section: Pending Orders (now takes most of the space and more visible) */}
+            {/* Middle section: Pending Orders */}
             <div className="flex-1 min-h-[350px] max-h-[none] overflow-y-auto py-4">
               <PendingOrdersSidebar
                 orders={pendingOrders}
                 onOrderSplit={handleOrderSplit}
+                onOrderDelete={handleOrderDelete}
               />
             </div>
 
-            {/* Bottom section: Reports (fixed at the bottom) */}
+            {/* Bottom section: Reports */}
             <div className="p-4 border-t border-border space-y-2 mt-auto flex-shrink-0">
               <h4 className="text-sm font-medium text-muted-foreground pt-2">Reports</h4>
               <Button
@@ -549,3 +529,5 @@ export const ProductionScheduler: React.FC = () => {
     </TooltipProvider>
   );
 };
+
+export default ProductionScheduler;

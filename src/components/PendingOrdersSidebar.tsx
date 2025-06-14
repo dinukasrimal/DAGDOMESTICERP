@@ -5,21 +5,25 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Input } from './ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger, AlertDialogAction, AlertDialogCancel, AlertDialogFooter, AlertDialogDescription } from './ui/alert-dialog';
 import { Order } from '../types/scheduler';
-import { Package, Scissors, Target, Search, GripVertical } from 'lucide-react';
+import { Package, Scissors, Target, Search, GripVertical, Trash } from 'lucide-react';
 
 interface PendingOrdersSidebarProps {
   orders: Order[];
   onOrderSplit: (orderId: string, splitQuantity: number) => void;
+  onOrderDelete?: (orderId: string) => void;
 }
 
 export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
   orders,
-  onOrderSplit
+  onOrderSplit,
+  onOrderDelete
 }) => {
   const [splitQuantities, setSplitQuantities] = useState<{ [orderId: string]: number }>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [draggedOrder, setDraggedOrder] = useState<string | null>(null);
+  const [deleteDialogOrderId, setDeleteDialogOrderId] = useState<string | null>(null);
 
   // Filter orders based on search term
   const filteredOrders = orders.filter(order =>
@@ -36,28 +40,27 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
   }, [splitQuantities, onOrderSplit]);
 
   const handleDragStart = useCallback((e: React.DragEvent, order: Order) => {
-    console.log('🔄 Starting drag for order:', order.poNumber);
     setDraggedOrder(order.id);
-    
-    // Set drag data
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', JSON.stringify(order));
-    
-    // Add drag image effect
     if (e.currentTarget instanceof HTMLElement) {
       e.currentTarget.style.opacity = '0.5';
     }
   }, []);
 
   const handleDragEnd = useCallback((e: React.DragEvent) => {
-    console.log('🏁 Drag ended');
     setDraggedOrder(null);
-    
-    // Reset opacity
     if (e.currentTarget instanceof HTMLElement) {
       e.currentTarget.style.opacity = '1';
     }
   }, []);
+
+  const handleDelete = async (orderId: string) => {
+    if (onOrderDelete) {
+      await onOrderDelete(orderId);
+    }
+    setDeleteDialogOrderId(null);
+  };
 
   return (
     <div className="h-full flex flex-col">
@@ -92,13 +95,61 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
             onDragStart={(e) => handleDragStart(e, order)}
             onDragEnd={handleDragEnd}
           >
+            {/* Card Header with PO number and delete button */}
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
                   <GripVertical className="h-4 w-4 text-muted-foreground" />
                   <CardTitle className="text-sm font-medium">{order.poNumber}</CardTitle>
                 </div>
-                <Badge variant="outline">{order.styleId}</Badge>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline">{order.styleId}</Badge>
+                  {/* Delete button only for pending orders */}
+                  {onOrderDelete && (
+                    <>
+                      <AlertDialog open={deleteDialogOrderId === order.id} onOpenChange={(open) => setDeleteDialogOrderId(open ? order.id : null)}>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Delete order"
+                            className="ml-1 p-1 border-none bg-transparent hover:bg-destructive/10 text-muted-foreground hover:text-destructive"
+                            tabIndex={0}
+                            onClick={e => {
+                              e.stopPropagation();
+                              setDeleteDialogOrderId(order.id);
+                            }}
+                          >
+                            <Trash className="h-4 w-4" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>
+                              Delete Order <span className="font-bold">{order.poNumber}</span>?
+                            </AlertDialogTitle>
+                          </AlertDialogHeader>
+                          <AlertDialogDescription>
+                            Are you sure you want to permanently delete this order? This action cannot be undone.
+                          </AlertDialogDescription>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel
+                              onClick={() => setDeleteDialogOrderId(null)}
+                            >
+                              Cancel
+                            </AlertDialogCancel>
+                            <AlertDialogAction
+                              variant="destructive"
+                              onClick={() => handleDelete(order.id)}
+                            >
+                              Delete
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </>
+                  )}
+                </div>
               </div>
             </CardHeader>
             
