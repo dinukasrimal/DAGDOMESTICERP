@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -77,11 +78,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       if (scrollContainerRef.current && scrollContainerRef.current.contains(e.target as Node)) {
         e.preventDefault();
         
-        // Apply both vertical and horizontal scroll.
-        // This allows for standard vertical scrolling while also supporting horizontal scroll
-        // for devices that have it (like trackpads or tilt-wheels).
-        scrollContainerRef.current.scrollTop += e.deltaY;
-        scrollContainerRef.current.scrollLeft += e.deltaX;
+        // Swapping scroll axes based on user feedback for trackpad behavior.
+        // Vertical movement (deltaY) will now scroll horizontally.
+        // Horizontal movement (deltaX) will now scroll vertically.
+        scrollContainerRef.current.scrollTop += e.deltaX;
+        scrollContainerRef.current.scrollLeft += e.deltaY;
       }
     };
 
