@@ -29,6 +29,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   onOrderSplit
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const headerScrollRef = useRef<HTMLDivElement>(null);
   
   const [scheduleDialog, setScheduleDialog] = useState<{
     isOpen: boolean;
@@ -71,8 +72,22 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return date;
   });
 
-  // Resetting scroll handling to be simpler and rely more on default browser behavior.
-  // The custom wheel handler has been removed to fix unconventional scrolling issues.
+  // Sync horizontal scroll between header and content
+  useEffect(() => {
+    const handleContentScroll = () => {
+      if (scrollContainerRef.current && headerScrollRef.current) {
+        headerScrollRef.current.scrollLeft = scrollContainerRef.current.scrollLeft;
+      }
+    };
+
+    const scrollContainer = scrollContainerRef.current;
+    if (scrollContainer) {
+      scrollContainer.addEventListener('scroll', handleContentScroll);
+      return () => scrollContainer.removeEventListener('scroll', handleContentScroll);
+    }
+  }, []);
+
+  // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (scrollContainerRef.current && 
@@ -80,7 +95,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           scrollContainerRef.current.contains(document.activeElement) &&
           (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End')) {
         e.preventDefault();
-        // Increase scroll amount for faster keyboard navigation
         const scrollAmount = 400;
         if (e.key === 'ArrowLeft') {
           scrollContainerRef.current.scrollLeft -= scrollAmount;
@@ -95,10 +109,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     };
 
     document.addEventListener('keydown', handleKeyDown);
-
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
+    return () => document.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   // Helper functions
@@ -472,7 +483,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [
     scheduleDialog, productionLines, planningMethod, selectedRampUpPlanId,
-    calculateDailyProductionWithSharing, onOrderScheduled, pendingReschedule, holidays, getContiguousProductionPlan, isHoliday
+    calculateDailyProductionWithSharing, onOrderScheduled, pendingReschedule, holidays, isHoliday
   ]);
   
   const handleDialogClose = useCallback(() => {
@@ -539,7 +550,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-background">
+    <div className="flex-1 flex flex-col bg-background h-full">
       {/* PDF REPORTS (hidden, for each line) */}
       {productionLines.map(line => {
         const scheduledOrders = getScheduledOrdersForLine(line.id);
@@ -600,7 +611,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
       {/* Multi-select info bar */}
       {isMultiSelectMode && selectedOrders.size > 0 && (
-        <div className="bg-blue-100 border-b border-blue-300 p-2 text-center">
+        <div className="bg-blue-100 border-b border-blue-300 p-2 text-center flex-shrink-0">
           <span className="text-blue-800 font-medium">
             {selectedOrders.size} orders selected - Drag to move together
           </span>
@@ -618,38 +629,45 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         </div>
       )}
 
-      {/* Fixed Header with dates */}
-      <div className="bg-card border-b border-border shadow-sm z-30">
-        <div className="flex min-w-max">
-          {/* Line header with PDF button */}
-          <div className="w-48 p-4 border-r border-border bg-card">
+      {/* FIXED HEADER - This stays at the top during vertical scrolling */}
+      <div className="bg-card border-b border-border shadow-sm z-30 flex-shrink-0">
+        <div className="flex">
+          {/* Fixed line header column */}
+          <div className="w-48 p-4 border-r border-border bg-card flex-shrink-0">
             <div className="flex items-center space-x-2 mb-2">
               <CalendarDays className="h-5 w-5 text-muted-foreground" />
               <span className="font-medium">Production Lines</span>
             </div>
           </div>
-          {dates.map((date) => (
-            <div
-              key={date.toISOString()}
-              className={`w-32 p-2 border-r border-border text-center ${
-                isHoliday(date) ? 'bg-muted' : 'bg-card'
-              }`}
-            >
-              <div className="text-xs font-medium">
-                {date.toLocaleDateString('en-US', { weekday: 'short' })}
+          {/* Scrollable date headers */}
+          <div 
+            ref={headerScrollRef}
+            className="flex overflow-hidden"
+            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+          >
+            {dates.map((date) => (
+              <div
+                key={date.toISOString()}
+                className={`w-32 p-2 border-r border-border text-center flex-shrink-0 ${
+                  isHoliday(date) ? 'bg-muted' : 'bg-card'
+                }`}
+              >
+                <div className="text-xs font-medium">
+                  {date.toLocaleDateString('en-US', { weekday: 'short' })}
+                </div>
+                <div className="text-sm">
+                  {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </div>
+                {isHoliday(date) && (
+                  <div className="text-xs text-destructive">Holiday</div>
+                )}
               </div>
-              <div className="text-sm">
-                {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-              </div>
-              {isHoliday(date) && (
-                <div className="text-xs text-destructive">Holiday</div>
-              )}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* Scrollable content area */}
+      {/* SCROLLABLE CONTENT AREA - This scrolls vertically and horizontally */}
       <div 
         ref={scrollContainerRef}
         className="flex-1 overflow-auto bg-background"
@@ -659,29 +677,33 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           WebkitOverflowScrolling: 'touch'
         }}
       >
-        <div className="min-w-max">
-          {/* Production lines grid */}
-          <div className="divide-y divide-border">
+        <div className="flex">
+          {/* Fixed line names column */}
+          <div className="w-48 flex-shrink-0 bg-card border-r border-border">
             {productionLines.map((line) => (
-              <div key={line.id} className="flex">
-                {/* Left column: Line info + PDF download button */}
-                <div className="w-48 p-4 border-r border-border bg-card flex flex-col items-start">
-                  <div className="font-medium">{line.name}</div>
-                  <div className="text-sm text-muted-foreground">
-                    Capacity: {line.capacity}
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="mt-2 flex items-center gap-1"
-                    onClick={() => handleDownloadLinePdf(line.id, line.name)}
-                    title="Download Production Plan PDF"
-                  >
-                    <FileDown className="w-4 h-4 mr-1" />
-                    <span>Plan PDF</span>
-                  </Button>
+              <div key={line.id} className="p-4 border-b border-border flex flex-col items-start min-h-[120px]">
+                <div className="font-medium">{line.name}</div>
+                <div className="text-sm text-muted-foreground">
+                  Capacity: {line.capacity}
                 </div>
-                {/* Grid cells */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2 flex items-center gap-1"
+                  onClick={() => handleDownloadLinePdf(line.id, line.name)}
+                  title="Download Production Plan PDF"
+                >
+                  <FileDown className="w-4 h-4 mr-1" />
+                  <span>Plan PDF</span>
+                </Button>
+              </div>
+            ))}
+          </div>
+          
+          {/* Scrollable grid content */}
+          <div className="flex-1">
+            {productionLines.map((line) => (
+              <div key={line.id} className="flex border-b border-border">
                 {dates.map((date) => {
                   const cellKey = `${line.id}-${date.toISOString().split('T')[0]}`;
                   const isHighlighted = dragHighlight === cellKey;
@@ -693,7 +715,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                   return (
                     <div
                       key={cellKey}
-                      className={`w-32 min-h-[120px] border-r border-border relative transition-all duration-200 ${
+                      className={`w-32 min-h-[120px] border-r border-border relative transition-all duration-200 flex-shrink-0 ${
                         isHolidayCell 
                           ? 'bg-muted/50' 
                           : isHighlighted 
