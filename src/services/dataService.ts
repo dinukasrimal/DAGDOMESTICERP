@@ -79,8 +79,24 @@ export class DataService {
     if (!this.googleSheetsService) {
       throw new Error('Google Sheets service not initialized');
     }
-
     try {
+      console.log('📡 Sync PSD/PED with Google Sheets before pulling orders ...');
+      // NEW: Sync local scheduled orders' PSD/PED before pulling sheet
+      const scheduled = existingOrders.filter(
+        (o) =>
+          o.status === 'scheduled' &&
+          o.poNumber &&
+          o.planStartDate &&
+          o.planEndDate
+      );
+      await this.googleSheetsService.updateOrdersScheduleBatch(
+        scheduled.map((o) => ({
+          poNumber: o.poNumber,
+          planStartDate: o.planStartDate,
+          planEndDate: o.planEndDate,
+        }))
+      );
+
       console.log('📡 Fetching orders from Google Sheets...');
       const sheetOrders = await this.googleSheetsService.fetchOrders();
       

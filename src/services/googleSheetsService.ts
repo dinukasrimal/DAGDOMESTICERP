@@ -1,4 +1,3 @@
-
 import { Order } from '../types/scheduler';
 
 export interface SheetOrder {
@@ -359,5 +358,96 @@ export class GoogleSheetsService {
     // Note: This would require write permissions to the sheet
     // For now, we'll just log the update attempt
     console.log(`📅 Would update order ${order.poNumber} with start: ${startDate.toISOString()}, end: ${endDate.toISOString()}`);
+  }
+
+  /** Batch update PSD (planStartDate) and PED (planEndDate) for given orders by PO Number. */
+  async updateOrdersScheduleBatch(ordersToUpdate: {
+    poNumber: string;
+    planStartDate: Date | null;
+    planEndDate: Date | null;
+  }[]): Promise<void> {
+    if (!ordersToUpdate || ordersToUpdate.length === 0) return;
+    try {
+      // 1. Fetch the ORDER SECTION data (get row numbers)
+      const sheetName = this.orderSheetName;
+      const range = `'${sheetName}'!A:Z`;
+      const sheetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${this.spreadsheetId}/values/${range}?key=${this.apiKey}`;
+      const response = await fetch(sheetUrl);
+      const sheetData = await response.json();
+      const values: any[][] = sheetData.values || [];
+      if (values.length < 2) return;
+
+      // 2. Find column indices: PO, PSD, PED
+      const headerRow = values[0];
+      const findIndex = (search: string[]) =>
+        headerRow.findIndex((h) =>
+          h &&
+          search.some((s) =>
+            String(h).toLowerCase().replace(/[_\s]/g, '').includes(s.replace(/[_\s]/g, ''))
+          )
+        );
+      const poIndex = findIndex(['po', 'order', 'number']);
+      const psdIndex = findIndex(['psd', 'start', 'planstart', 'plan start']);
+      const pedIndex = findIndex(['ped', 'planend', 'plan end', 'end']);
+
+      // If any are not found, abort.
+      if (poIndex === -1 || psdIndex === -1 || pedIndex === -1) {
+        console.warn('Could not find PO, PSD, or PED columns in order sheet');
+        return;
+      }
+
+      // 3. Build a list of row updates (row numbers are 1-based in Sheets API, skipping header row 0)
+      const updates: { range: string; values: any[][] }[] = [];
+      ordersToUpdate.forEach((ord) => {
+        const rowIdx = values.findIndex(
+          (v, idx) =>
+            idx > 0 &&
+            v[poIndex] &&
+            String(v[poIndex]).trim() === ord.poNumber
+        );
+        if (rowIdx > 0) {
+          // rowIdx is the index in values (0=header, 1=first data row). Sheet API is 1-based.
+          const targetRow = rowIdx + 1; // Sheet row
+          const psdValue = ord.planStartDate
+            ? ord.planStartDate.toISOString().split('T')[0]
+            : '';
+          const pedValue = ord.planEndDate
+            ? ord.planEndDate.toISOString().split('T')[0]
+            : '';
+          updates.push({
+            range: `${sheetName}!${String.fromCharCode(65 + psdIndex)}${targetRow}`,
+            values: [[psdValue]],
+          });
+          updates.push({
+            range: `${sheetName}!${String.fromCharCode(65 + pedIndex)}${targetRow}`,
+            values: [[pedValue]],
+          });
+        }
+      });
+
+      // 4. Issue batchUpdate to Sheets API (via batchUpdate endpoint)
+      if (updates.length > 0) {
+        const batchBody = {
+          data: updates,
+          valueInputOption: 'USER_ENTERED',
+        };
+
+        const batchUrl = `https://sheets.googleapis.com/v4/spreadsheets/${this.spreadsheetId}/values:batchUpdate?key=${this.apiKey}`;
+        const batchResponse = await fetch(batchUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(batchBody),
+        });
+        if (!batchResponse.ok) {
+          const errMsg = await batchResponse.text();
+          throw new Error('Failed to batch update PSD/PED: ' + errMsg);
+        }
+        console.log(
+          `✅ Synced ${ordersToUpdate.length} orders' PSD/PED to Google Sheets`
+        );
+      }
+    } catch (err) {
+      console.error('Failed to update schedules in Google Sheet:', err);
+    }
   }
 }
