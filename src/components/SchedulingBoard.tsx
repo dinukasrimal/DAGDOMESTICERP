@@ -321,7 +321,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         lineId,
         startDate: originalTargetDate // this is the "before" drop date!
       });
-      // Step 3: queue up magnetically rescheduling the overlappers after newOrder
+      // Step 3: queue up magnetically rescheduling the overlappers after new planEndDate.
       setPendingReschedule({ toSchedule: overlappingOrders, afterOrderId: newOrder.id, lineId });
     } else {
       // "After" logic: move new order after overlappers' latest end date,
@@ -629,11 +629,12 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         </div>
       )}
 
-      {/* FIXED HEADER - This stays at the top during vertical scrolling */}
-      <div className="bg-card border-b border-border shadow-sm z-30 flex-shrink-0">
-        <div className="flex">
+      {/* BOARD CONTAINER */}
+      <div className="flex-1 min-h-0 flex flex-col relative">
+        {/* Sticky HEADER: Dates */}
+        <div className="flex w-full z-20">
           {/* Fixed line header column */}
-          <div className="w-48 p-4 border-r border-border bg-card flex-shrink-0">
+          <div className="w-48 p-4 border-r border-border bg-card flex-shrink-0" style={{ position: 'sticky', left: 0, top: 0, zIndex: 20 }}>
             <div className="flex items-center space-x-2 mb-2">
               <CalendarDays className="h-5 w-5 text-muted-foreground" />
               <span className="font-medium">Production Lines</span>
@@ -642,8 +643,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           {/* Scrollable date headers */}
           <div 
             ref={headerScrollRef}
-            className="flex overflow-hidden"
-            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+            className="flex overflow-hidden flex-1"
+            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', position: 'sticky', top: 0, zIndex: 10, background: 'var(--background)' }}
           >
             {dates.map((date) => (
               <div
@@ -665,21 +666,22 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             ))}
           </div>
         </div>
-      </div>
 
-      {/* SCROLLABLE CONTENT AREA - This scrolls vertically and horizontally */}
-      <div 
-        ref={scrollContainerRef}
-        className="flex-1 overflow-auto bg-background"
-        tabIndex={0}
-        style={{ 
-          overscrollBehaviorX: 'contain',
-          WebkitOverflowScrolling: 'touch'
-        }}
-      >
-        <div className="flex">
+        {/* SCROLL AREA: sticky column for lines + scrollable grid */}
+        <div 
+          ref={scrollContainerRef}
+          className="flex-1 flex overflow-auto bg-background"
+          tabIndex={0}
+          style={{ 
+            overscrollBehaviorX: 'contain',
+            WebkitOverflowScrolling: 'touch'
+          }}
+        >
           {/* Fixed line names column */}
-          <div className="w-48 flex-shrink-0 bg-card border-r border-border">
+          <div
+            className="w-48 flex-shrink-0 bg-card border-r border-border"
+            style={{ position: 'sticky', left: 0, zIndex: 15, minWidth: 192 /* match w-48 */, top: 0 }}
+          >
             {productionLines.map((line) => (
               <div key={line.id} className="p-4 border-b border-border flex flex-col items-start min-h-[120px]">
                 <div className="font-medium">{line.name}</div>
