@@ -89,6 +89,7 @@ export class DataService {
           o.planStartDate &&
           o.planEndDate
       );
+      // --- ALWAYS sync ALL scheduled orders' PSD/PED by PO # at sync
       await this.googleSheetsService.updateOrdersScheduleBatch(
         scheduled.map((o) => ({
           poNumber: o.poNumber,
@@ -96,6 +97,7 @@ export class DataService {
           planEndDate: o.planEndDate,
         }))
       );
+      console.log('📡 PSD/PED sync (writeback) complete. Now fetching sheet orders ...');
 
       console.log('📡 Fetching orders from Google Sheets...');
       const sheetOrders = await this.googleSheetsService.fetchOrders();
