@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -559,11 +558,14 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   return (
     <div 
       ref={scrollContainerRef}
-      className="flex-1 overflow-auto bg-background"
+      className="flex-1 bg-background"
       tabIndex={0}
       style={{ 
         overscrollBehaviorX: 'contain',
-        WebkitOverflowScrolling: 'touch'
+        WebkitOverflowScrolling: 'touch',
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column'
       }}
     >
       {/* PDF REPORTS (hidden, for each line) */}
@@ -644,41 +646,41 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         </div>
       )}
 
-      <div className="min-w-max">
-        {/* Header with dates */}
-        <div className="sticky top-0 z-10 bg-card border-b border-border">
-          <div className="flex">
-            {/* Line header with PDF button */}
-            <div className="w-48 p-4 border-r border-border bg-card">
-              <div className="flex items-center space-x-2 mb-2">
-                <CalendarDays className="h-5 w-5 text-muted-foreground" />
-                <span className="font-medium">Production Lines</span>
-              </div>
-              {/* Empty cell under line header to align with buttons per-line below */}
+      {/* Header with dates - Made sticky */}
+      <div className="sticky top-0 z-10 bg-card border-b border-border">
+        <div className="flex min-w-max">
+          {/* Line header with PDF button */}
+          <div className="w-48 p-4 border-r border-border bg-card">
+            <div className="flex items-center space-x-2 mb-2">
+              <CalendarDays className="h-5 w-5 text-muted-foreground" />
+              <span className="font-medium">Production Lines</span>
             </div>
-            {dates.map((date) => (
-              <div
-                key={date.toISOString()}
-                className={`w-32 p-2 border-r border-border text-center ${
-                  isHoliday(date) ? 'bg-muted' : 'bg-card'
-                }`}
-              >
-                <div className="text-xs font-medium">
-                  {date.toLocaleDateString('en-US', { weekday: 'short' })}
-                </div>
-                <div className="text-sm">
-                  {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                </div>
-                {isHoliday(date) && (
-                  <div className="text-xs text-destructive">Holiday</div>
-                )}
-              </div>
-            ))}
+            {/* Empty cell under line header to align with buttons per-line below */}
           </div>
+          {dates.map((date) => (
+            <div
+              key={date.toISOString()}
+              className={`w-32 p-2 border-r border-border text-center ${
+                isHoliday(date) ? 'bg-muted' : 'bg-card'
+              }`}
+            >
+              <div className="text-xs font-medium">
+                {date.toLocaleDateString('en-US', { weekday: 'short' })}
+              </div>
+              <div className="text-sm">
+                {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              </div>
+              {isHoliday(date) && (
+                <div className="text-xs text-destructive">Holiday</div>
+              )}
+            </div>
+          ))}
         </div>
+      </div>
 
-        {/* Production lines grid */}
-        <div className="divide-y divide-border">
+      {/* Production lines grid - Made scrollable */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="divide-y divide-border min-w-max">
           {productionLines.map((line) => (
             <div key={line.id} className="flex">
               {/* Left column: Line info + PDF download button */}
@@ -698,7 +700,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                   <span>Plan PDF</span>
                 </Button>
               </div>
-              {/* ... keep grid cells ... */}
+              {/* ... keep existing grid cells ... */}
               {dates.map((date) => {
                 const cellKey = `${line.id}-${date.toISOString().split('T')[0]}`;
                 const isHighlighted = dragHighlight === cellKey;
