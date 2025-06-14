@@ -8,10 +8,11 @@ import { Header } from './Header';
 import { Button } from './ui/button';
 import { RefreshCw, FileText } from 'lucide-react';
 import { TooltipProvider } from './ui/tooltip';
-import { Order } from '../types/scheduler';
+import { Order, ProductionLine } from '../types/scheduler';
 import { ReportDialog } from './reports/ReportDialog';
 import { CuttingReportContent } from './reports/CuttingReportContent';
 import { DeliveryReportContent } from './reports/DeliveryReportContent';
+import { LinePlanReportDialog } from './reports/LinePlanReportDialog';
 import { downloadElementAsPdf } from '../lib/pdfUtils';
 import { toast } from "@/hooks/use-toast";
 import { dataService } from "../services/dataService";
@@ -22,6 +23,8 @@ export const ProductionScheduler: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showCuttingReport, setShowCuttingReport] = useState(false);
   const [showDeliveryReport, setShowDeliveryReport] = useState(false);
+  const [showLinePlanReport, setShowLinePlanReport] = useState(false);
+  const [selectedProductionLine, setSelectedProductionLine] = useState<ProductionLine | null>(null);
   
   const {
     orders,
@@ -403,6 +406,11 @@ export const ProductionScheduler: React.FC = () => {
     }
   }, [deleteOrderFromDatabase]);
 
+  const handleLinePlanReport = (productionLine: ProductionLine) => {
+    setSelectedProductionLine(productionLine);
+    setShowLinePlanReport(true);
+  };
+
   if (showAdminPanel) {
     return (
       <TooltipProvider>
@@ -484,6 +492,23 @@ export const ProductionScheduler: React.FC = () => {
                 <FileText className="h-4 w-4 mr-2" />
                 Delivery Report
               </Button>
+              
+              {/* Line Reports */}
+              <div className="space-y-1">
+                <h5 className="text-xs font-medium text-muted-foreground">Line Reports</h5>
+                {productionLines.map(line => (
+                  <Button
+                    key={line.id}
+                    onClick={() => handleLinePlanReport(line)}
+                    className="w-full text-xs"
+                    variant="outline"
+                    size="sm"
+                  >
+                    <FileText className="h-3 w-3 mr-1" />
+                    {line.name} Plan
+                  </Button>
+                ))}
+              </div>
             </div>
           </div>
           
@@ -526,6 +551,20 @@ export const ProductionScheduler: React.FC = () => {
           reportId="delivery-report-content"
         />
       </ReportDialog>
+
+      {/* Line Plan Report Dialog */}
+      {selectedProductionLine && (
+        <LinePlanReportDialog
+          isOpen={showLinePlanReport}
+          onClose={() => {
+            setShowLinePlanReport(false);
+            setSelectedProductionLine(null);
+          }}
+          productionLine={selectedProductionLine}
+          orders={orders}
+          holidays={holidays}
+        />
+      )}
     </TooltipProvider>
   );
 };
