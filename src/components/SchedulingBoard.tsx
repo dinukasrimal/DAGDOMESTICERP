@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -78,15 +77,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       if (scrollContainerRef.current && scrollContainerRef.current.contains(e.target as Node)) {
         e.preventDefault();
         
-        // Increase scroll sensitivity for faster scrolling
-        const scrollMultiplier = 3;
-        const deltaX = e.deltaX * scrollMultiplier;
-        const deltaY = e.deltaY * scrollMultiplier;
-        
-        // Use deltaX for horizontal scroll, fallback to deltaY if no horizontal movement
-        const scrollAmount = Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : deltaY;
-        
-        scrollContainerRef.current.scrollLeft += scrollAmount;
+        // Apply both vertical and horizontal scroll.
+        // This allows for standard vertical scrolling while also supporting horizontal scroll
+        // for devices that have it (like trackpads or tilt-wheels).
+        scrollContainerRef.current.scrollTop += e.deltaY;
+        scrollContainerRef.current.scrollLeft += e.deltaX;
       }
     };
 
