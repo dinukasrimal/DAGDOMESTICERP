@@ -1,11 +1,12 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { Button } from './ui/button';
+import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Label } from './ui/label';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
-import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown } from 'lucide-react';
+import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown, Search } from 'lucide-react';
 import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
 import { downloadElementAsPdf } from '../lib/pdfUtils';
 
@@ -28,6 +29,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   onOrderMovedToPending,
   onOrderSplit
 }) => {
+  const [searchQuery, setSearchQuery] = useState('');
   const [scheduleDialog, setScheduleDialog] = useState<{
     isOpen: boolean;
     order: Order | null;
@@ -71,6 +73,17 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return date;
   });
 
+  // Filter orders based on search query
+  const filteredOrders = useMemo(() => {
+    if (!searchQuery.trim()) return orders;
+    
+    const query = searchQuery.toLowerCase().trim();
+    return orders.filter(order => 
+      order.poNumber.toLowerCase().includes(query) ||
+      order.styleId.toLowerCase().includes(query)
+    );
+  }, [orders, searchQuery]);
+
   // Helper functions
   const isHoliday = useCallback((date: Date) => {
     return holidays.some(h => h.date.toDateString() === date.toDateString());
@@ -78,12 +91,12 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   const getOrdersForCell = useCallback((lineId: string, date: Date) => {
     const dateStr = date.toISOString().split('T')[0];
-    return orders.filter(order =>
+    return filteredOrders.filter(order =>
       order.status === 'scheduled' &&
       order.assignedLineId === lineId &&
       order.actualProduction?.[dateStr] > 0
     );
-  }, [orders]);
+  }, [filteredOrders]);
 
   const calculateTotalUtilization = useCallback((lineId: string, date: Date) => {
     const line = productionLines.find(l => l.id === lineId);
@@ -489,6 +502,27 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   return (
     <div className="w-full h-full flex flex-col bg-background">
+      {/* Search Bar */}
+      <div className="sticky top-0 z-30 bg-white border-b border-gray-200 p-4 shadow-sm">
+        <div className="max-w-md">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+            <Input
+              type="text"
+              placeholder="Search by PO number or style..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-10 pr-4"
+            />
+          </div>
+          {searchQuery && (
+            <div className="mt-2 text-sm text-gray-600">
+              {filteredOrders.filter(o => o.status === 'scheduled').length} scheduled orders found
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* PDF REPORTS (hidden, for each line) */}
       {productionLines.map(line => {
         const scheduledOrders = getScheduledOrdersForLine(line.id);
@@ -549,7 +583,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
       {/* Multi-select info bar */}
       {isMultiSelectMode && selectedOrders.size > 0 && (
-        <div className="sticky top-0 z-20 bg-blue-50 border-b border-blue-200 px-4 py-2">
+        <div className="sticky top-16 z-20 bg-blue-50 border-b border-blue-200 px-4 py-2">
           <div className="flex items-center justify-between">
             <span className="text-blue-800 font-medium text-sm">
               {selectedOrders.size} orders selected - Drag to move together
