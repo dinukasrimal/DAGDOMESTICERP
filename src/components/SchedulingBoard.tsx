@@ -1,13 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { Button } from './ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
-import { RadioGroup, RadioGroupItem } from './ui/radio-group';
-import { Label } from './ui/label';
-import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
-import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown } from 'lucide-react';
-import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
-import { downloadElementAsPdf } from '../lib/pdfUtils';
+import React, { useRef, useEffect, useState, useCallback } from "react";
 import { DateHeader } from "./scheduling-board/DateHeader";
 import { LineNamesColumn } from "./scheduling-board/LineNamesColumn";
 import { ProductionGrid } from "./scheduling-board/ProductionGrid";
@@ -75,7 +66,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return date;
   });
 
-  // Sync horizontal scroll between header and content
+  // Scroll sync handler (horizontal)
   useEffect(() => {
     const handleContentScroll = () => {
       if (scrollContainerRef.current && headerScrollRef.current) {
@@ -610,7 +601,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             </div>
           </div>
         );
-      })}
+      })
 
       {/* Multi-select info bar */}
       {isMultiSelectMode && selectedOrders.size > 0 && (
@@ -633,49 +624,79 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       )}
 
       {/* BOARD CONTAINER */}
-      <div className="flex-1 min-h-0 flex flex-col relative">
-        {/* Sticky HEADER: Dates */}
-        <DateHeader
-          dates={dates}
-          isHoliday={isHoliday}
-          headerScrollRef={headerScrollRef}
-        />
-
-        {/* SCROLL AREA: sticky column for lines + scrollable grid */}
+      <div className="flex-1 min-h-0 flex flex-col relative overflow-x-auto">
         <div
-          ref={scrollContainerRef}
-          className="flex-1 flex overflow-auto bg-background"
-          tabIndex={0}
+          className="grid"
           style={{
-            overscrollBehaviorX: "contain",
-            WebkitOverflowScrolling: "touch",
+            gridTemplateColumns: "192px 1fr",
+            // 192px matches .w-48 or minWidth in LineNamesColumn/DateHeader
+            width: "100%",
           }}
         >
-          <LineNamesColumn
-            productionLines={productionLines}
-            handleDownloadLinePdf={handleDownloadLinePdf}
-          />
-          <ProductionGrid
-            productionLines={productionLines}
-            dates={dates}
-            isHoliday={isHoliday}
-            getOrdersForCell={getOrdersForCell}
-            calculateTotalUtilization={calculateTotalUtilization}
-            getAvailableCapacity={getAvailableCapacity}
-            dragHighlight={dragHighlight}
-            handleDrop={handleDrop}
-            handleDragOver={handleDragOver}
-            handleDragEnter={handleDragEnter}
-            handleDragLeave={handleDragLeave}
-            onOrderMovedToPending={onOrderMovedToPending}
-            onOrderSplit={onOrderSplit}
-            handleOrderDragStart={handleOrderDragStart}
-            handleOrderDragEnd={handleOrderDragEnd}
-            handleOrderClick={handleOrderClick}
-            selectedOrders={selectedOrders}
-            isMultiSelectMode={isMultiSelectMode}
-            shouldHighlightRed={shouldHighlightRed}
-          />
+          {/* HEADER ROW: sticky at top! */}
+          <div
+            className="sticky top-0 z-30 bg-card border-b border-border"
+            style={{ gridColumn: "1", gridRow: "1" }}
+          >
+            {/* Empty for icon/label alignment */}
+            <div className="w-48 h-16 p-4 flex items-center border-r border-border bg-card"></div>
+          </div>
+          <div
+            className="sticky top-0 z-20 bg-card border-b border-border overflow-hidden"
+            style={{ gridColumn: "2", gridRow: "1" }}
+          >
+            {/* DateHeader shifts left (no line column) */}
+            <DateHeader dates={dates} isHoliday={isHoliday} />
+          </div>
+
+          {/* For each line: render a grid row with both the left and right */}
+          {productionLines.map((line, rowIdx) => (
+            <React.Fragment key={line.id}>
+              {/* LINE NAMES COLUMN */}
+              <div
+                className="sticky left-0 z-20 bg-card border-r border-border"
+                style={{
+                  gridColumn: "1",
+                  gridRow: rowIdx + 2,
+                  minWidth: 192,
+                  top: 64, // pushes below header (height of header row)
+                }}
+              >
+                <LineNamesColumn
+                  lines={[line]}
+                  handleDownloadLinePdf={handleDownloadLinePdf}
+                />
+              </div>
+              {/* PRODUCTION GRID ROW (for this line) */}
+              <div
+                className=""
+                style={{ gridColumn: "2", gridRow: rowIdx + 2 }}
+              >
+                <ProductionGrid
+                  line={line}
+                  dates={dates}
+                  // pass only this line's props
+                  isHoliday={isHoliday}
+                  getOrdersForCell={getOrdersForCell}
+                  calculateTotalUtilization={calculateTotalUtilization}
+                  getAvailableCapacity={getAvailableCapacity}
+                  dragHighlight={dragHighlight}
+                  handleDrop={handleDrop}
+                  handleDragOver={handleDragOver}
+                  handleDragEnter={handleDragEnter}
+                  handleDragLeave={handleDragLeave}
+                  onOrderMovedToPending={onOrderMovedToPending}
+                  onOrderSplit={onOrderSplit}
+                  handleOrderDragStart={handleOrderDragStart}
+                  handleOrderDragEnd={handleOrderDragEnd}
+                  handleOrderClick={handleOrderClick}
+                  selectedOrders={selectedOrders}
+                  isMultiSelectMode={isMultiSelectMode}
+                  shouldHighlightRed={shouldHighlightRed}
+                />
+              </div>
+            </React.Fragment>
+          ))}
         </div>
       </div>
 
