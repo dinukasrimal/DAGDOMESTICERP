@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -71,27 +72,32 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return date;
   });
 
-  // Add scroll event handling to prevent page navigation
+  // Improved scroll event handling for better performance
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       if (scrollContainerRef.current && scrollContainerRef.current.contains(e.target as Node)) {
-        // If scrolling horizontally or if we can scroll horizontally, prevent default page behavior
-        if (Math.abs(e.deltaX) > Math.abs(e.deltaY) || 
-            scrollContainerRef.current.scrollWidth > scrollContainerRef.current.clientWidth) {
-          e.preventDefault();
-          scrollContainerRef.current.scrollLeft += e.deltaX || e.deltaY;
-        }
+        e.preventDefault();
+        
+        // Increase scroll sensitivity for faster scrolling
+        const scrollMultiplier = 3;
+        const deltaX = e.deltaX * scrollMultiplier;
+        const deltaY = e.deltaY * scrollMultiplier;
+        
+        // Use deltaX for horizontal scroll, fallback to deltaY if no horizontal movement
+        const scrollAmount = Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : deltaY;
+        
+        scrollContainerRef.current.scrollLeft += scrollAmount;
       }
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Prevent page navigation with arrow keys when focused on scroll container
       if (scrollContainerRef.current && 
           document.activeElement && 
           scrollContainerRef.current.contains(document.activeElement) &&
           (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End')) {
         e.preventDefault();
-        const scrollAmount = 200;
+        // Increase scroll amount for faster keyboard navigation
+        const scrollAmount = 400;
         if (e.key === 'ArrowLeft') {
           scrollContainerRef.current.scrollLeft -= scrollAmount;
         } else if (e.key === 'ArrowRight') {
@@ -556,7 +562,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       className="flex-1 overflow-auto bg-background"
       tabIndex={0}
       style={{ 
-        scrollBehavior: 'smooth',
         overscrollBehaviorX: 'contain',
         WebkitOverflowScrolling: 'touch'
       }}
