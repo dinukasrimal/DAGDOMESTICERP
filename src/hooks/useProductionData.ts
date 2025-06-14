@@ -20,18 +20,17 @@ export const useProductionData = () => {
       dataService.initializeGoogleSheets(apiKey, spreadsheetId);
       setIsGoogleSheetsConfigured(true);
     }
-  }, []);
 
-  useEffect(() => {
+    // Load initial data
+    setOrders(dataService.getOrders());
     setProductionLines(dataService.getProductionLines());
     setHolidays(dataService.getHolidays());
     setRampUpPlans(dataService.getRampUpPlans());
-    setOrders(dataService.getOrders());
   }, []);
 
   const fetchOrdersFromGoogleSheets = useCallback(async () => {
     if (!isGoogleSheetsConfigured) {
-      console.log('Google Sheets not configured');
+      setError('Google Sheets not configured');
       return;
     }
 
@@ -39,19 +38,9 @@ export const useProductionData = () => {
     setError(null);
 
     try {
-      console.log('Starting to fetch orders from Google Sheets...');
       const fetchedOrders = await dataService.fetchOrdersFromSheet();
-      console.log(`✅ Successfully synced ${fetchedOrders.length} orders`);
-      
-      const pendingCount = fetchedOrders.filter(o => o.status === 'pending').length;
-      const scheduledCount = fetchedOrders.filter(o => o.status === 'scheduled').length;
-      
-      console.log(`📊 Sync Summary: ${pendingCount} pending, ${scheduledCount} scheduled orders`);
-      
       setOrders(fetchedOrders);
-      dataService.setOrders(fetchedOrders);
     } catch (err) {
-      console.error('❌ Error in fetchOrdersFromGoogleSheets:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch orders');
     } finally {
       setIsLoading(false);
@@ -69,26 +58,14 @@ export const useProductionData = () => {
     }
   }, [fetchOrdersFromGoogleSheets]);
 
-  const updateOrderSchedule = useCallback(async (order: Order, startDate: Date, endDate: Date) => {
-    if (!isGoogleSheetsConfigured) return;
-
-    try {
-      await dataService.updateOrderSchedule(order, startDate, endDate);
-    } catch (err) {
-      console.error('Failed to update order schedule in Google Sheets:', err);
-      throw err;
-    }
-  }, [isGoogleSheetsConfigured]);
-
   const updateOrderStatus = useCallback((orderId: string, status: 'pending' | 'scheduled' | 'in_progress' | 'completed') => {
-    setOrders(prev => {
-      const updated = prev.map(order => 
-        order.id === orderId ? { ...order, status } : order
-      );
-      dataService.setOrders(updated);
-      return updated;
-    });
+    setOrders(prev => prev.map(order => 
+      order.id === orderId ? { ...order, status } : order
+    ));
   }, []);
+
+  // Removed updateOrderSchedule since we're no longer writing to Google Sheets
+  // This was causing the TypeScript error
 
   return {
     orders,
@@ -104,7 +81,6 @@ export const useProductionData = () => {
     setRampUpPlans,
     fetchOrdersFromGoogleSheets,
     configureGoogleSheets,
-    updateOrderSchedule,
     updateOrderStatus,
     clearError: () => setError(null)
   };
