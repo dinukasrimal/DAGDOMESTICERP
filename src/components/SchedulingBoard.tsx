@@ -574,12 +574,14 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         tabIndex={0}
         style={{
           overscrollBehaviorX: 'contain',
+          overscrollBehaviorY: 'contain',
           WebkitOverflowScrolling: 'touch',
           minWidth: 0,
           minHeight: 0,
+          // Remove any other custom restrictive scroll settings
         }}
       >
-        <div className="divide-y divide-border min-w-max w-fit">
+        <div className="min-w-max w-fit">
           {productionLines.map((line) => (
             <SchedulingBoardLineRow
               key={line.id}
