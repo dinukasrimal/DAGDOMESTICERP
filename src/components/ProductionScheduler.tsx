@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback } from 'react';
 import { useSupabaseProductionData } from '../hooks/useSupabaseProductionData';
 import { SchedulingBoard } from './SchedulingBoard';
@@ -8,7 +9,7 @@ import { Header } from './Header';
 import { Button } from './ui/button';
 import { RefreshCw } from 'lucide-react';
 import { TooltipProvider } from './ui/tooltip';
-import { Order } from '../types/scheduler';
+import { Order, RampUpPlan } from '../types/scheduler';
 
 export const ProductionScheduler: React.FC = () => {
   const [userRole, setUserRole] = useState<'planner' | 'superuser'>('planner');
