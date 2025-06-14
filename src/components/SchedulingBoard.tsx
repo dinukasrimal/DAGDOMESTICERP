@@ -1,21 +1,20 @@
-
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Order, ProductionLine, Holiday } from '../types/scheduler';
-import { DragDropContext, Droppable, DropResult } from 'react-beautiful-dnd';
-import { format, differenceInDays, isWeekend, isSameDay } from 'date-fns';
-import { Card } from './ui/card';
-import { Badge } from './ui/badge';
+import React, { useState, useCallback } from 'react';
 import { Button } from './ui/button';
-import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
-import { Calendar, AlertTriangle } from 'lucide-react';
-import { LinePdfExportButton } from './reports/LinePdfExportButton';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
+import { RadioGroup, RadioGroupItem } from './ui/radio-group';
+import { Label } from './ui/label';
+import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
+import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown } from 'lucide-react';
+import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
+import { downloadElementAsPdf } from '../lib/pdfUtils';
 
 interface SchedulingBoardProps {
   orders: Order[];
   productionLines: ProductionLine[];
   holidays: Holiday[];
-  // rampUpPlans: RampUpPlan[]; // REMOVED: We no longer use it for now.
-  onOrderScheduled: (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => void;
+  rampUpPlans: RampUpPlan[];
+  onOrderScheduled: (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => Promise<void>;
   onOrderMovedToPending: (order: Order) => void;
   onOrderSplit: (orderId: string, splitQuantity: number) => void;
 }
@@ -24,434 +23,863 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   orders,
   productionLines,
   holidays,
-  // rampUpPlans, // REMOVED: rampUpPlan logic is removed pending correct definition
+  rampUpPlans,
   onOrderScheduled,
   onOrderMovedToPending,
   onOrderSplit
 }) => {
-  const [startDate, setStartDate] = useState<Date>(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    return today;
+  const [scheduleDialog, setScheduleDialog] = useState<{
+    isOpen: boolean;
+    order: Order | null;
+    lineId: string;
+    startDate: Date | null;
+  }>({
+    isOpen: false,
+    order: null,
+    lineId: '',
+    startDate: null
   });
-  const [daysToShow, setDaysToShow] = useState(60);
-  const [draggingOrderId, setDraggingOrderId] = useState<string | null>(null);
-  const [hoveredDate, setHoveredDate] = useState<Date | null>(null);
-  const [hoveredLineId, setHoveredLineId] = useState<string | null>(null);
-  const [showOrderDetails, setShowOrderDetails] = useState<string | null>(null);
-  const [splitOrderId, setSplitOrderId] = useState<string | null>(null);
-  const [splitQuantity, setSplitQuantity] = useState<number>(0);
   
-  const boardRef = useRef<HTMLDivElement>(null);
-  const dateHeaderRef = useRef<HTMLDivElement>(null);
-  const sidebarRef = useRef<HTMLDivElement>(null);
+  const [overlapDialog, setOverlapDialog] = useState<{
+    isOpen: boolean;
+    newOrder: Order | null;
+    overlappingOrders: Order[];
+    targetDate: Date | null;
+    targetLine: string;
+    originalTargetDate: Date | null;
+  }>({
+    isOpen: false,
+    newOrder: null,
+    overlappingOrders: [],
+    targetDate: null,
+    targetLine: '',
+    originalTargetDate: null
+  });
+  
+  const [planningMethod, setPlanningMethod] = useState<'capacity' | 'rampup'>('capacity');
+  const [selectedRampUpPlanId, setSelectedRampUpPlanId] = useState<string>('');
+  const [dragHighlight, setDragHighlight] = useState<string | null>(null);
+  const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
 
-  // Generate dates for the board
-  const dates = useMemo(() => {
-    const result: Date[] = [];
-    for (let i = 0; i < daysToShow; i++) {
-      const date = new Date(startDate);
-      date.setDate(date.getDate() + i);
-      result.push(date);
-    }
-    return result;
-  }, [startDate, daysToShow]);
+  // Generate date range (next 30 days)
+  const dates = Array.from({ length: 30 }, (_, i) => {
+    const date = new Date();
+    date.setDate(date.getDate() + i);
+    return date;
+  });
 
-  // Sync scroll between date header and board
-  useEffect(() => {
-    const board = boardRef.current;
-    const dateHeader = dateHeaderRef.current;
-    if (!board || !dateHeader) return;
-    const handleScroll = () => {
-      if (dateHeader) {
-        dateHeader.scrollLeft = board.scrollLeft;
-      }
-    };
-    board.addEventListener('scroll', handleScroll);
-    return () => {
-      board.removeEventListener('scroll', handleScroll);
-    };
-  }, []);
+  // Helper functions
+  const isHoliday = useCallback((date: Date) => {
+    return holidays.some(h => h.date.toDateString() === date.toDateString());
+  }, [holidays]);
 
-  // Handle drag end event
-  const handleDragEnd = (result: DropResult) => {
-    setDraggingOrderId(null);
-    setHoveredDate(null);
-    setHoveredLineId(null);
-    
-    const { destination, source, draggableId } = result;
-    if (!destination) return;
-    
-    // Find the order being dragged
-    const order = orders.find(o => o.id === draggableId);
-    if (!order) return;
-    
-    // If dropped in the same place, do nothing
-    if (destination.droppableId === source.droppableId) return;
-    
-    // If dropped back to pending
-    if (destination.droppableId === 'pending') {
-      onOrderMovedToPending(order);
-      return;
-    }
-    
-    // If dropped on a production line
-    const [lineId, dateStr] = destination.droppableId.split('_');
+  const getOrdersForCell = useCallback((lineId: string, date: Date) => {
+    const dateStr = date.toISOString().split('T')[0];
+    return orders.filter(order => 
+      order.status === 'scheduled' &&
+      order.assignedLineId === lineId &&
+      order.actualProduction?.[dateStr] > 0
+    );
+  }, [orders]);
+
+  const calculateTotalUtilization = useCallback((lineId: string, date: Date) => {
     const line = productionLines.find(l => l.id === lineId);
-    if (!line) return;
+    if (!line) return 0;
     
-    const startDate = new Date(dateStr);
+    const dateStr = date.toISOString().split('T')[0];
+    const ordersInCell = getOrdersForCell(lineId, date);
+    const totalPlanned = ordersInCell.reduce((sum, order) => 
+      sum + (order.actualProduction?.[dateStr] || 0), 0
+    );
     
-    // Calculate end date based on order quantity and line capacity (NO ramp-up used)
-    let remainingQuantity = order.orderQuantity;
-    let currentDate = new Date(startDate);
-    const dailyPlan: { [date: string]: number } = {};
+    return Math.min((totalPlanned / line.capacity) * 100, 100);
+  }, [productionLines, getOrdersForCell]);
+
+  const getAvailableCapacity = useCallback((lineId: string, date: Date) => {
+    const line = productionLines.find(l => l.id === lineId);
+    if (!line) return 0;
     
-    while (remainingQuantity > 0) {
-      // Skip weekends and holidays
-      const isHoliday = holidays.some(h => isSameDay(h.date, currentDate));
-      if (!isWeekend(currentDate) && !isHoliday) {
-        const dailyCapacity = line.capacity;
-        const dailyProduction = Math.min(remainingQuantity, dailyCapacity);
-        const dateKey = format(currentDate, 'yyyy-MM-dd');
-        dailyPlan[dateKey] = dailyProduction;
-        remainingQuantity -= dailyProduction;
+    const dateStr = date.toISOString().split('T')[0];
+    const ordersInCell = getOrdersForCell(lineId, date);
+    const totalUsed = ordersInCell.reduce((sum, order) => 
+      sum + (order.actualProduction?.[dateStr] || 0), 0
+    );
+    
+    return Math.max(0, line.capacity - totalUsed);
+  }, [productionLines, getOrdersForCell]);
+
+  // --- OVERLAP: Helper to get all affected orders for overlap
+  const getOverlappingOrders = useCallback((order: Order, lineId: string, date: Date) => {
+    const line = productionLines.find(l => l.id === lineId); if (!line) return [];
+    const dailyCapacity = line.capacity;
+    const totalDays = Math.ceil(order.orderQuantity / dailyCapacity);
+    const overlappingOrders: Order[] = [];
+    const newOrderEndDate = new Date(date); newOrderEndDate.setDate(newOrderEndDate.getDate() + totalDays - 1);
+    orders.forEach(existing => {
+      if (existing.status === 'scheduled' &&
+          existing.assignedLineId === lineId &&
+          existing.id !== order.id &&
+          existing.planStartDate && existing.planEndDate) {
+        const existingStart = new Date(existing.planStartDate);
+        const existingEnd = new Date(existing.planEndDate);
+        if (date <= existingEnd && newOrderEndDate >= existingStart) {
+          overlappingOrders.push(existing);
+        }
       }
-      // Move to next day
+    });
+    return overlappingOrders;
+  }, [orders, productionLines]);
+
+  // Helper for daily production (same, but can be improved by extracting to smaller file in the future)
+  const calculateDailyProductionWithSharing = useCallback((order: Order, line: ProductionLine, startDate: Date) => {
+    const dailyPlan: { [date: string]: number } = {};
+    let remainingQty = order.orderQuantity;
+    let currentDate = new Date(startDate);
+    let workingDayNumber = 1;
+
+    const rampUpPlan = rampUpPlans.find(p => p.id === selectedRampUpPlanId);
+
+    while (remainingQty > 0) {
+      const isWorkingDay = !isHoliday(currentDate);
+      
+      if (isWorkingDay) {
+        const availableCapacity = getAvailableCapacity(line.id, currentDate);
+        
+        let dailyCapacity = 0;
+        
+        if (planningMethod === 'capacity') {
+          dailyCapacity = Math.min(availableCapacity, line.capacity);
+        } else if (planningMethod === 'rampup' && rampUpPlan) {
+          const baseCapacity = (540 * order.moCount) / order.smv;
+          let efficiency = rampUpPlan.finalEfficiency;
+          
+          const rampUpDay = rampUpPlan.efficiencies.find(e => e.day === workingDayNumber);
+          if (rampUpDay) {
+            efficiency = rampUpDay.efficiency;
+          }
+          
+          const calculatedCapacity = Math.floor((baseCapacity * efficiency) / 100);
+          dailyCapacity = Math.min(availableCapacity, calculatedCapacity);
+        }
+
+        const plannedQty = Math.min(remainingQty, dailyCapacity);
+        if (plannedQty > 0) {
+          dailyPlan[currentDate.toISOString().split('T')[0]] = plannedQty;
+          remainingQty -= plannedQty;
+        }
+        workingDayNumber++;
+      }
+      
       currentDate.setDate(currentDate.getDate() + 1);
-      // Safety check to prevent infinite loop
-      if (differenceInDays(currentDate, startDate) > 365) {
+      
+      if (currentDate.getTime() - startDate.getTime() > 365 * 24 * 60 * 60 * 1000) {
         break;
       }
     }
-    // Calculate end date as the last day in the daily plan
-    const planDates = Object.keys(dailyPlan).map(d => new Date(d));
-    const endDate = planDates.length > 0 
-      ? new Date(Math.max(...planDates.map(d => d.getTime())))
-      : startDate;
-    // Update order with new schedule
-    onOrderScheduled({
-      ...order,
-      assignedLineId: line.id
-    }, startDate, endDate, dailyPlan);
-  };
 
-  const handleDragStart = (start: any) => {
-    setDraggingOrderId(start.draggableId);
-  };
+    return dailyPlan;
+  }, [isHoliday, planningMethod, selectedRampUpPlanId, rampUpPlans, getAvailableCapacity]);
 
-  const handleDateCellHover = (date: Date, lineId: string) => {
-    setHoveredDate(date);
-    setHoveredLineId(lineId);
-  };
-
-  const handleSplitOrder = (orderId: string) => {
-    const order = orders.find(o => o.id === orderId);
-    if (!order) return;
-    setSplitOrderId(orderId);
-    setSplitQuantity(Math.floor(order.orderQuantity / 2)); // Default to half
-  };
-
-  const confirmSplitOrder = () => {
-    if (splitOrderId && splitQuantity > 0) {
-      onOrderSplit(splitOrderId, splitQuantity);
-      setSplitOrderId(null);
-      setSplitQuantity(0);
+  // Multi-select functionality
+  const handleOrderClick = useCallback((e: React.MouseEvent, orderId: string) => {
+    if (e.ctrlKey || e.metaKey) {
+      setIsMultiSelectMode(true);
+      setSelectedOrders(prev => {
+        const newSet = new Set(prev);
+        if (newSet.has(orderId)) {
+          newSet.delete(orderId);
+        } else {
+          newSet.add(orderId);
+        }
+        return newSet;
+      });
+    } else if (!selectedOrders.has(orderId)) {
+      setSelectedOrders(new Set());
+      setIsMultiSelectMode(false);
     }
-  };
+  }, [selectedOrders]);
 
-  const cancelSplitOrder = () => {
-    setSplitOrderId(null);
-    setSplitQuantity(0);
-  };
+  // --- Drag & Drop ---
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }, []);
 
-  // Filter scheduled orders
-  const scheduledOrders = orders.filter(order => 
-    order.status === 'scheduled' && 
-    order.planStartDate && 
-    order.planEndDate &&
-    order.assignedLineId
-  );
+  const handleDragEnter = useCallback((e: React.DragEvent, lineId: string, date: Date) => {
+    e.preventDefault();
+    if (!isHoliday(date)) {
+      setDragHighlight(`${lineId}-${date.toISOString().split('T')[0]}`);
+    }
+  }, [isHoliday]);
 
-  // Group orders by line
-  const ordersByLine = productionLines.reduce<Record<string, Order[]>>((acc, line) => {
-    acc[line.id] = scheduledOrders.filter(order => order.assignedLineId === line.id);
-    return acc;
-  }, {});
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragHighlight(null);
+    }
+  }, []);
 
-  // Check if a date is a holiday
-  const isHolidayDate = (date: Date) => {
-    return holidays.some(holiday => isSameDay(holiday.date, date));
-  };
-
-  // Get holiday name if applicable
-  const getHolidayName = (date: Date) => {
-    const holiday = holidays.find(h => isSameDay(h.date, date));
-    return holiday ? holiday.name : null;
-  };
-
-  // Calculate order position and width on the board
-  const getOrderPosition = (order: Order) => {
-    if (!order.planStartDate || !order.planEndDate) return null;
-    
-    const startDateObj = new Date(order.planStartDate);
-    const endDateObj = new Date(order.planEndDate);
-    
-    const startDiff = differenceInDays(startDateObj, startDate);
-    if (startDiff < 0) return null; // Order starts before visible range
-    
-    const endDiff = differenceInDays(endDateObj, startDate);
-    if (endDiff < 0) return null; // Order ends before visible range
-    
-    const startPos = startDiff * 60; // Each day cell is 60px wide
-    const width = (endDiff - startDiff + 1) * 60;
-    
-    return { left: startPos, width };
-  };
-
-  // Calculate daily production for visualization
-  const getDailyProduction = (order: Order) => {
-    if (!order.actualProduction) return {};
-    return Object.entries(order.actualProduction).reduce<Record<string, number>>((acc, [date, qty]) => {
-      // Only include dates within our visible range
-      const orderDate = new Date(date);
-      const diffFromStart = differenceInDays(orderDate, startDate);
-      if (diffFromStart >= 0 && diffFromStart < daysToShow) {
-        acc[date] = qty;
+  const handleDrop = useCallback((e: React.DragEvent, lineId: string, date: Date) => {
+    e.preventDefault(); setDragHighlight(null);
+    if (isHoliday(date)) return;
+    try {
+      const orderData = JSON.parse(e.dataTransfer.getData('text/plain'));
+      if (orderData && orderData.id && orderData.poNumber) {
+        const overlappingOrders = getOverlappingOrders(orderData, lineId, date);
+        const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
+        if (overlappingOrders.length > 0) {
+          setOverlapDialog({
+            isOpen: true,
+            newOrder: orderData,
+            overlappingOrders,
+            targetDate: date,
+            targetLine: lineName,
+            originalTargetDate: date
+          });
+        } else {
+          setScheduleDialog({
+            isOpen: true,
+            order: orderData,
+            lineId,
+            startDate: date
+          });
+        }
       }
-      return acc;
-    }, {});
+    } catch (error) {
+      console.error('❌ Failed to parse dropped order data:', error);
+    }
+  }, [isHoliday, getOverlappingOrders, productionLines, isMultiSelectMode, selectedOrders]);
+  
+  // --- Revised "before" Overlap Handling Workflow ---
+  // 1. onConfirm(before): move all overlapping orders to pending, only schedule the new order first.
+  // 2. Once that schedule completes, THEN schedule previous overlappers after new planEndDate.
+  // This requires tracking what needs to be scheduled next after current dialog closes!
+  const [pendingReschedule, setPendingReschedule] = useState<{
+    toSchedule: Order[];
+    afterOrderId: string | null;
+    lineId: string | null;
+  }>({ toSchedule: [], afterOrderId: null, lineId: null });
+
+  // --- Handle Overlap Confirm ---
+  const handleOverlapConfirm = useCallback(async (placement: 'before' | 'after') => {
+    const { newOrder, overlappingOrders, targetDate, targetLine, originalTargetDate } = overlapDialog;
+    if (!newOrder || !targetDate || !originalTargetDate) return;
+    const lineId = productionLines.find(l => l.name === targetLine)?.id;
+    if (!lineId) return;
+
+    if (placement === 'before') {
+      // Step 1: move all overlappers to pending
+      for (const order of overlappingOrders) { await onOrderMovedToPending(order); }
+      // Step 2: just schedule the newOrder at originalTargetDate
+      setScheduleDialog({
+        isOpen: true,
+        order: newOrder,
+        lineId,
+        startDate: originalTargetDate // this is the "before" drop date!
+      });
+      // Step 3: queue up magnetically rescheduling the overlappers after newOrder
+      setPendingReschedule({ toSchedule: overlappingOrders, afterOrderId: newOrder.id, lineId });
+    } else {
+      // "After" logic: move new order after overlappers' latest end date,
+      // but utilize capacity on the last day if space allows!
+      let latestEnd: Date | null = targetDate;
+      overlappingOrders.forEach(o => o.planEndDate && o.planEndDate > latestEnd! && (latestEnd = new Date(o.planEndDate)));
+      if (!latestEnd) return;
+      const selectedLine = productionLines.find(l => l.id === lineId);
+      if (!selectedLine) return;
+
+      // Find available capacity on the last day of the overlap
+      const lastDayStr = latestEnd.toISOString().split('T')[0];
+      const usedCapacityOnLastDay = getOrdersForCell(lineId, latestEnd).reduce(
+        (sum, order) => sum + (order.actualProduction?.[lastDayStr] || 0), 0
+      );
+      const availableCapacityOnLastDay = Math.max(0, selectedLine.capacity - usedCapacityOnLastDay);
+
+      // If we have capacity, start from latestEnd, else start from next day
+      let startDateForNewOrder = new Date(latestEnd);
+      let fillFirstDay = 0;
+      if (availableCapacityOnLastDay > 0) {
+        fillFirstDay = availableCapacityOnLastDay;
+      } else {
+        startDateForNewOrder.setDate(startDateForNewOrder.getDate() + 1);
+      }
+
+      // We'll need to pass fillFirstDay to the Schedule dialog so it starts the assignment on the last day,
+      // but the dialog and scheduling code expect only startDate. Instead,
+      // We can store this as a property on scheduleDialog state.
+      setScheduleDialog({
+        isOpen: true,
+        order: newOrder,
+        lineId,
+        startDate: startDateForNewOrder,
+        // Let's add fillFirstDay as an optional property, safe for rest of code
+        fillFirstDay: fillFirstDay
+      } as any);
+
+      setPendingReschedule({ toSchedule: [], afterOrderId: null, lineId: null }); // no post-hook
+    }
+    setOverlapDialog({
+      isOpen: false,
+      newOrder: null,
+      overlappingOrders: [],
+      targetDate: null,
+      targetLine: '',
+      originalTargetDate: null
+    });
+  }, [overlapDialog, productionLines, onOrderMovedToPending, getOrdersForCell]);
+
+  // --- When the scheduleDialog is confirmed, carry out any queued magnetic rescheduling ---
+
+  // PATCHED: Create a helper function for scheduling an order as a solid, contiguous block across working days
+  const getContiguousProductionPlan = (
+    qty: number,
+    lineCapacity: number,
+    startDate: Date,
+    isHolidayFn: (d: Date) => boolean,
+    fillFirstDay: number = 0 // left for multi-order move edge cases
+  ) => {
+    const plan: { [date: string]: number } = {};
+    let remainingQty = qty;
+    let currentDate = new Date(startDate);
+    let placedFirstDay = false;
+
+    while (remainingQty > 0) {
+      if (!isHolidayFn(currentDate)) {
+        const dayStr = currentDate.toISOString().split('T')[0];
+        let todayCapacity = lineCapacity;
+        if (!placedFirstDay && fillFirstDay > 0) {
+          todayCapacity = fillFirstDay;
+          placedFirstDay = true;
+        }
+        const planned = Math.min(remainingQty, todayCapacity);
+        if (planned > 0) {
+          plan[dayStr] = planned;
+          remainingQty -= planned;
+        }
+      }
+      // Only increment to next day (contiguous) regardless unless it's a holiday:
+      currentDate.setDate(currentDate.getDate() + 1);
+      // To prevent infinite loops
+      if (Object.keys(plan).length > 366) break;
+    }
+    return plan;
+  };
+
+  const handleScheduleConfirm = useCallback(async () => {
+    const { order, lineId, startDate, fillFirstDay } = scheduleDialog as any;
+    if (!order || !lineId || !startDate) return;
+    const selectedLine = productionLines.find(l => l.id === lineId); if (!selectedLine) return;
+    if (planningMethod === 'rampup' && !selectedRampUpPlanId) return;
+    try {
+      let dailyPlan: { [date: string]: number };
+      if (planningMethod === 'capacity') {
+        // Pass fillFirstDay to getContiguousProductionPlan if it exists
+        dailyPlan = getContiguousProductionPlan(
+          order.orderQuantity,
+          selectedLine.capacity,
+          startDate,
+          isHoliday,
+          fillFirstDay || 0
+        );
+      } else {
+        dailyPlan = calculateDailyProductionWithSharing(order, selectedLine, startDate);
+      }
+      const planDates = Object.keys(dailyPlan);
+      const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
+      const updatedOrder = { ...order, assignedLineId: lineId };
+      await onOrderScheduled(updatedOrder, startDate, endDate, dailyPlan);
+      setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
+      setPlanningMethod('capacity'); setSelectedRampUpPlanId('');
+
+      if (pendingReschedule.toSchedule.length > 0 && pendingReschedule.afterOrderId === order.id && pendingReschedule.lineId) {
+        let newPlanEnd: Date | null = endDate;
+        let magnetDate = new Date(newPlanEnd);
+        const newOrderLastDayStr = magnetDate.toISOString().split('T')[0];
+        const lineObj = productionLines.find(l => l.id === pendingReschedule.lineId);
+        let lastDayAvailCapacity = lineObj ? lineObj.capacity - (dailyPlan[newOrderLastDayStr] || 0) : 0;
+
+        for (const [i, next] of pendingReschedule.toSchedule.entries()) {
+          if (!lineObj) continue;
+
+          let qty = next.orderQuantity;
+          let plan: { [date: string]: number } = {};
+
+          if (i === 0 && lastDayAvailCapacity > 0) {
+            plan = getContiguousProductionPlan(
+              qty, lineObj.capacity,
+              magnetDate,
+              (d) => holidays.some(h => h.date.toDateString() === d.toDateString()),
+              lastDayAvailCapacity
+            );
+          } else {
+            const anchorNextDay = new Date(magnetDate);
+            if (!(i === 0 && lastDayAvailCapacity > 0)) {
+              anchorNextDay.setDate(anchorNextDay.getDate() + 1);
+            }
+            plan = getContiguousProductionPlan(
+              qty, lineObj.capacity,
+              anchorNextDay,
+              (d) => holidays.some(h => h.date.toDateString() === d.toDateString()),
+              0
+            );
+          }
+
+          const planDays = Object.keys(plan);
+          const firstPlanDay = planDays.length > 0 ? new Date(planDays[0]) : new Date(magnetDate);
+          const lastPlanDay = planDays.length > 0 ? new Date(planDays[planDays.length - 1]) : new Date(magnetDate);
+          const nextOrder = { ...next, assignedLineId: lineObj.id };
+          await onOrderScheduled(nextOrder, firstPlanDay, lastPlanDay, plan);
+
+          magnetDate = new Date(lastPlanDay);
+        }
+        setPendingReschedule({ toSchedule: [], afterOrderId: null, lineId: null });
+      }
+    } catch (error) {
+      console.error('❌ Failed to schedule order:', error);
+    }
+  }, [
+    scheduleDialog, productionLines, planningMethod, selectedRampUpPlanId,
+    calculateDailyProductionWithSharing, onOrderScheduled, pendingReschedule, holidays, getContiguousProductionPlan, isHoliday
+  ]);
+  
+  const handleDialogClose = useCallback(() => {
+    setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
+    setPlanningMethod('capacity');
+    setSelectedRampUpPlanId('');
+  }, []);
+
+  const handleOrderDragStart = useCallback((e: React.DragEvent, order: Order) => {
+    console.log('🔄 Starting drag for scheduled order:', order.poNumber);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', JSON.stringify(order));
+    
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '0.5';
+    }
+  }, []);
+
+  const handleOrderDragEnd = useCallback((e: React.DragEvent) => {
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '1';
+    }
+    
+    // Clear selection after drag
+    setSelectedOrders(new Set());
+    setIsMultiSelectMode(false);
+  }, []);
+
+  // Helper function to check if order should be highlighted in red
+  const shouldHighlightRed = useCallback((order: Order, date: Date) => {
+    const now = new Date();
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - now.getDay());
+    startOfWeek.setHours(0, 0, 0, 0);
+    
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+    endOfWeek.setHours(23, 59, 59, 999);
+    
+    const isCurrentWeek = order.planStartDate && 
+                         order.planStartDate >= startOfWeek && 
+                         order.planStartDate <= endOfWeek;
+    
+    return order.cutQuantity === 0 && 
+           isCurrentWeek &&
+           order.planStartDate &&
+           date.toDateString() === order.planStartDate.toDateString();
+  }, []);
+
+  // New handler to download plan PDF for a single line
+  const handleDownloadLinePdf = async (lineId: string, lineName: string) => {
+    const reportId = `line-pdf-report-${lineId}`;
+    const fileName = `${lineName.replace(/\s+/g, '_')}_Production_Plan`;
+    await downloadElementAsPdf(reportId, fileName);
+  };
+
+  // Helper: Get all scheduled orders (distinct by orderId) for a line
+  const getScheduledOrdersForLine = (lineId: string) => {
+    return orders
+      .filter(order => order.status === 'scheduled' && order.assignedLineId === lineId)
+      .sort((a, b) =>
+        (a.planStartDate?.getTime() || 0) - (b.planStartDate?.getTime() || 0)
+      );
   };
 
   return (
-    <DragDropContext onDragEnd={handleDragEnd} onDragStart={handleDragStart}>
-      <div className="flex flex-col h-full">
-        {/* Date header */}
-        <div 
-          ref={dateHeaderRef}
-          className="flex border-b sticky top-0 z-10 bg-background overflow-hidden"
-          style={{ width: 'calc(100% - 200px)', marginLeft: '200px' }}
-        >
-          {dates.map((date, index) => {
-            const isWeekendDay = isWeekend(date);
-            const isHoliday = isHolidayDate(date);
-            const holidayName = getHolidayName(date);
-            return (
-              <div 
-                key={index}
-                className={`flex-shrink-0 w-[60px] p-1 text-center border-r text-xs ${
-                  isWeekendDay ? 'bg-muted' : isHoliday ? 'bg-red-100' : ''
+    <div className="flex-1 overflow-auto bg-background">
+      {/* PDF REPORTS (hidden, for each line) */}
+      {productionLines.map(line => {
+        const scheduledOrders = getScheduledOrdersForLine(line.id);
+        if (scheduledOrders.length === 0) return null;
+        return (
+          <div // This is the printable area. It's visually hidden but rendered in the DOM.
+            id={`line-pdf-report-${line.id}`}
+            key={`printable-${line.id}`}
+            style={{ position: 'absolute', left: -9999, top: 0, width: '800px', background: '#fff', color: '#111', padding: 24, zIndex: -1000, fontSize: 14 }}
+          >
+            <div style={{ borderBottom: '2px solid #111', paddingBottom: 8, marginBottom: 16 }}>
+              <h2 style={{ margin: 0, fontWeight: 700, fontSize: 18 }}>Production Plan Report</h2>
+              <div>Line: <b>{line.name}</b></div>
+              <div>Generated on: {new Date().toLocaleString()}</div>
+            </div>
+            <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>Order #</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>Style</th>
+                  <th style={{ textAlign: 'right', borderBottom: '1px solid #aaa', padding: 6 }}>Quantity</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>PSD (Plan Start)</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>PED (Plan End)</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #aaa', padding: 6 }}>Delivery</th>
+                </tr>
+              </thead>
+              <tbody>
+                {scheduledOrders.map(order => (
+                  <tr key={order.id}>
+                    <td style={{ padding: 6 }}>{order.poNumber}</td>
+                    <td style={{ padding: 6 }}>{order.styleId}</td>
+                    <td style={{ padding: 6, textAlign: 'right' }}>{order.orderQuantity.toLocaleString()}</td>
+                    <td style={{ padding: 6 }}>
+                      {order.planStartDate ? order.planStartDate.toLocaleDateString() : '-'}
+                    </td>
+                    <td style={{ padding: 6 }}>
+                      {order.planEndDate ? order.planEndDate.toLocaleDateString() : '-'}
+                    </td>
+                    <td style={{ padding: 6 }}>
+                      {/* Delivery field: Use planEndDate+1 day if exists, or show '-' */}
+                      {order.planEndDate
+                        ? (() => {
+                            const d = new Date(order.planEndDate!);
+                            d.setDate(d.getDate() + 1);
+                            return d.toLocaleDateString();
+                          })()
+                        : '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ marginTop: 24, fontStyle: 'italic', fontSize: 13 }}>
+              * Delivery is estimated as one day after Plan End Date.
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Multi-select info bar */}
+      {isMultiSelectMode && selectedOrders.size > 0 && (
+        <div className="sticky top-0 z-20 bg-blue-100 border-b border-blue-300 p-2 text-center">
+          <span className="text-blue-800 font-medium">
+            {selectedOrders.size} orders selected - Drag to move together
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-2 text-blue-800"
+            onClick={() => {
+              setSelectedOrders(new Set());
+              setIsMultiSelectMode(false);
+            }}
+          >
+            Clear Selection
+          </Button>
+        </div>
+      )}
+
+      <div className="min-w-max">
+        {/* Header with dates */}
+        <div className="sticky top-0 z-10 bg-card border-b border-border">
+          <div className="flex">
+            {/* Line header with PDF button */}
+            <div className="w-48 p-4 border-r border-border bg-card">
+              <div className="flex items-center space-x-2 mb-2">
+                <CalendarDays className="h-5 w-5 text-muted-foreground" />
+                <span className="font-medium">Production Lines</span>
+              </div>
+              {/* Empty cell under line header to align with buttons per-line below */}
+            </div>
+            {dates.map((date) => (
+              <div
+                key={date.toISOString()}
+                className={`w-32 p-2 border-r border-border text-center ${
+                  isHoliday(date) ? 'bg-muted' : 'bg-card'
                 }`}
               >
-                <div>{format(date, 'EEE')}</div>
-                <div className="font-bold">{format(date, 'd')}</div>
-                <div>{format(date, 'MMM')}</div>
-                {isHoliday && holidayName && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div className="text-red-500 mt-1">
-                        <AlertTriangle size={12} className="inline" />
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>{holidayName}</p>
-                    </TooltipContent>
-                  </Tooltip>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        
-        {/* Main board area */}
-        <div className="flex flex-1 overflow-hidden">
-          {/* Line names sidebar */}
-          <div 
-            ref={sidebarRef}
-            className="w-[200px] flex-shrink-0 border-r"
-          >
-            {productionLines.map(line => (
-              <div 
-                key={line.id}
-                className="h-[120px] border-b p-2 flex flex-col justify-between"
-              >
-                <div className="font-medium">{line.name}</div>
-                <div className="text-xs text-muted-foreground">
-                  Capacity: {line.capacity} pcs/day
+                <div className="text-xs font-medium">
+                  {date.toLocaleDateString('en-US', { weekday: 'short' })}
                 </div>
-                <LinePdfExportButton
-                  lineId={line.id}
-                  lineName={line.name}
-                  orders={orders.filter(o => o.assignedLineId === line.id && o.planStartDate)}
-                />
+                <div className="text-sm">
+                  {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </div>
+                {isHoliday(date) && (
+                  <div className="text-xs text-destructive">Holiday</div>
+                )}
               </div>
             ))}
           </div>
-          
-          {/* Scrollable board */}
-          <div 
-            ref={boardRef}
-            className="flex-1 overflow-auto"
-          >
-            <div style={{ width: `${dates.length * 60}px`, position: 'relative' }}>
-              {/* Line rows */}
-              {productionLines.map(line => (
-                <div 
-                  key={line.id}
-                  className="h-[120px] border-b relative"
+        </div>
+
+        {/* Production lines grid */}
+        <div className="divide-y divide-border">
+          {productionLines.map((line) => (
+            <div key={line.id} className="flex">
+              {/* Left column: Line info + PDF download button */}
+              <div className="w-48 p-4 border-r border-border bg-card flex flex-col items-start">
+                <div className="font-medium">{line.name}</div>
+                <div className="text-sm text-muted-foreground">
+                  Capacity: {line.capacity}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2 flex items-center gap-1"
+                  onClick={() => handleDownloadLinePdf(line.id, line.name)}
+                  title="Download Production Plan PDF"
                 >
-                  {/* Date cells for dropping */}
-                  <div className="flex h-full">
-                    {dates.map((date, dateIndex) => {
-                      const isWeekendDay = isWeekend(date);
-                      const isHoliday = isHolidayDate(date);
-                      const droppableId = `${line.id}_${format(date, 'yyyy-MM-dd')}`;
-                      const isHovered = hoveredLineId === line.id && 
-                                       hoveredDate && 
-                                       isSameDay(hoveredDate, date);
-                      return (
-                        <Droppable
-                          key={dateIndex}
-                          droppableId={droppableId}
-                          isDropDisabled={isWeekendDay || isHoliday}
-                        >
-                          {(provided, snapshot) => (
-                            <div
-                              ref={provided.innerRef}
-                              {...provided.droppableProps}
-                              className={`flex-shrink-0 w-[60px] h-full border-r ${
-                                isWeekendDay ? 'bg-muted' : 
-                                isHoliday ? 'bg-red-100' : 
-                                isHovered ? 'bg-blue-50' : 
-                                snapshot.isDraggingOver ? 'bg-green-50' : ''
-                              }`}
-                              onMouseEnter={() => handleDateCellHover(date, line.id)}
-                            >
-                              {provided.placeholder}
-                            </div>
-                          )}
-                        </Droppable>
-                      );
-                    })}
-                  </div>
-                  {/* Orders positioned on the timeline */}
-                  {ordersByLine[line.id]?.map(order => {
-                    const position = getOrderPosition(order);
-                    if (!position) return null;
-                    const dailyProduction = getDailyProduction(order);
-                    const isBeingDragged = draggingOrderId === order.id;
-                    return (
-                      <div
-                        key={order.id}
-                        className={`absolute top-1 h-[100px] ${
-                          isBeingDragged ? 'opacity-50' : ''
-                        }`}
-                        style={{
-                          left: `${position.left}px`,
-                          width: `${position.width}px`,
-                        }}
-                      >
-                        <Card 
-                          className="h-full p-2 overflow-hidden border-2 border-primary bg-card"
-                          onClick={() => setShowOrderDetails(order.id === showOrderDetails ? null : order.id)}
-                        >
-                          <div className="flex justify-between items-start">
-                            <div className="font-medium truncate text-sm">{order.poNumber}</div>
-                            <Badge variant="outline" className="text-xs">
-                              {order.styleId}
-                            </Badge>
-                          </div>
-                          <div className="text-xs mt-1">Qty: {order.orderQuantity}</div>
-                          <div className="flex items-center text-xs mt-1">
-                            <Calendar size={12} className="mr-1" />
-                            <span>
-                              {order.planStartDate && format(new Date(order.planStartDate), 'MMM d')} - 
-                              {order.planEndDate && format(new Date(order.planEndDate), 'MMM d')}
-                            </span>
-                          </div>
-                          {/* Daily production visualization */}
-                          {Object.keys(dailyProduction).length > 0 && (
-                            <div className="mt-1 flex gap-1 overflow-hidden">
-                              {Object.entries(dailyProduction).map(([date, qty]) => (
-                                <Tooltip key={date}>
-                                  <TooltipTrigger asChild>
-                                    <div className="bg-primary/20 text-[10px] px-1 rounded">
-                                      {qty}
-                                    </div>
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    <p>{format(new Date(date), 'MMM d')}: {qty} pcs</p>
-                                  </TooltipContent>
-                                </Tooltip>
-                              ))}
-                            </div>
-                          )}
-                          {/* Expanded details */}
-                          {showOrderDetails === order.id && (
-                            <div className="mt-2 text-xs border-t pt-1">
-                              <div className="flex justify-between">
-                                <Button 
-                                  variant="ghost" 
-                                  size="sm" 
-                                  className="h-6 text-xs"
+                  <FileDown className="w-4 h-4 mr-1" />
+                  <span>Plan PDF</span>
+                </Button>
+              </div>
+              {/* ... keep grid cells ... */}
+              {dates.map((date) => {
+                const cellKey = `${line.id}-${date.toISOString().split('T')[0]}`;
+                const isHighlighted = dragHighlight === cellKey;
+                const utilizationPercent = calculateTotalUtilization(line.id, date);
+                const ordersInCell = getOrdersForCell(line.id, date);
+                const isHolidayCell = isHoliday(date);
+                const availableCapacity = getAvailableCapacity(line.id, date);
+                
+                return (
+                  <div
+                    key={cellKey}
+                    className={`w-32 min-h-[120px] border-r border-border relative transition-all duration-200 ${
+                      isHolidayCell 
+                        ? 'bg-muted/50' 
+                        : isHighlighted 
+                          ? 'bg-primary/20 border-primary border-2' 
+                          : 'bg-background hover:bg-muted/20'
+                    }`}
+                    onDrop={(e) => handleDrop(e, line.id, date)}
+                    onDragOver={handleDragOver}
+                    onDragEnter={(e) => handleDragEnter(e, line.id, date)}
+                    onDragLeave={handleDragLeave}
+                  >
+                    {/* Capacity utilization bar */}
+                    {utilizationPercent > 0 && !isHolidayCell && (
+                      <div 
+                        className="absolute bottom-0 left-0 right-0 bg-primary/30 transition-all duration-300"
+                        style={{ height: `${Math.min(utilizationPercent, 100)}%` }}
+                      />
+                    )}
+                    
+                    {/* Drop zone indicator */}
+                    {!isHolidayCell && ordersInCell.length === 0 && (
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
+                        <Plus className="h-4 w-4 text-muted-foreground" />
+                      </div>
+                    )}
+                    
+                    {/* Available capacity indicator */}
+                    {!isHolidayCell && availableCapacity > 0 && ordersInCell.length > 0 && (
+                      <div className="absolute top-1 right-1 text-xs bg-green-100 text-green-800 px-1 rounded">
+                        {availableCapacity}
+                      </div>
+                    )}
+                    
+                    {/* Drag highlight indicator */}
+                    {isHighlighted && !isHolidayCell && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-primary border-dashed rounded">
+                        <div className="text-xs font-medium text-primary bg-background px-2 py-1 rounded shadow">
+                          Drop Here
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Orders in cell */}
+                    <div className="p-1 space-y-1 relative z-10 h-full flex flex-col">
+                      {ordersInCell.map((scheduledOrder, index) => {
+                        const dateStr = date.toISOString().split('T')[0];
+                        const dailyQty = scheduledOrder.actualProduction?.[dateStr] || 0;
+                        const shouldHighlight = shouldHighlightRed(scheduledOrder, date);
+                        const orderUtilization = (dailyQty / line.capacity) * 100;
+                        const isSelected = selectedOrders.has(scheduledOrder.id);
+                        
+                        return (
+                          <div 
+                            key={`${scheduledOrder.id}-${dateStr}`}
+                            className={`rounded text-xs p-1 group cursor-move transition-colors flex-1 min-h-[60px] ${
+                              isSelected 
+                                ? 'ring-2 ring-blue-500 bg-blue-50' 
+                                : shouldHighlight 
+                                  ? 'bg-red-100 border-2 border-red-500 text-red-800' 
+                                  : index % 2 === 0
+                                    ? 'bg-blue-100 border border-blue-300 text-blue-800'
+                                    : 'bg-green-100 border border-green-300 text-green-800'
+                            }`}
+                            draggable
+                            onDragStart={(e) => handleOrderDragStart(e, scheduledOrder)}
+                            onDragEnd={handleOrderDragEnd}
+                            onClick={(e) => handleOrderClick(e, scheduledOrder.id)}
+                            style={{ 
+                              height: `${Math.max(orderUtilization, 20)}%`,
+                              minHeight: '60px'
+                            }}
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center space-x-1">
+                                <GripVertical className="h-3 w-3 opacity-60" />
+                                <span className="truncate font-medium text-xs">{scheduledOrder.poNumber}</span>
+                              </div>
+                              <div className="opacity-0 group-hover:opacity-100 flex space-x-1">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-4 w-4 p-0 hover:bg-destructive/10"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    onOrderMovedToPending(order);
+                                    onOrderMovedToPending(scheduledOrder);
                                   }}
+                                  title="Move back to pending"
                                 >
-                                  Move to Pending
+                                  <ArrowLeft className="h-3 w-3" />
                                 </Button>
-                                <Button 
-                                  variant="ghost" 
-                                  size="sm" 
-                                  className="h-6 text-xs"
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-4 w-4 p-0 hover:bg-secondary"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    handleSplitOrder(order.id);
+                                    onOrderSplit(scheduledOrder.id, Math.floor(scheduledOrder.orderQuantity / 2));
                                   }}
+                                  title="Split order"
                                 >
-                                  Split Order
+                                  <Scissors className="h-3 w-3" />
                                 </Button>
                               </div>
                             </div>
-                          )}
-                        </Card>
-                      </div>
-                    );
-                  })}
-                </div>
-              ))}
+                            <div className="text-xs opacity-75 truncate mb-1">
+                              Style: {scheduledOrder.styleId}
+                            </div>
+                            <div className="text-xs opacity-75 mb-1">
+                              Qty: {dailyQty.toLocaleString()}
+                            </div>
+                            <div className="text-xs opacity-75 mb-1">
+                              Cut: {scheduledOrder.cutQuantity.toLocaleString()}
+                            </div>
+                            <div className="text-xs opacity-75 mb-1">
+                              Issue: {scheduledOrder.issueQuantity.toLocaleString()}
+                            </div>
+                            <div className="text-xs opacity-75">
+                              {orderUtilization.toFixed(1)}% used
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          </div>
+          ))}
         </div>
       </div>
-      {/* Split order dialog */}
-      {splitOrderId && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-background p-4 rounded-md shadow-lg w-[300px]">
-            <h3 className="font-medium mb-4">Split Order</h3>
-            <div className="mb-4">
-              <label className="block text-sm mb-1">Split Quantity:</label>
-              <input
-                type="number"
-                value={splitQuantity}
-                onChange={(e) => setSplitQuantity(parseInt(e.target.value) || 0)}
-                className="w-full p-2 border rounded"
-                min="1"
-                max={orders.find(o => o.id === splitOrderId)?.orderQuantity - 1 || 0}
-              />
+
+      {/* Schedule Dialog */}
+      <Dialog open={scheduleDialog.isOpen} onOpenChange={(open) => !open && handleDialogClose()}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Schedule Order</DialogTitle>
+          </DialogHeader>
+          {scheduleDialog.order && (
+            <div className="space-y-4">
+              <div className="bg-muted/50 p-3 rounded">
+                <h3 className="font-medium">{scheduleDialog.order.poNumber}</h3>
+                <p className="text-sm text-muted-foreground">
+                  Style: {scheduleDialog.order.styleId}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Quantity: {scheduleDialog.order.orderQuantity.toLocaleString()} | SMV: {scheduleDialog.order.smv} | MO: {scheduleDialog.order.moCount}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Cut: {scheduleDialog.order.cutQuantity.toLocaleString()} | Issue: {scheduleDialog.order.issueQuantity.toLocaleString()}
+                </p>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <label className="font-medium">Start Date:</label>
+                  <div>{scheduleDialog.startDate?.toLocaleDateString()}</div>
+                </div>
+                <div>
+                  <label className="font-medium">Production Line:</label>
+                  <div>{productionLines.find(l => l.id === scheduleDialog.lineId)?.name}</div>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium">Planning Method:</label>
+                <RadioGroup value={planningMethod} onValueChange={(value: 'capacity' | 'rampup') => setPlanningMethod(value)}>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="capacity" id="capacity" />
+                    <Label htmlFor="capacity">Based on Line Capacity</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="rampup" id="rampup" />
+                    <Label htmlFor="rampup">Based on Ramp-Up Plan</Label>
+                  </div>
+                </RadioGroup>
+              </div>
+              
+              {planningMethod === 'rampup' && (
+                <div>
+                  <label className="text-sm font-medium">Ramp-Up Plan:</label>
+                  <Select value={selectedRampUpPlanId} onValueChange={setSelectedRampUpPlanId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a ramp-up plan" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {rampUpPlans.map((plan) => (
+                        <SelectItem key={plan.id} value={plan.id}>
+                          {plan.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              
+              <div className="flex space-x-2 pt-4">
+                <Button
+                  onClick={handleScheduleConfirm}
+                  disabled={planningMethod === 'rampup' && !selectedRampUpPlanId}
+                  className="flex-1"
+                >
+                  Schedule Order
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleDialogClose}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+              </div>
             </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={cancelSplitOrder}>
-                Cancel
-              </Button>
-              <Button onClick={confirmSplitOrder}>
-                Split
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-    </DragDropContext>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Overlap Confirmation Dialog */}
+      <OverlapConfirmationDialog
+        isOpen={overlapDialog.isOpen}
+        onClose={() => setOverlapDialog(prev => ({ ...prev, isOpen: false }))}
+        onConfirm={handleOverlapConfirm}
+        newOrder={overlapDialog.newOrder}
+        overlappingOrders={overlapDialog.overlappingOrders}
+        targetDate={overlapDialog.targetDate}
+        targetLine={overlapDialog.targetLine}
+      />
+    </div>
   );
 };
