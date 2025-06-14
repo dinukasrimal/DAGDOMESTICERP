@@ -184,9 +184,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   // Multi-select functionality
   const handleOrderClick = useCallback(
     (e: React.MouseEvent, orderId: string) => {
-      if (multiSelectExplicit || e.ctrlKey || e.metaKey) {
+      if (multiSelectExplicit) {
+        // In multi mode, toggle selection
         setIsMultiSelectMode(true);
-        setSelectedOrders(prev => {
+        setSelectedOrders((prev) => {
           const newSet = new Set(prev);
           if (newSet.has(orderId)) {
             newSet.delete(orderId);
@@ -195,12 +196,14 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           }
           return newSet;
         });
-      } else if (!selectedOrders.has(orderId)) {
-        setSelectedOrders(new Set());
-        setIsMultiSelectMode(false);
+        return;
       }
+      // When not in multi-mode, any click always clears & sets only this order
+      setSelectedOrders(new Set());
+      setIsMultiSelectMode(false);
+      setMultiSelectExplicit(false);
     },
-    [selectedOrders, multiSelectExplicit]
+    [multiSelectExplicit]
   );
 
   // --- Drag & Drop ---
@@ -230,15 +233,12 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       try {
         let orderData: any = null;
         let dragType = 'single';
-        // Try multi:
         try {
           const json = JSON.parse(e.dataTransfer.getData('application/json'));
           if (json.type === 'multiple-orders' && Array.isArray(json.ids)) {
             dragType = 'multiple';
-            orderData = {
-              ids: json.ids
-            };
-          } else if (json && json.id && json.poNumber) {
+            orderData = { ids: json.ids };
+          } else if (json.type === 'single-order' && json.id && json.poNumber) {
             dragType = 'single';
             orderData = json;
           }
@@ -247,21 +247,12 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           const plain = e.dataTransfer.getData('text/plain');
           if (plain) orderData = JSON.parse(plain);
         }
-
+  
         if (dragType === 'multiple' && orderData?.ids) {
-          // Get order objects
-          const draggedOrders = orders.filter(
-            o => orderData.ids.includes(o.id)
-          );
-          // Only group scheduled orders assigned to the same line can be moved together!
-          if (
-            draggedOrders.length > 1 &&
-            draggedOrders.every(
-              o => o.status === 'scheduled' && o.assignedLineId === lineId
-            )
-          ) {
-            // For now, show batch schedule dialog for first (anchor) order,
-            // After scheduling the group, clear selection
+          // Only allow batch move if all are scheduled, same line
+          const draggedOrders = orders.filter(o => orderData.ids.includes(o.id));
+          const sameLine = draggedOrders.every(o => o.status === 'scheduled' && o.assignedLineId === lineId);
+          if (draggedOrders.length > 1 && sameLine) {
             setScheduleDialog({
               isOpen: true,
               order: draggedOrders[0],
@@ -270,11 +261,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
               batchOrderIds: draggedOrders.map(o => o.id)
             } as any);
           }
-          // If not all eligible, do nothing.
+          // Otherwise do nothing
           return;
         }
-
-        // Otherwise, single drag as before
+  
         if (orderData && orderData.id && orderData.poNumber) {
           const overlappingOrders = getOverlappingOrders(orderData, lineId, date);
           const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
@@ -493,37 +483,42 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   const handleOrderDragStart = useCallback(
     (e: React.DragEvent, order: Order) => {
+      // Allow multi-drag ONLY if explicit multi-select & all selected orders are in the same line
       let dragOrderIds: string[] = [order.id];
-      if (multiSelectExplicit || isMultiSelectMode) {
-        // Restrict multi-select drag to same assigned line if scheduled
-        const draggedOrders = orders.filter(
-          o => selectedOrders.has(o.id)
-        );
-        if (
-          draggedOrders.length > 1 &&
-          draggedOrders.every(
-            o => o.assignedLineId && o.assignedLineId === order.assignedLineId
-          )
-        ) {
-          dragOrderIds = Array.from(selectedOrders);
+      if (multiSelectExplicit && selectedOrders.size > 1) {
+        // Only allow drag if all selected are in the same assignedLineId
+        const selected = orders.filter(o => selectedOrders.has(o.id));
+        const sameLine = selected.every(o => o.assignedLineId && o.assignedLineId === order.assignedLineId);
+        if (sameLine) {
+          dragOrderIds = [...selectedOrders];
         } else {
-          // fallback to just this order
-          dragOrderIds = [order.id];
+          dragOrderIds = [order.id]; // fallback to just one
         }
       }
+      // If not in multi-select, always single drag
       e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData(
-        'application/json',
-        JSON.stringify({
-          type: 'multiple-orders',
-          ids: dragOrderIds
-        })
-      );
+      if (dragOrderIds.length > 1) {
+        e.dataTransfer.setData(
+          'application/json',
+          JSON.stringify({
+            type: 'multiple-orders',
+            ids: dragOrderIds
+          })
+        );
+      } else {
+        e.dataTransfer.setData(
+          'application/json',
+          JSON.stringify({
+            ...order,
+            type: 'single-order'
+          })
+        );
+      }
       if (e.currentTarget instanceof HTMLElement) {
         e.currentTarget.style.opacity = '0.5';
       }
     },
-    [selectedOrders, orders, multiSelectExplicit, isMultiSelectMode]
+    [orders, selectedOrders, multiSelectExplicit]
   );
 
   const handleOrderDragEnd = useCallback(
