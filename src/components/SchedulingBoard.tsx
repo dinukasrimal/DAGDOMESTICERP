@@ -678,7 +678,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             </div>
           </div>
         );
-      })}
+      })
 
       {/* Multi-select info bar */}
       {isMultiSelectMode && selectedOrders.size > 0 && (
