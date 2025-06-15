@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -678,7 +679,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             </div>
           </div>
         );
-      })
+      })}
 
       {/* Multi-select info bar */}
       {isMultiSelectMode && selectedOrders.size > 0 && (
