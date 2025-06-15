@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -37,7 +36,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 }) => {
   const [newLineName, setNewLineName] = useState('');
   const [newLineCapacity, setNewLineCapacity] = useState<number>(100);
-  const [newLineMoCount, setNewLineMoCount] = useState<number>(0);
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
   const [newHolidayName, setNewHolidayName] = useState('');
   const [isGlobalHoliday, setIsGlobalHoliday] = useState(true);
@@ -55,13 +53,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       try {
         const newLine = await supabaseDataService.createProductionLine({
           name: newLineName.trim(),
-          capacity: newLineCapacity,
-          moCount: newLineMoCount
+          capacity: newLineCapacity
         });
         onProductionLinesChange([...productionLines, newLine]);
         setNewLineName('');
         setNewLineCapacity(100);
-        setNewLineMoCount(0);
         toast({
           title: "Success",
           description: "Production line created successfully"
@@ -274,7 +270,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <CardTitle>Add Production Line</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="text-sm font-medium">Line Name:</label>
                   <Input
@@ -291,16 +287,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     value={newLineCapacity}
                     onChange={(e) => setNewLineCapacity(parseInt(e.target.value) || 100)}
                     placeholder="100"
-                    disabled={isLoading}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">MO Count:</label>
-                  <Input
-                    type="number"
-                    value={newLineMoCount}
-                    onChange={(e) => setNewLineMoCount(parseInt(e.target.value) || 0)}
-                    placeholder="0"
                     disabled={isLoading}
                   />
                 </div>
@@ -325,9 +311,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <div key={line.id} className="flex items-center justify-between p-3 border rounded-lg">
                     <div>
                       <div className="font-medium">{line.name}</div>
-                      <div className="text-sm text-muted-foreground">
-                        Capacity: {line.capacity} | MO Count: {line.moCount}
-                      </div>
+                      <div className="text-sm text-muted-foreground">Capacity: {line.capacity}</div>
                     </div>
                     <Button
                       variant="destructive"

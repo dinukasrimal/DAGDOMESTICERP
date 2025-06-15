@@ -1,3 +1,4 @@
+
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { GoogleSheetsService, SheetOrder } from './googleSheetsService';
 
@@ -19,10 +20,10 @@ export class DataService {
 
   private initializeDefaultData() {
     this.productionLines = [
-      { id: '1', name: 'Line A - Knitwear', capacity: 120, moCount: 0 },
-      { id: '2', name: 'Line B - Woven', capacity: 100, moCount: 0 },
-      { id: '3', name: 'Line C - Denim', capacity: 80, moCount: 0 },
-      { id: '4', name: 'Line D - Casual', capacity: 150, moCount: 0 }
+      { id: '1', name: 'Line A - Knitwear', capacity: 100 },
+      { id: '2', name: 'Line B - Woven', capacity: 80 },
+      { id: '3', name: 'Line C - Casual', capacity: 120 },
+      { id: '4', name: 'Line D - Formal', capacity: 90 }
     ];
 
     this.rampUpPlans = [
@@ -204,10 +205,3 @@ export class DataService {
 }
 
 export const dataService = new DataService();
-
-export const mockProductionLines: ProductionLine[] = [
-  { id: '1', name: 'Line A - Knitwear', capacity: 120, moCount: 0 },
-  { id: '2', name: 'Line B - Woven', capacity: 100, moCount: 0 },
-  { id: '3', name: 'Line C - Denim', capacity: 80, moCount: 0 },
-  { id: '4', name: 'Line D - Casual', capacity: 150, moCount: 0 },
-];

@@ -19,7 +19,7 @@ const queryClient = new QueryClient({
   },
 });
 
-function App() {
+const App: React.FC = () => {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
@@ -40,6 +40,6 @@ function App() {
       </AuthProvider>
     </QueryClientProvider>
   );
-}
+};
 
 export default App;

@@ -2,33 +2,42 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import {
   DndContext,
-  DragEndEvent,
-  DragStartEvent,
   DragOverlay,
   closestCenter,
   KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
+  DragStartEvent,
+  DragEndEvent,
+  DragOverEvent,
 } from '@dnd-kit/core';
-import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+} from '@dnd-kit/sortable';
 import { Order } from '../types/scheduler';
 
-interface DragDropContextProps {
-  children: React.ReactNode;
-  onDragStart?: (event: DragStartEvent) => void;
-  onDragEnd?: (event: DragEndEvent) => void;
-  dragOverlay?: React.ReactNode;
-}
-
-interface DragDropContextValue {
+interface DragDropContextType {
   selectedOrders: Set<string>;
+  setSelectedOrders: (orders: Set<string>) => void;
   isMultiSelectMode: boolean;
-  handleOrderSelect: (orderId: string, isMultiSelect?: boolean) => void;
+  setIsMultiSelectMode: (mode: boolean) => void;
+  handleOrderSelect: (orderId: string, ctrlKey: boolean) => void;
   clearSelection: () => void;
+  activeId: string | null;
 }
 
-const DragDropContextState = createContext<DragDropContextValue | undefined>(undefined);
+const DragDropContextValue = createContext<DragDropContextType | null>(null);
+
+export const useDragDrop = () => {
+  const context = useContext(DragDropContextValue);
+  if (!context) {
+    throw new Error('useDragDrop must be used within a DragDropProvider');
+  }
+  return context;
+};
 
 interface DragDropProviderProps {
   children: React.ReactNode;
@@ -44,72 +53,97 @@ export const DragDropProvider: React.FC<DragDropProviderProps> = ({
   onOrderMovedToPending
 }) => {
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  const isMultiSelectMode = selectedOrders.size > 0;
-
-  const handleOrderSelect = useCallback((orderId: string, isMultiSelect: boolean = false) => {
-    setSelectedOrders(prev => {
-      const newSelection = new Set(prev);
-      
-      if (isMultiSelect) {
-        if (newSelection.has(orderId)) {
-          newSelection.delete(orderId);
-        } else {
-          newSelection.add(orderId);
-        }
-      } else {
-        if (newSelection.has(orderId) && newSelection.size === 1) {
-          newSelection.clear();
-        } else {
-          newSelection.clear();
-          newSelection.add(orderId);
-        }
-      }
-      
-      return newSelection;
-    });
-  }, []);
-
-  const clearSelection = useCallback(() => {
-    setSelectedOrders(new Set());
-  }, []);
-
   const sensors = useSensors(
-    useSensor(PointerSensor),
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
     })
   );
 
-  const handleDragStart = (event: DragStartEvent) => {
+  const handleOrderSelect = useCallback((orderId: string, ctrlKey: boolean) => {
+    if (ctrlKey) {
+      setIsMultiSelectMode(true);
+      setSelectedOrders(prev => {
+        const newSet = new Set(prev);
+        if (newSet.has(orderId)) {
+          newSet.delete(orderId);
+          if (newSet.size === 0) {
+            setIsMultiSelectMode(false);
+          }
+        } else {
+          newSet.add(orderId);
+        }
+        return newSet;
+      });
+    } else if (!selectedOrders.has(orderId)) {
+      setSelectedOrders(new Set());
+      setIsMultiSelectMode(false);
+    }
+  }, [selectedOrders]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedOrders(new Set());
+    setIsMultiSelectMode(false);
+  }, []);
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    console.log('🔄 Drag started:', event.active.id);
     setActiveId(event.active.id as string);
-  };
+  }, []);
 
-  const handleDragEnd = async (event: DragEndEvent) => {
-    const { active, over } = event;
+  const handleDragEnd = useCallback(async (event: DragEndEvent) => {
+    console.log('📍 Drag ended:', event);
     setActiveId(null);
-
+    
+    const { active, over } = event;
     if (!over) return;
 
     const draggedOrderId = active.id as string;
-    const [lineId, dateStr] = (over.id as string).split('-');
-    
-    console.log(`Drag end: ${draggedOrderId} to ${lineId} on ${dateStr}`);
-    
-    // Handle the drag and drop logic here
-    // This is where you would implement the actual scheduling logic
-  };
+    const draggedOrder = orders.find(o => o.id === draggedOrderId);
+    if (!draggedOrder) return;
 
-  const contextValue: DragDropContextValue = {
+    // Parse drop target information
+    const overData = over.data.current;
+    if (!overData || !overData.lineId || !overData.date) return;
+
+    const { lineId, date } = overData;
+    console.log(`📋 Dropping on line ${lineId} at ${date}`);
+
+    // Determine which orders to move
+    let ordersToMove = [draggedOrder];
+    if (isMultiSelectMode && selectedOrders.has(draggedOrderId)) {
+      ordersToMove = orders.filter(o => selectedOrders.has(o.id));
+      console.log(`🔄 Moving ${ordersToMove.length} selected orders`);
+    }
+
+    // Move all orders to pending first to prevent conflicts
+    for (const order of ordersToMove) {
+      await onOrderMovedToPending(order);
+    }
+
+    // Clear selection after successful operation
+    clearSelection();
+  }, [orders, selectedOrders, isMultiSelectMode, onOrderMovedToPending, clearSelection]);
+
+  const value: DragDropContextType = {
     selectedOrders,
+    setSelectedOrders,
     isMultiSelectMode,
+    setIsMultiSelectMode,
     handleOrderSelect,
     clearSelection,
+    activeId,
   };
 
   return (
-    <DragDropContextState.Provider value={contextValue}>
+    <DragDropContextValue.Provider value={value}>
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
@@ -119,48 +153,16 @@ export const DragDropProvider: React.FC<DragDropProviderProps> = ({
         {children}
         <DragOverlay>
           {activeId ? (
-            <div className="bg-blue-100 border border-blue-300 p-2 rounded shadow-lg">
-              Dragging order...
+            <div className="bg-blue-100 border border-blue-300 rounded p-2 shadow-lg">
+              <div className="text-xs font-semibold">
+                {isMultiSelectMode && selectedOrders.size > 1
+                  ? `${selectedOrders.size} orders selected`
+                  : orders.find(o => o.id === activeId)?.poNumber || 'Order'}
+              </div>
             </div>
           ) : null}
         </DragOverlay>
       </DndContext>
-    </DragDropContextState.Provider>
-  );
-};
-
-export const useDragDrop = (): DragDropContextValue => {
-  const context = useContext(DragDropContextState);
-  if (context === undefined) {
-    throw new Error('useDragDrop must be used within a DragDropProvider');
-  }
-  return context;
-};
-
-export const DragDropContext: React.FC<DragDropContextProps> = ({
-  children,
-  onDragStart,
-  onDragEnd,
-  dragOverlay
-}) => {
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  );
-
-  return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCenter}
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
-    >
-      {children}
-      <DragOverlay>
-        {dragOverlay}
-      </DragOverlay>
-    </DndContext>
+    </DragDropContextValue.Provider>
   );
 };

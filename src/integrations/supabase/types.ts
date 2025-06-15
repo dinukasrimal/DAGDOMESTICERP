@@ -142,7 +142,6 @@ export type Database = {
           capacity: number
           created_at: string | null
           id: string
-          mo_count: number
           name: string
           updated_at: string | null
         }
@@ -150,7 +149,6 @@ export type Database = {
           capacity?: number
           created_at?: string | null
           id?: string
-          mo_count?: number
           name: string
           updated_at?: string | null
         }
@@ -158,7 +156,6 @@ export type Database = {
           capacity?: number
           created_at?: string | null
           id?: string
-          mo_count?: number
           name?: string
           updated_at?: string | null
         }
