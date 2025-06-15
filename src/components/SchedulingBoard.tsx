@@ -285,7 +285,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [isMultiSelectMode, selectedOrders, orders]);
 
-  // Fixed handleDrop function to properly schedule all multi-selected orders
+  // Fixed handleDrop function to skip overlap dialog for multi-order drops
   const handleDrop = useCallback(async (e: React.DragEvent, lineId: string, date: Date) => {
     e.preventDefault();
     setDragHighlight(null);
@@ -295,7 +295,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
       
       if (dragData.type === 'multi-order-drag' && dragData.orders) {
-        // Handle multi-order drop - improved to prevent disappearing orders
+        // Handle multi-order drop - place directly without overlap dialog
         const ordersToDrop = dragData.orders as Order[];
         console.log(`📍 Dropping ${ordersToDrop.length} orders on ${lineId} at ${date.toLocaleDateString()}`);
         
@@ -305,52 +305,34 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           await onOrderMovedToPending(order);
         }
         
-        // Schedule orders sequentially
+        // Schedule orders sequentially starting from the target date
         let currentDate = new Date(date);
         for (let i = 0; i < ordersToDrop.length; i++) {
           const order = ordersToDrop[i];
           console.log(`📋 Scheduling order ${i + 1}/${ordersToDrop.length}: ${order.poNumber}`);
           
-          const overlappingOrders = getOverlappingOrders(order, lineId, currentDate);
-          const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
-          
-          if (overlappingOrders.length > 0) {
-            console.log(`⚠️ Found overlapping orders for ${order.poNumber}, showing dialog`);
-            setOverlapDialog({
-              isOpen: true,
-              newOrder: order,
-              overlappingOrders,
-              targetDate: currentDate,
-              targetLine: lineName,
-              originalTargetDate: currentDate
-            });
-            break; // Handle one overlap at a time
-          } else {
-            console.log(`✅ No overlaps for ${order.poNumber}, scheduling directly`);
+          // For multi-order drops, place directly without asking about overlaps
+          const selectedLine = productionLines.find(l => l.id === lineId);
+          if (selectedLine) {
+            const dailyPlan = getContiguousProductionPlan(
+              order.orderQuantity,
+              selectedLine.capacity,
+              currentDate,
+              isHoliday,
+              0
+            );
+            const planDates = Object.keys(dailyPlan);
+            const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
+            const updatedOrder = { ...order, assignedLineId: lineId };
+            await onOrderScheduled(updatedOrder, currentDate, endDate, dailyPlan);
             
-            // Schedule the order directly without dialog
-            const selectedLine = productionLines.find(l => l.id === lineId);
-            if (selectedLine) {
-              const dailyPlan = getContiguousProductionPlan(
-                order.orderQuantity,
-                selectedLine.capacity,
-                currentDate,
-                isHoliday,
-                0
-              );
-              const planDates = Object.keys(dailyPlan);
-              const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
-              const updatedOrder = { ...order, assignedLineId: lineId };
-              await onOrderScheduled(updatedOrder, currentDate, endDate, dailyPlan);
-              
-              // Calculate where this order would end to position next order
-              if (i < ordersToDrop.length - 1) { // Only calculate for non-last orders
-                const estimatedDays = Math.ceil(order.orderQuantity / selectedLine.capacity);
-                const endDateForNext = new Date(currentDate);
-                endDateForNext.setDate(endDateForNext.getDate() + estimatedDays);
-                currentDate = new Date(endDateForNext);
-                currentDate.setDate(currentDate.getDate() + 1); // Start next order day after
-              }
+            // Calculate where this order would end to position next order
+            if (i < ordersToDrop.length - 1) { // Only calculate for non-last orders
+              const estimatedDays = Math.ceil(order.orderQuantity / selectedLine.capacity);
+              const endDateForNext = new Date(currentDate);
+              endDateForNext.setDate(endDateForNext.getDate() + estimatedDays);
+              currentDate = new Date(endDateForNext);
+              currentDate.setDate(currentDate.getDate() + 1); // Start next order day after
             }
           }
         }
@@ -361,7 +343,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         setIsMultiSelectMode(false);
         
       } else if (dragData && dragData.id && dragData.poNumber) {
-        // Handle single order drop (existing logic)
+        // Handle single order drop - show overlap dialog if needed
         const overlappingOrders = getOverlappingOrders(dragData, lineId, date);
         const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
         if (overlappingOrders.length > 0) {
