@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -286,6 +285,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [isMultiSelectMode, selectedOrders, orders]);
 
+  // Fixed handleDrop function to properly schedule all multi-selected orders
   const handleDrop = useCallback(async (e: React.DragEvent, lineId: string, date: Date) => {
     e.preventDefault();
     setDragHighlight(null);
@@ -327,21 +327,30 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             break; // Handle one overlap at a time
           } else {
             console.log(`✅ No overlaps for ${order.poNumber}, scheduling directly`);
-            setScheduleDialog({
-              isOpen: true,
-              order: order,
-              lineId,
-              startDate: currentDate
-            });
             
-            // Calculate where this order would end to position next order
-            const line = productionLines.find(l => l.id === lineId);
-            if (line && i < ordersToDrop.length - 1) { // Only calculate for non-last orders
-              const estimatedDays = Math.ceil(order.orderQuantity / line.capacity);
-              const endDate = new Date(currentDate);
-              endDate.setDate(endDate.getDate() + estimatedDays);
-              currentDate = new Date(endDate);
-              currentDate.setDate(currentDate.getDate() + 1); // Start next order day after
+            // Schedule the order directly without dialog
+            const selectedLine = productionLines.find(l => l.id === lineId);
+            if (selectedLine) {
+              const dailyPlan = getContiguousProductionPlan(
+                order.orderQuantity,
+                selectedLine.capacity,
+                currentDate,
+                isHoliday,
+                0
+              );
+              const planDates = Object.keys(dailyPlan);
+              const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
+              const updatedOrder = { ...order, assignedLineId: lineId };
+              await onOrderScheduled(updatedOrder, currentDate, endDate, dailyPlan);
+              
+              // Calculate where this order would end to position next order
+              if (i < ordersToDrop.length - 1) { // Only calculate for non-last orders
+                const estimatedDays = Math.ceil(order.orderQuantity / selectedLine.capacity);
+                const endDateForNext = new Date(currentDate);
+                endDateForNext.setDate(endDateForNext.getDate() + estimatedDays);
+                currentDate = new Date(endDateForNext);
+                currentDate.setDate(currentDate.getDate() + 1); // Start next order day after
+              }
             }
           }
         }
@@ -376,7 +385,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     } catch (error) {
       console.error('❌ Failed to parse dropped order data:', error);
     }
-  }, [isHoliday, getOverlappingOrders, productionLines, onOrderMovedToPending]);
+  }, [isHoliday, getOverlappingOrders, productionLines, onOrderMovedToPending, onOrderScheduled]);
 
   const [pendingReschedule, setPendingReschedule] = useState<{
     toSchedule: Order[];

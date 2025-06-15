@@ -49,7 +49,7 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
   const actualProductionValues = Object.values(scheduledOrder.actualProduction || {});
   const totalCompleted = actualProductionValues.reduce((sum: number, qty: unknown) => {
     const numQty = typeof qty === 'number' ? qty : 0;
-    return sum + numQty;
+    return (sum as number) + numQty;
   }, 0);
   const completionPercent = scheduledOrder.orderQuantity > 0 
     ? Math.round((totalCompleted / scheduledOrder.orderQuantity) * 100) 
