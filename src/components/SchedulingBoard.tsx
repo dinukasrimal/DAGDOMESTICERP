@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -678,7 +679,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             </div>
           </div>
         );
-      })
+      })}
 
       {/* Multi-select info bar */}
       {isMultiSelectMode && selectedOrders.size > 0 && (
@@ -708,7 +709,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           {/* Header Row */}
           <div className="sticky top-0 z-30 bg-white border-b-2 border-gray-200 shadow-sm flex">
             {/* Production Lines Header - Fixed at front */}
-            <div className="sticky left-0 z-40 w-64 bg-white border-r-2 border-gray-300 shadow-lg">
+            <div className="sticky left-0 z-40 w-80 bg-white border-r-2 border-gray-300 shadow-lg">
               <div className="h-20 p-4 flex items-center justify-center bg-gradient-to-r from-blue-50 to-blue-100 border-r border-gray-300">
                 <div className="flex items-center space-x-3">
                   <CalendarDays className="h-6 w-6 text-blue-600" />
@@ -744,10 +745,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           {productionLines.map(line => (
             <div key={line.id} className="flex border-b border-gray-200">
               {/* Line Header - Fixed at front */}
-              <div className="sticky left-0 z-20 w-64 bg-white border-r-2 border-gray-300 shadow-md">
-                <div className="h-40 p-3 flex flex-col justify-between bg-gradient-to-r from-gray-50 to-gray-100">
+              <div className="sticky left-0 z-20 w-80 bg-white border-r-2 border-gray-300 shadow-md">
+                <div className="h-40 p-4 flex flex-col justify-between bg-gradient-to-r from-gray-50 to-gray-100">
                   <div className="space-y-2">
-                    <div className="font-bold text-gray-800 text-base">{line.name}</div>
+                    <div className="font-bold text-gray-800 text-lg">{line.name}</div>
                     <div className="text-sm text-gray-600">
                       Capacity: <span className="font-semibold text-gray-800">{line.capacity}</span>
                     </div>
@@ -755,11 +756,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                   <Button
                     variant="outline"
                     size="sm"
-                    className="w-full text-xs h-8 flex items-center gap-2 font-medium border-gray-300 hover:bg-blue-50 hover:border-blue-300"
+                    className="w-full text-xs h-9 flex items-center gap-2 font-medium border-gray-300 hover:bg-blue-50 hover:border-blue-300"
                     onClick={() => handleDownloadLinePdf(line.id, line.name)}
                     title="Download Production Plan PDF"
                   >
-                    <FileDown className="w-3 h-3" />
+                    <FileDown className="w-4 h-4" />
                     Download Plan
                   </Button>
                 </div>
