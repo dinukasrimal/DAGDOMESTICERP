@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -68,16 +67,18 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
   };
 
   const handleCheckboxChange = (checked: boolean) => {
-    // Create a synthetic event for the checkbox
-    const syntheticEvent = {
-      stopPropagation: () => {},
-      preventDefault: () => {},
-      target: { closest: () => null },
-      ctrlKey: checked, // Use checked state to simulate ctrl+click
-      metaKey: false
-    } as React.MouseEvent;
-    
+    // Create a proper synthetic event for the checkbox
     if (onOrderClick) {
+      // Call with a properly typed event that simulates ctrl+click for multi-select
+      const syntheticEvent = {
+        ...new MouseEvent('click'),
+        ctrlKey: checked,
+        metaKey: false,
+        stopPropagation: () => {},
+        preventDefault: () => {},
+        target: { closest: () => null }
+      } as unknown as React.MouseEvent;
+      
       onOrderClick(syntheticEvent, scheduledOrder.id);
     }
   };
