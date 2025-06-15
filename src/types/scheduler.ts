@@ -21,6 +21,7 @@ export interface ProductionLine {
   id: string;
   name: string;
   capacity: number;
+  moCount: number; // Add MO count for ramp-up calculations
 }
 
 export interface Holiday {
