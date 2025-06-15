@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -48,10 +47,10 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
 
   // Calculate completion percentage for the order - fix TypeScript errors
   const actualProductionValues = Object.values(scheduledOrder.actualProduction || {});
-  const totalCompleted = actualProductionValues.reduce((sum: number, qty: unknown): number => {
+  const totalCompleted = actualProductionValues.reduce((sum, qty) => {
     const numQty = typeof qty === 'number' ? qty : 0;
     return sum + numQty;
-  }, 0);
+  }, 0 as number);
   const completionPercent = scheduledOrder.orderQuantity > 0 
     ? Math.round((totalCompleted / scheduledOrder.orderQuantity) * 100) 
     : 0;
