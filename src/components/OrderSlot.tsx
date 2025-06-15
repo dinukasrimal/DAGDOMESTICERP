@@ -49,7 +49,7 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
   // Calculate completion percentage for the order - fix TypeScript errors
   const actualProductionValues = Object.values(scheduledOrder.actualProduction || {});
   const totalCompleted = actualProductionValues.reduce((sum: number, qty: unknown) => {
-    const numQty = typeof qty === 'number' ? qty : Number(qty) || 0;
+    const numQty = typeof qty === 'number' ? qty : (typeof qty === 'string' ? Number(qty) : 0) || 0;
     return sum + numQty;
   }, 0);
   const completionPercent = scheduledOrder.orderQuantity > 0 
@@ -297,57 +297,4 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
       </Dialog>
     </div>
   );
-
-  // Helper functions - moved to end
-  const handleClick = (e: React.MouseEvent) => {
-    // Don't trigger click when clicking on checkbox
-    if ((e.target as HTMLElement).closest('[data-checkbox]')) {
-      return;
-    }
-    
-    if (onOrderClick) {
-      onOrderClick(e, scheduledOrder.id);
-    }
-  };
-
-  const handleCheckboxChange = (checked: boolean) => {
-    // Create a proper synthetic event for the checkbox
-    if (onOrderClick) {
-      // Call with a properly typed event that simulates ctrl+click for multi-select
-      const syntheticEvent = {
-        ...new MouseEvent('click'),
-        ctrlKey: checked,
-        metaKey: false,
-        stopPropagation: () => {},
-        preventDefault: () => {},
-        target: { closest: () => null }
-      } as unknown as React.MouseEvent;
-      
-      onOrderClick(syntheticEvent, scheduledOrder.id);
-    }
-  };
-
-  const handleDragStart = (e: React.DragEvent) => {
-    if (onOrderDragStart) {
-      onOrderDragStart(e, scheduledOrder);
-    }
-  };
-
-  const handleDragEnd = (e: React.DragEvent) => {
-    if (onOrderDragEnd) {
-      onOrderDragEnd(e);
-    }
-  };
-
-  const handleMouseEnter = () => {
-    if (setHoveredCard) {
-      setHoveredCard(cardKey);
-    }
-  };
-
-  const handleMouseLeave = () => {
-    if (setHoveredCard) {
-      setHoveredCard(null);
-    }
-  };
 };
