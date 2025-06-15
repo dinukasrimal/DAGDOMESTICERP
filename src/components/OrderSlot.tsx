@@ -5,96 +5,231 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 import { ScheduledOrder } from '../types/scheduler';
-import { Package, Calendar, TrendingUp } from 'lucide-react';
+import { Package, Calendar, TrendingUp, ArrowLeft, Scissors, GripVertical } from 'lucide-react';
 
 interface OrderSlotProps {
   scheduledOrder: any;
   date: Date;
+  isSelected?: boolean;
+  isMultiSelectMode?: boolean;
+  onOrderClick?: (e: React.MouseEvent, orderId: string) => void;
+  onOrderDragStart?: (e: React.DragEvent, order: any) => void;
+  onOrderDragEnd?: (e: React.DragEvent) => void;
+  onOrderMovedToPending?: (order: any) => void;
+  onOrderSplit?: (orderId: string, splitQuantity: number) => void;
+  hoveredCard?: string | null;
+  setHoveredCard?: (cardKey: string | null) => void;
+  shouldHighlightRed?: (order: any, date: Date) => boolean;
 }
 
 export const OrderSlot: React.FC<OrderSlotProps> = ({
   scheduledOrder,
-  date
+  date,
+  isSelected = false,
+  isMultiSelectMode = false,
+  onOrderClick,
+  onOrderDragStart,
+  onOrderDragEnd,
+  onOrderMovedToPending,
+  onOrderSplit,
+  hoveredCard,
+  setHoveredCard,
+  shouldHighlightRed
 }) => {
   const [actualProduction, setActualProduction] = useState<number>(0);
   const [showProductionDialog, setShowProductionDialog] = useState(false);
 
-  const isStartDate = scheduledOrder.startDate.toDateString() === date.toDateString();
-  const isEndDate = scheduledOrder.endDate.toDateString() === date.toDateString();
-  const isMiddleDate = date > scheduledOrder.startDate && date < scheduledOrder.endDate;
+  const dateStr = date.toISOString().split('T')[0];
+  const dailyQty = scheduledOrder.actualProduction?.[dateStr] || 0;
+  const shouldHighlight = shouldHighlightRed ? shouldHighlightRed(scheduledOrder, date) : false;
+  const cardKey = `${scheduledOrder.id}-${dateStr}`;
+  const isHovered = hoveredCard === cardKey;
 
-  // Calculate cumulative production status
-  const getCumulativeStatus = () => {
-    // This would calculate based on actual vs planned production
-    // For now, returning a demo status
-    return Math.random() > 0.5 ? 'on-track' : 'behind';
-  };
+  // Calculate completion percentage for the order
+  const totalCompleted = Object.values(scheduledOrder.actualProduction || {}).reduce((sum, qty) => sum + qty, 0);
+  const completionPercent = Math.round((totalCompleted / scheduledOrder.orderQuantity) * 100);
 
-  const status = getCumulativeStatus();
-
-  const getSlotColor = () => {
-    switch (status) {
-      case 'on-track':
-        return 'bg-green-100 border-green-500 text-green-800';
-      case 'behind':
-        return 'bg-red-100 border-red-500 text-red-800';
-      default:
-        return 'bg-blue-100 border-blue-500 text-blue-800';
+  const handleClick = (e: React.MouseEvent) => {
+    if (onOrderClick) {
+      onOrderClick(e, scheduledOrder.id);
     }
   };
 
-  if (!isStartDate && !isMiddleDate && !isEndDate) {
-    return null;
-  }
+  const handleDragStart = (e: React.DragEvent) => {
+    if (onOrderDragStart) {
+      onOrderDragStart(e, scheduledOrder);
+    }
+  };
+
+  const handleDragEnd = (e: React.DragEvent) => {
+    if (onOrderDragEnd) {
+      onOrderDragEnd(e);
+    }
+  };
+
+  const handleMouseEnter = () => {
+    if (setHoveredCard) {
+      setHoveredCard(cardKey);
+    }
+  };
+
+  const handleMouseLeave = () => {
+    if (setHoveredCard) {
+      setHoveredCard(null);
+    }
+  };
 
   return (
-    <div className="absolute inset-0 p-1">
+    <div className="relative h-full">
       <Dialog>
         <DialogTrigger asChild>
           <div
-            className={`w-full h-full rounded border-2 cursor-pointer hover:shadow-md transition-shadow ${getSlotColor()}`}
+            className={`relative rounded-md text-xs cursor-move transition-all duration-300 border overflow-hidden h-full ${
+              isSelected
+                ? 'ring-2 ring-blue-500 bg-blue-50 shadow-lg border-blue-300 z-30'
+                : shouldHighlight
+                  ? 'bg-red-100 border-red-400 text-red-800 shadow-md z-20'
+                  : 'bg-blue-50 border-blue-200 text-blue-800 hover:bg-blue-100 shadow-sm z-10'
+            } ${
+              isHovered 
+                ? 'scale-110 shadow-2xl z-40 bg-white border-gray-400 text-gray-900' 
+                : ''
+            }`}
+            draggable
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            onClick={handleClick}
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={handleMouseLeave}
           >
-            <div className="p-1 text-xs">
-              {isStartDate && (
-                <div className="font-medium truncate">
-                  {scheduledOrder.order.poNumber}
+            <div className="p-1.5 h-full flex flex-col">
+              {/* Order Header - Always visible */}
+              <div className="flex items-center justify-between mb-1 flex-shrink-0">
+                <div className="flex items-center space-x-1 min-w-0 flex-1">
+                  <GripVertical className="h-2.5 w-2.5 opacity-60 flex-shrink-0" />
+                  <span className="truncate font-semibold text-xs">{scheduledOrder.poNumber}</span>
+                  {isMultiSelectMode && isSelected && (
+                    <div className="w-2 h-2 bg-blue-500 rounded-full flex-shrink-0" />
+                  )}
                 </div>
-              )}
-              <div className="flex items-center space-x-1">
-                <Package className="h-3 w-3" />
-                <span>{scheduledOrder.order.orderQuantity.toLocaleString()}</span>
+                {isHovered && (
+                  <div className="flex space-x-1 flex-shrink-0">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-4 w-4 p-0 hover:bg-red-100"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (onOrderMovedToPending) {
+                          onOrderMovedToPending(scheduledOrder);
+                        }
+                      }}
+                      title="Move back to pending"
+                    >
+                      <ArrowLeft className="h-2.5 w-2.5" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-4 w-4 p-0 hover:bg-gray-100"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (onOrderSplit) {
+                          onOrderSplit(scheduledOrder.id, Math.floor(scheduledOrder.orderQuantity / 2));
+                        }
+                      }}
+                      title="Split order"
+                    >
+                      <Scissors className="h-2.5 w-2.5" />
+                    </Button>
+                  </div>
+                )}
               </div>
-              {(isStartDate || isEndDate) && (
-                <div className="text-xs opacity-75">
-                  {isStartDate ? 'Start' : 'End'}
-                </div>
-              )}
+
+              {/* Order Details */}
+              <div className="flex-1 overflow-hidden">
+                {!isHovered ? (
+                  // Show product and percentage in neutral stage
+                  <div className="space-y-0.5 text-xs">
+                    <div className="truncate opacity-90 font-medium">
+                      {scheduledOrder.styleId}
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="font-medium text-xs">
+                        {dailyQty.toLocaleString()}
+                      </span>
+                      <span className={`text-xs font-semibold px-1 py-0.5 rounded ${
+                        completionPercent >= 100 ? 'bg-green-100 text-green-700' :
+                        completionPercent >= 50 ? 'bg-yellow-100 text-yellow-700' :
+                        'bg-red-100 text-red-700'
+                      }`}>
+                        {completionPercent}%
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  // Full info when hovered
+                  <div className="space-y-1 text-xs">
+                    <div className="truncate opacity-90">
+                      <span className="font-medium">Style:</span> {scheduledOrder.styleId}
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="opacity-90">
+                        <span className="font-medium">Daily:</span> {dailyQty.toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="opacity-90">
+                        <span className="font-medium">Total:</span> {scheduledOrder.orderQuantity.toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="opacity-90">
+                        <span className="font-medium">Cut:</span> {scheduledOrder.cutQuantity.toLocaleString()}
+                      </span>
+                      <span className="opacity-90">
+                        <span className="font-medium">Issue:</span> {scheduledOrder.issueQuantity.toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center pt-1 border-t border-gray-200">
+                      <span className="font-medium">Progress:</span>
+                      <span className={`font-semibold px-2 py-1 rounded ${
+                        completionPercent >= 100 ? 'bg-green-100 text-green-700' :
+                        completionPercent >= 50 ? 'bg-yellow-100 text-yellow-700' :
+                        'bg-red-100 text-red-700'
+                      }`}>
+                        {completionPercent}%
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </DialogTrigger>
         
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Order Details - {scheduledOrder.order.poNumber}</DialogTitle>
+            <DialogTitle>Order Details - {scheduledOrder.poNumber}</DialogTitle>
           </DialogHeader>
           
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="text-sm font-medium">Style ID:</label>
-                <p>{scheduledOrder.order.styleId}</p>
+                <p>{scheduledOrder.styleId}</p>
               </div>
               <div>
                 <label className="text-sm font-medium">Order Quantity:</label>
-                <p>{scheduledOrder.order.orderQuantity.toLocaleString()}</p>
+                <p>{scheduledOrder.orderQuantity.toLocaleString()}</p>
               </div>
               <div>
                 <label className="text-sm font-medium">Cut Quantity:</label>
-                <p>{scheduledOrder.order.cutQuantity.toLocaleString()}</p>
+                <p>{scheduledOrder.cutQuantity.toLocaleString()}</p>
               </div>
               <div>
                 <label className="text-sm font-medium">Issue Quantity:</label>
-                <p>{scheduledOrder.order.issueQuantity.toLocaleString()}</p>
+                <p>{scheduledOrder.issueQuantity.toLocaleString()}</p>
               </div>
             </div>
             
@@ -117,8 +252,8 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
               <div className="flex items-center space-x-2">
                 <TrendingUp className="h-4 w-4" />
                 <span className="font-medium">Status:</span>
-                <Badge variant={status === 'on-track' ? 'default' : 'destructive'}>
-                  {status === 'on-track' ? 'On Track' : 'Behind Schedule'}
+                <Badge variant="default">
+                  On Track
                 </Badge>
               </div>
             </div>

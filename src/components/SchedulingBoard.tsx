@@ -9,6 +9,7 @@ import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown, Search } from 'lucide-react';
 import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
 import { downloadElementAsPdf } from '../lib/pdfUtils';
+import { OrderSlot } from './OrderSlot';
 
 interface SchedulingBoardProps {
   orders: Order[];
@@ -256,19 +257,92 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent, lineId: string, date: Date) => {
+  const handleOrderDragStart = useCallback((e: React.DragEvent, order: Order) => {
+    console.log('🔄 Starting drag for scheduled order:', order.poNumber);
+    e.dataTransfer.effectAllowed = 'move';
+    
+    // If this order is part of a multi-selection, drag all selected orders
+    let ordersToDrag = [order];
+    if (isMultiSelectMode && selectedOrders.has(order.id)) {
+      ordersToDrag = orders.filter(o => selectedOrders.has(o.id));
+      console.log(`🔄 Dragging ${ordersToDrag.length} selected orders`);
+    }
+    
+    e.dataTransfer.setData('text/plain', JSON.stringify({
+      type: 'multi-order-drag',
+      orders: ordersToDrag
+    }));
+
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '0.5';
+    }
+  }, [isMultiSelectMode, selectedOrders, orders]);
+
+  const handleDrop = useCallback(async (e: React.DragEvent, lineId: string, date: Date) => {
     e.preventDefault();
     setDragHighlight(null);
     if (isHoliday(date)) return;
+    
     try {
-      const orderData = JSON.parse(e.dataTransfer.getData('text/plain'));
-      if (orderData && orderData.id && orderData.poNumber) {
-        const overlappingOrders = getOverlappingOrders(orderData, lineId, date);
+      const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
+      
+      if (dragData.type === 'multi-order-drag' && dragData.orders) {
+        // Handle multi-order drop
+        const ordersToDrop = dragData.orders as Order[];
+        console.log(`📍 Dropping ${ordersToDrop.length} orders on ${lineId} at ${date.toLocaleDateString()}`);
+        
+        let currentDate = new Date(date);
+        
+        for (const order of ordersToDrop) {
+          // Move to pending first
+          await onOrderMovedToPending(order);
+          
+          // Then schedule each order one after another
+          const overlappingOrders = getOverlappingOrders(order, lineId, currentDate);
+          const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
+          
+          if (overlappingOrders.length > 0) {
+            setOverlapDialog({
+              isOpen: true,
+              newOrder: order,
+              overlappingOrders,
+              targetDate: currentDate,
+              targetLine: lineName,
+              originalTargetDate: currentDate
+            });
+            break; // Handle one overlap at a time
+          } else {
+            setScheduleDialog({
+              isOpen: true,
+              order: order,
+              lineId,
+              startDate: currentDate
+            });
+            
+            // For subsequent orders, calculate where this one would end
+            const line = productionLines.find(l => l.id === lineId);
+            if (line) {
+              const estimatedDays = Math.ceil(order.orderQuantity / line.capacity);
+              const endDate = new Date(currentDate);
+              endDate.setDate(endDate.getDate() + estimatedDays);
+              currentDate = new Date(endDate);
+              currentDate.setDate(currentDate.getDate() + 1); // Start next order day after
+            }
+          }
+        }
+        
+        // Clear selection after successful multi-drop
+        setSelectedOrders(new Set());
+        setIsMultiSelectMode(false);
+        
+      } else if (dragData && dragData.id && dragData.poNumber) {
+        // Handle single order drop (existing logic)
+        const overlappingOrders = getOverlappingOrders(dragData, lineId, date);
         const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
         if (overlappingOrders.length > 0) {
           setOverlapDialog({
             isOpen: true,
-            newOrder: orderData,
+            newOrder: dragData,
             overlappingOrders,
             targetDate: date,
             targetLine: lineName,
@@ -277,7 +351,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         } else {
           setScheduleDialog({
             isOpen: true,
-            order: orderData,
+            order: dragData,
             lineId,
             startDate: date
           });
@@ -286,7 +360,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     } catch (error) {
       console.error('❌ Failed to parse dropped order data:', error);
     }
-  }, [isHoliday, getOverlappingOrders, productionLines]);
+  }, [isHoliday, getOverlappingOrders, productionLines, onOrderMovedToPending]);
 
   const [pendingReschedule, setPendingReschedule] = useState<{
     toSchedule: Order[];
@@ -467,16 +541,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
     setPlanningMethod('capacity');
     setSelectedRampUpPlanId('');
-  }, []);
-
-  const handleOrderDragStart = useCallback((e: React.DragEvent, order: Order) => {
-    console.log('🔄 Starting drag for scheduled order:', order.poNumber);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', JSON.stringify(order));
-
-    if (e.currentTarget instanceof HTMLElement) {
-      e.currentTarget.style.opacity = '0.5';
-    }
   }, []);
 
   const handleOrderDragEnd = useCallback((e: React.DragEvent) => {
@@ -748,148 +812,37 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                       <div className="absolute inset-0 p-1 overflow-hidden">
                         <div className="h-full flex flex-col gap-0.5">
                           {ordersInCell.map((scheduledOrder, index) => {
-                            const dateStr = date.toISOString().split('T')[0];
-                            const dailyQty = scheduledOrder.actualProduction?.[dateStr] || 0;
-                            const shouldHighlight = shouldHighlightRed(scheduledOrder, date);
+                            const cardKey = `${scheduledOrder.id}-${date.toISOString().split('T')[0]}`;
                             const isSelected = selectedOrders.has(scheduledOrder.id);
-                            const cardKey = `${scheduledOrder.id}-${dateStr}`;
-                            const isHovered = hoveredCard === cardKey;
-
-                            // Calculate completion percentage for the order
-                            const totalCompleted = Object.values(scheduledOrder.actualProduction || {}).reduce((sum, qty) => sum + qty, 0);
-                            const completionPercent = Math.round((totalCompleted / scheduledOrder.orderQuantity) * 100);
-
-                            // Calculate available height for each card - ensure minimum height
                             const cardCount = ordersInCell.length;
                             const availableHeight = 152; // 160px - 8px padding
                             const minCardHeight = 36; // Minimum height to show product and percentage
                             const idealCardHeight = Math.max(minCardHeight, Math.floor(availableHeight / cardCount) - 2);
-                            const cardHeight = cardCount > 3 ? minCardHeight : idealCardHeight; // Force min height if too many cards
+                            const cardHeight = cardCount > 3 ? minCardHeight : idealCardHeight;
 
                             return (
                               <div
                                 key={cardKey}
-                                className={`relative rounded-md text-xs cursor-move transition-all duration-300 border overflow-hidden ${
-                                  isSelected
-                                    ? 'ring-2 ring-blue-500 bg-blue-50 shadow-lg border-blue-300 z-30'
-                                    : shouldHighlight
-                                      ? 'bg-red-100 border-red-400 text-red-800 shadow-md z-20'
-                                      : index % 2 === 0
-                                        ? 'bg-blue-50 border-blue-200 text-blue-800 hover:bg-blue-100 shadow-sm z-10'
-                                        : 'bg-green-50 border-green-200 text-green-800 hover:bg-green-100 shadow-sm z-10'
-                                } ${
-                                  isHovered 
-                                    ? 'scale-110 shadow-2xl z-40 bg-white border-gray-400 text-gray-900' 
-                                    : ''
-                                }`}
                                 style={{
-                                  height: isHovered ? 'auto' : `${cardHeight}px`,
-                                  minHeight: isHovered ? '120px' : `${cardHeight}px`,
-                                  maxHeight: isHovered ? '200px' : `${cardHeight}px`
+                                  height: hoveredCard === cardKey ? 'auto' : `${cardHeight}px`,
+                                  minHeight: hoveredCard === cardKey ? '120px' : `${cardHeight}px`,
+                                  maxHeight: hoveredCard === cardKey ? '200px' : `${cardHeight}px`
                                 }}
-                                draggable
-                                onDragStart={(e) => handleOrderDragStart(e, scheduledOrder)}
-                                onDragEnd={handleOrderDragEnd}
-                                onClick={(e) => handleOrderClick(e, scheduledOrder.id)}
-                                onMouseEnter={() => setHoveredCard(cardKey)}
-                                onMouseLeave={() => setHoveredCard(null)}
                               >
-                                <div className="p-1.5 h-full flex flex-col">
-                                  {/* Order Header - Always visible */}
-                                  <div className="flex items-center justify-between mb-1 flex-shrink-0">
-                                    <div className="flex items-center space-x-1 min-w-0 flex-1">
-                                      <GripVertical className="h-2.5 w-2.5 opacity-60 flex-shrink-0" />
-                                      <span className="truncate font-semibold text-xs">{scheduledOrder.poNumber}</span>
-                                    </div>
-                                    {isHovered && (
-                                      <div className="flex space-x-1 flex-shrink-0">
-                                        <Button
-                                          size="sm"
-                                          variant="ghost"
-                                          className="h-4 w-4 p-0 hover:bg-red-100"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            onOrderMovedToPending(scheduledOrder);
-                                          }}
-                                          title="Move back to pending"
-                                        >
-                                          <ArrowLeft className="h-2.5 w-2.5" />
-                                        </Button>
-                                        <Button
-                                          size="sm"
-                                          variant="ghost"
-                                          className="h-4 w-4 p-0 hover:bg-gray-100"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            onOrderSplit(scheduledOrder.id, Math.floor(scheduledOrder.orderQuantity / 2));
-                                          }}
-                                          title="Split order"
-                                        >
-                                          <Scissors className="h-2.5 w-2.5" />
-                                        </Button>
-                                      </div>
-                                    )}
-                                  </div>
-
-                                  {/* Order Details */}
-                                  <div className="flex-1 overflow-hidden">
-                                    {!isHovered ? (
-                                      // Show product and percentage in neutral stage
-                                      <div className="space-y-0.5 text-xs">
-                                        <div className="truncate opacity-90 font-medium">
-                                          {scheduledOrder.styleId}
-                                        </div>
-                                        <div className="flex justify-between items-center">
-                                          <span className="font-medium text-xs">
-                                            {dailyQty.toLocaleString()}
-                                          </span>
-                                          <span className={`text-xs font-semibold px-1 py-0.5 rounded ${
-                                            completionPercent >= 100 ? 'bg-green-100 text-green-700' :
-                                            completionPercent >= 50 ? 'bg-yellow-100 text-yellow-700' :
-                                            'bg-red-100 text-red-700'
-                                          }`}>
-                                            {completionPercent}%
-                                          </span>
-                                        </div>
-                                      </div>
-                                    ) : (
-                                      // Full info when hovered
-                                      <div className="space-y-1 text-xs">
-                                        <div className="truncate opacity-90">
-                                          <span className="font-medium">Style:</span> {scheduledOrder.styleId}
-                                        </div>
-                                        <div className="flex justify-between">
-                                          <span className="opacity-90">
-                                            <span className="font-medium">Daily:</span> {dailyQty.toLocaleString()}
-                                          </span>
-                                        </div>
-                                        <div className="flex justify-between">
-                                          <span className="opacity-90">
-                                            <span className="font-medium">Total:</span> {scheduledOrder.orderQuantity.toLocaleString()}
-                                          </span>
-                                        </div>
-                                        <div className="flex justify-between">
-                                          <span className="opacity-90">
-                                            <span className="font-medium">Cut:</span> {scheduledOrder.cutQuantity.toLocaleString()}
-                                          </span>
-                                          <span className="opacity-90">
-                                            <span className="font-medium">Issue:</span> {scheduledOrder.issueQuantity.toLocaleString()}
-                                          </span>
-                                        </div>
-                                        <div className="flex justify-between items-center pt-1 border-t border-gray-200">
-                                          <span className="font-medium">Progress:</span>
-                                          <span className={`font-semibold px-2 py-1 rounded ${
-                                            completionPercent >= 100 ? 'bg-green-100 text-green-700' :
-                                            completionPercent >= 50 ? 'bg-yellow-100 text-yellow-700' :
-                                            'bg-red-100 text-red-700'
-                                          }`}>
-                                            {completionPercent}%
-                                          </span>
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
+                                <OrderSlot
+                                  scheduledOrder={scheduledOrder}
+                                  date={date}
+                                  isSelected={isSelected}
+                                  isMultiSelectMode={isMultiSelectMode}
+                                  onOrderClick={handleOrderClick}
+                                  onOrderDragStart={handleOrderDragStart}
+                                  onOrderDragEnd={handleOrderDragEnd}
+                                  onOrderMovedToPending={onOrderMovedToPending}
+                                  onOrderSplit={onOrderSplit}
+                                  hoveredCard={hoveredCard}
+                                  setHoveredCard={setHoveredCard}
+                                  shouldHighlightRed={shouldHighlightRed}
+                                />
                               </div>
                             );
                           })}
