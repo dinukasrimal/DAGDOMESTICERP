@@ -15,22 +15,13 @@ export class SupabaseDataService {
       throw error;
     }
     
-    return (data || []).map(line => ({
-      id: line.id,
-      name: line.name,
-      capacity: line.capacity,
-      moCount: line.mo_count || 0
-    }));
+    return data || [];
   }
 
   async createProductionLine(line: Omit<ProductionLine, 'id'>): Promise<ProductionLine> {
     const { data, error } = await supabase
       .from('production_lines')
-      .insert([{
-        name: line.name,
-        capacity: line.capacity,
-        mo_count: line.moCount || 0
-      }])
+      .insert([line])
       .select()
       .single();
     
@@ -39,23 +30,13 @@ export class SupabaseDataService {
       throw error;
     }
     
-    return {
-      id: data.id,
-      name: data.name,
-      capacity: data.capacity,
-      moCount: data.mo_count || 0
-    };
+    return data;
   }
 
   async updateProductionLine(id: string, updates: Partial<ProductionLine>): Promise<ProductionLine> {
-    const updateData: any = {};
-    if (updates.name !== undefined) updateData.name = updates.name;
-    if (updates.capacity !== undefined) updateData.capacity = updates.capacity;
-    if (updates.moCount !== undefined) updateData.mo_count = updates.moCount;
-
     const { data, error } = await supabase
       .from('production_lines')
-      .update(updateData)
+      .update(updates)
       .eq('id', id)
       .select()
       .single();
@@ -65,12 +46,7 @@ export class SupabaseDataService {
       throw error;
     }
     
-    return {
-      id: data.id,
-      name: data.name,
-      capacity: data.capacity,
-      moCount: data.mo_count || 0
-    };
+    return data;
   }
 
   async deleteProductionLine(id: string): Promise<void> {
@@ -296,6 +272,7 @@ export class SupabaseDataService {
     }
   }
 
+  // Orders
   async getOrders(): Promise<Order[]> {
     const { data, error } = await supabase
       .from('orders')
