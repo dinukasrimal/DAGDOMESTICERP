@@ -48,7 +48,7 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
 
   // Calculate completion percentage for the order - fix TypeScript errors
   const actualProductionValues = Object.values(scheduledOrder.actualProduction || {});
-  const totalCompleted = actualProductionValues.reduce((sum, qty) => {
+  const totalCompleted: number = actualProductionValues.reduce((sum: number, qty: unknown): number => {
     let numQty = 0;
     if (typeof qty === 'number') {
       numQty = qty;
@@ -56,8 +56,8 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
       const parsed = Number(qty);
       numQty = isNaN(parsed) ? 0 : parsed;
     }
-    return (sum as number) + numQty;
-  }, 0 as number);
+    return sum + numQty;
+  }, 0);
   
   const completionPercent = scheduledOrder.orderQuantity > 0 
     ? Math.round((totalCompleted / scheduledOrder.orderQuantity) * 100) 
