@@ -298,34 +298,48 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
       
       if (dragData.type === 'multi-order-drag' && dragData.orders) {
-        // Handle multi-order drop - place directly without moving existing orders
+        // Handle multi-order drop - place directly without overlap dialog or moving other orders
         const ordersToDrop = dragData.orders as Order[];
         console.log(`📍 Multi-drop: ${ordersToDrop.length} orders on ${lineId} at ${date.toLocaleDateString()}`);
         
-        // For multi-order drops, place sequentially starting from the target date
-        // without moving any existing orders to pending
+        // For multi-order drops, don't move existing orders to pending - just place sequentially
         let currentDate = new Date(date);
-        
         for (let i = 0; i < ordersToDrop.length; i++) {
           const order = ordersToDrop[i];
           console.log(`📋 Scheduling order ${i + 1}/${ordersToDrop.length}: ${order.poNumber}`);
           
-          const selectedLine = productionLines.find(l => l.id === lineId);
-          if (!selectedLine) continue;
-          
-          // Calculate daily plan respecting existing capacity usage
-          const dailyPlan = calculateDailyProductionWithSharing(order, selectedLine, currentDate);
-          
-          const planDates = Object.keys(dailyPlan);
-          if (planDates.length > 0) {
-            const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
-            const updatedOrder = { ...order, assignedLineId: lineId };
-            await onOrderScheduled(updatedOrder, currentDate, endDate, dailyPlan);
+          // Find next available date that doesn't conflict
+          while (true) {
+            const selectedLine = productionLines.find(l => l.id === lineId);
+            if (!selectedLine) break;
             
-            // Calculate where this order would end to position next order
-            if (i < ordersToDrop.length - 1) { // Only calculate for non-last orders
-              currentDate = new Date(endDate);
-              currentDate.setDate(currentDate.getDate() + 1); // Start next order day after
+            // Check if we can place the order starting from currentDate
+            const dailyPlan = getContiguousProductionPlan(
+              order.orderQuantity,
+              selectedLine.capacity,
+              currentDate,
+              isHoliday,
+              0
+            );
+            
+            const planDates = Object.keys(dailyPlan);
+            if (planDates.length > 0) {
+              const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
+              const updatedOrder = { ...order, assignedLineId: lineId };
+              await onOrderScheduled(updatedOrder, currentDate, endDate, dailyPlan);
+              
+              // Calculate where this order would end to position next order
+              if (i < ordersToDrop.length - 1) { // Only calculate for non-last orders
+                const estimatedDays = Math.ceil(order.orderQuantity / selectedLine.capacity);
+                const endDateForNext = new Date(currentDate);
+                endDateForNext.setDate(endDateForNext.getDate() + estimatedDays);
+                currentDate = new Date(endDateForNext);
+                currentDate.setDate(currentDate.getDate() + 1); // Start next order day after
+              }
+              break;
+            } else {
+              // Move to next day if can't place
+              currentDate.setDate(currentDate.getDate() + 1);
             }
           }
         }
@@ -387,7 +401,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     } catch (error) {
       console.error('❌ Failed to parse dropped order data:', error);
     }
-  }, [isHoliday, getOverlappingOrders, productionLines, onOrderScheduled, calculateDailyProductionWithSharing]);
+  }, [isHoliday, getOverlappingOrders, productionLines, onOrderScheduled]);
 
   const [pendingReschedule, setPendingReschedule] = useState<{
     toSchedule: Order[];
