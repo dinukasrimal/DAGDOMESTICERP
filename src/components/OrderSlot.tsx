@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
+import { Checkbox } from './ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 import { ScheduledOrder } from '../types/scheduler';
 import { Package, Calendar, TrendingUp, ArrowLeft, Scissors, GripVertical } from 'lucide-react';
@@ -45,13 +46,39 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
   const cardKey = `${scheduledOrder.id}-${dateStr}`;
   const isHovered = hoveredCard === cardKey;
 
-  // Calculate completion percentage for the order
-  const totalCompleted = Object.values(scheduledOrder.actualProduction || {}).reduce((sum, qty) => sum + qty, 0);
-  const completionPercent = Math.round((totalCompleted / scheduledOrder.orderQuantity) * 100);
+  // Calculate completion percentage for the order - fix TypeScript errors
+  const actualProductionValues = Object.values(scheduledOrder.actualProduction || {});
+  const totalCompleted = actualProductionValues.reduce((sum: number, qty: unknown) => {
+    const numQty = typeof qty === 'number' ? qty : 0;
+    return sum + numQty;
+  }, 0);
+  const completionPercent = scheduledOrder.orderQuantity > 0 
+    ? Math.round((totalCompleted / scheduledOrder.orderQuantity) * 100) 
+    : 0;
 
   const handleClick = (e: React.MouseEvent) => {
+    // Don't trigger click when clicking on checkbox
+    if ((e.target as HTMLElement).closest('[data-checkbox]')) {
+      return;
+    }
+    
     if (onOrderClick) {
       onOrderClick(e, scheduledOrder.id);
+    }
+  };
+
+  const handleCheckboxChange = (checked: boolean) => {
+    // Create a synthetic event for the checkbox
+    const syntheticEvent = {
+      stopPropagation: () => {},
+      preventDefault: () => {},
+      target: { closest: () => null },
+      ctrlKey: checked, // Use checked state to simulate ctrl+click
+      metaKey: false
+    } as React.MouseEvent;
+    
+    if (onOrderClick) {
+      onOrderClick(syntheticEvent, scheduledOrder.id);
     }
   };
 
@@ -108,9 +135,15 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
                 <div className="flex items-center space-x-1 min-w-0 flex-1">
                   <GripVertical className="h-2.5 w-2.5 opacity-60 flex-shrink-0" />
                   <span className="truncate font-semibold text-xs">{scheduledOrder.poNumber}</span>
-                  {isMultiSelectMode && isSelected && (
-                    <div className="w-2 h-2 bg-blue-500 rounded-full flex-shrink-0" />
-                  )}
+                  {/* Checkbox for multi-select */}
+                  <div data-checkbox className="flex-shrink-0">
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={handleCheckboxChange}
+                      className="h-3 w-3"
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </div>
                 </div>
                 {isHovered && (
                   <div className="flex space-x-1 flex-shrink-0">

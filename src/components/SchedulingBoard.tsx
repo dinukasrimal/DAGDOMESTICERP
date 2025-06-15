@@ -219,20 +219,26 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return dailyPlan;
   }, [isHoliday, planningMethod, selectedRampUpPlanId, rampUpPlans, getAvailableCapacity]);
 
-  // Multi-select functionality
+  // Multi-select functionality - updated to work with checkboxes
   const handleOrderClick = useCallback((e: React.MouseEvent, orderId: string) => {
+    // Always enable multi-select mode when checkbox is used (simulated via ctrlKey)
     if (e.ctrlKey || e.metaKey) {
       setIsMultiSelectMode(true);
       setSelectedOrders(prev => {
         const newSet = new Set(prev);
         if (newSet.has(orderId)) {
           newSet.delete(orderId);
+          // If no orders selected, exit multi-select mode
+          if (newSet.size === 0) {
+            setIsMultiSelectMode(false);
+          }
         } else {
           newSet.add(orderId);
         }
         return newSet;
       });
     } else if (!selectedOrders.has(orderId)) {
+      // Clear selection if clicking on unselected order without ctrl
       setSelectedOrders(new Set());
       setIsMultiSelectMode(false);
     }
@@ -270,7 +276,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     
     e.dataTransfer.setData('text/plain', JSON.stringify({
       type: 'multi-order-drag',
-      orders: ordersToDrag
+      orders: ordersToDrag,
+      sourceOrderId: order.id // Track which order initiated the drag
     }));
 
     if (e.currentTarget instanceof HTMLElement) {
@@ -287,21 +294,27 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
       
       if (dragData.type === 'multi-order-drag' && dragData.orders) {
-        // Handle multi-order drop
+        // Handle multi-order drop - improved to prevent disappearing orders
         const ordersToDrop = dragData.orders as Order[];
         console.log(`📍 Dropping ${ordersToDrop.length} orders on ${lineId} at ${date.toLocaleDateString()}`);
         
-        let currentDate = new Date(date);
-        
+        // Move all orders to pending first to prevent conflicts
+        console.log('📤 Moving all selected orders to pending first...');
         for (const order of ordersToDrop) {
-          // Move to pending first
           await onOrderMovedToPending(order);
+        }
+        
+        // Schedule orders sequentially
+        let currentDate = new Date(date);
+        for (let i = 0; i < ordersToDrop.length; i++) {
+          const order = ordersToDrop[i];
+          console.log(`📋 Scheduling order ${i + 1}/${ordersToDrop.length}: ${order.poNumber}`);
           
-          // Then schedule each order one after another
           const overlappingOrders = getOverlappingOrders(order, lineId, currentDate);
           const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
           
           if (overlappingOrders.length > 0) {
+            console.log(`⚠️ Found overlapping orders for ${order.poNumber}, showing dialog`);
             setOverlapDialog({
               isOpen: true,
               newOrder: order,
@@ -312,6 +325,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             });
             break; // Handle one overlap at a time
           } else {
+            console.log(`✅ No overlaps for ${order.poNumber}, scheduling directly`);
             setScheduleDialog({
               isOpen: true,
               order: order,
@@ -319,9 +333,9 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
               startDate: currentDate
             });
             
-            // For subsequent orders, calculate where this one would end
+            // Calculate where this order would end to position next order
             const line = productionLines.find(l => l.id === lineId);
-            if (line) {
+            if (line && i < ordersToDrop.length - 1) { // Only calculate for non-last orders
               const estimatedDays = Math.ceil(order.orderQuantity / line.capacity);
               const endDate = new Date(currentDate);
               endDate.setDate(endDate.getDate() + estimatedDays);
@@ -332,6 +346,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         }
         
         // Clear selection after successful multi-drop
+        console.log('🧹 Clearing selection after drop');
         setSelectedOrders(new Set());
         setIsMultiSelectMode(false);
         
@@ -547,9 +562,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     if (e.currentTarget instanceof HTMLElement) {
       e.currentTarget.style.opacity = '1';
     }
-
-    setSelectedOrders(new Set());
-    setIsMultiSelectMode(false);
+    // Don't clear selection on drag end to maintain multi-select state
   }, []);
 
   const shouldHighlightRed = useCallback((order: Order, date: Date) => {
@@ -665,14 +678,14 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             </div>
           </div>
         );
-      })}
+      })
 
       {/* Multi-select info bar */}
       {isMultiSelectMode && selectedOrders.size > 0 && (
         <div className="sticky top-16 z-20 bg-blue-50 border-b border-blue-200 px-4 py-2">
           <div className="flex items-center justify-between">
             <span className="text-blue-800 font-medium text-sm">
-              {selectedOrders.size} orders selected - Drag to move together
+              {selectedOrders.size} orders selected - Use checkboxes to select/deselect, then drag to move together
             </span>
             <Button
               size="sm"
