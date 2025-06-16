@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -67,30 +68,45 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [hoveredCard, setHoveredCard] = useState<string | null>(null);
 
-  // Generate date range dynamically based on scheduled orders
+  // Generate date range that includes both past and future dates based on scheduled orders
   const dates = useMemo(() => {
     const today = new Date();
-    let maxEndDate = new Date(today);
-    maxEndDate.setDate(maxEndDate.getDate() + 30); // Default minimum 30 days
-
-    // Find the latest end date from all scheduled orders
-    const scheduledOrders = orders.filter(order => order.status === 'scheduled' && order.planEndDate);
+    
+    // Find the earliest and latest dates from all scheduled orders
+    const scheduledOrders = orders.filter(order => 
+      order.status === 'scheduled' && order.planStartDate && order.planEndDate
+    );
+    
+    let earliestDate = new Date(today);
+    let latestDate = new Date(today);
+    
     if (scheduledOrders.length > 0) {
-      const latestEndDate = Math.max(...scheduledOrders.map(order => order.planEndDate!.getTime()));
-      const calculatedMaxDate = new Date(latestEndDate);
-      calculatedMaxDate.setDate(calculatedMaxDate.getDate() + 14); // Add 2 weeks buffer
+      const startDates = scheduledOrders.map(order => order.planStartDate!.getTime());
+      const endDates = scheduledOrders.map(order => order.planEndDate!.getTime());
       
-      if (calculatedMaxDate > maxEndDate) {
-        maxEndDate = calculatedMaxDate;
-      }
+      earliestDate = new Date(Math.min(...startDates));
+      latestDate = new Date(Math.max(...endDates));
     }
-
-    // Calculate number of days from today to maxEndDate
-    const daysDiff = Math.ceil((maxEndDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-    const numberOfDays = Math.max(30, daysDiff); // Ensure at least 30 days
-
-    return Array.from({ length: numberOfDays }, (_, i) => {
-      const date = new Date(today);
+    
+    // Add buffer: 2 weeks before earliest and 4 weeks after latest (or minimum 6 weeks from today)
+    const startDate = new Date(Math.min(earliestDate.getTime(), today.getTime()));
+    startDate.setDate(startDate.getDate() - 14); // 2 weeks buffer before
+    
+    const endDate = new Date(Math.max(latestDate.getTime(), today.getTime()));
+    endDate.setDate(endDate.getDate() + 28); // 4 weeks buffer after
+    
+    // Ensure minimum 6 weeks from today
+    const minEndDate = new Date(today);
+    minEndDate.setDate(minEndDate.getDate() + 42); // 6 weeks
+    if (endDate < minEndDate) {
+      endDate.setTime(minEndDate.getTime());
+    }
+    
+    // Calculate total days
+    const totalDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    
+    return Array.from({ length: totalDays }, (_, i) => {
+      const date = new Date(startDate);
       date.setDate(date.getDate() + i);
       return date;
     });
@@ -288,7 +304,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [isMultiSelectMode, selectedOrders, orders]);
 
-  // Helper function to get contiguous production plan with capacity awareness
+  // Improved capacity-aware production plan that respects the exact start date
   const getCapacityAwareProductionPlan = useCallback((
     qty: number,
     lineCapacity: number,
@@ -297,6 +313,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     lineId: string,
     fillFirstDay: number = 0
   ) => {
+    console.log(`📊 Planning ${qty} units starting ${startDate.toLocaleDateString()}, fillFirstDay: ${fillFirstDay}`);
+    
     const plan: { [date: string]: number } = {};
     let remainingQty = qty;
     let currentDate = new Date(startDate);
@@ -321,6 +339,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         if (planned > 0) {
           plan[dayStr] = planned;
           remainingQty -= planned;
+          console.log(`📅 ${dayStr}: planned ${planned}, remaining ${remainingQty}`);
         }
       }
       currentDate.setDate(currentDate.getDate() + 1);
@@ -328,7 +347,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
     
     return plan;
-  }, [getAvailableCapacity, isHoliday]);
+  }, [getAvailableCapacity]);
 
   // Fixed handleDrop function with proper capacity-aware multi-order scheduling
   const handleDrop = useCallback(async (e: React.DragEvent, lineId: string, date: Date) => {
@@ -347,12 +366,16 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         const selectedLine = productionLines.find(l => l.id === lineId);
         if (!selectedLine) return;
         
+        // Start from the exact target date, not today or any other calculated date
         let currentStartDate = new Date(date);
         let remainingCapacityOnCurrentDate = getAvailableCapacity(lineId, currentStartDate);
         
+        console.log(`🎯 Starting multi-drop at exact target date: ${currentStartDate.toLocaleDateString()}`);
+        console.log(`💾 Available capacity on target date: ${remainingCapacityOnCurrentDate}`);
+        
         for (let i = 0; i < ordersToDrop.length; i++) {
           const order = ordersToDrop[i];
-          console.log(`📋 Scheduling order ${i + 1}/${ordersToDrop.length}: ${order.poNumber}`);
+          console.log(`📋 Scheduling order ${i + 1}/${ordersToDrop.length}: ${order.poNumber} starting ${currentStartDate.toLocaleDateString()}`);
           
           // Calculate production plan for this order
           let dailyPlan: { [date: string]: number };
@@ -368,7 +391,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
               remainingCapacityOnCurrentDate
             );
           } else {
-            // Subsequent orders: use remaining capacity from previous order's end date
+            // Subsequent orders: use remaining capacity from current start date
             dailyPlan = getCapacityAwareProductionPlan(
               order.orderQuantity,
               selectedLine.capacity,
@@ -385,25 +408,22 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
             const updatedOrder = { ...order, assignedLineId: lineId };
             
+            console.log(`✅ Order ${order.poNumber} scheduled: ${startDate.toLocaleDateString()} to ${endDate.toLocaleDateString()}`);
             await onOrderScheduled(updatedOrder, startDate, endDate, dailyPlan);
             
             // Calculate next starting position for the following order
             if (i < ordersToDrop.length - 1) {
               const lastDayStr = endDate.toISOString().split('T')[0];
               const usedOnLastDay = dailyPlan[lastDayStr] || 0;
-              const remainingOnLastDay = selectedLine.capacity - usedOnLastDay;
+              const actualRemainingCapacity = selectedLine.capacity - usedOnLastDay;
               
-              // Calculate total capacity used on the last day by all existing orders
-              const totalUsedOnLastDay = getOrdersForCell(lineId, endDate).reduce((sum, existingOrder) => {
-                return sum + (existingOrder.actualProduction?.[lastDayStr] || 0);
-              }, 0) + usedOnLastDay; // Add the current order's usage
-              
-              const actualRemainingCapacity = selectedLine.capacity - totalUsedOnLastDay;
+              console.log(`🔄 Last day ${lastDayStr}: used ${usedOnLastDay}, remaining ${actualRemainingCapacity}`);
               
               if (actualRemainingCapacity > 0) {
                 // Continue on the same day with remaining capacity
                 currentStartDate = new Date(endDate);
                 remainingCapacityOnCurrentDate = actualRemainingCapacity;
+                console.log(`↪️ Continuing on same day with ${remainingCapacityOnCurrentDate} capacity`);
               } else {
                 // Move to next working day
                 currentStartDate = new Date(endDate);
@@ -415,6 +435,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                 }
                 
                 remainingCapacityOnCurrentDate = 0; // Will use full capacity of new day
+                console.log(`➡️ Moving to next working day: ${currentStartDate.toLocaleDateString()}`);
               }
             }
           }
@@ -477,7 +498,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     } catch (error) {
       console.error('❌ Failed to parse dropped order data:', error);
     }
-  }, [isHoliday, getOverlappingOrders, productionLines, onOrderScheduled, getCapacityAwareProductionPlan, getAvailableCapacity, getOrdersForCell]);
+  }, [isHoliday, getOverlappingOrders, productionLines, onOrderScheduled, getCapacityAwareProductionPlan, getAvailableCapacity]);
 
   const [pendingReschedule, setPendingReschedule] = useState<{
     toSchedule: Order[];
