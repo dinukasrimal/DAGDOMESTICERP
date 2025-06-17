@@ -5,7 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Label } from './ui/label';
-import { ToggleGroup, ToggleGroupItem } from './ui/toggle-group';
+import { Checkbox } from './ui/checkbox';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown, Search } from 'lucide-react';
 import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
@@ -32,7 +32,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   onOrderSplit
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [timeFilter, setTimeFilter] = useState<'week' | 'month' | 'all'>('month');
+  
+  // Year/Month selection state
+  const [selectedYears, setSelectedYears] = useState<number[]>([new Date().getFullYear()]);
+  const [selectedMonths, setSelectedMonths] = useState<number[]>([new Date().getMonth()]);
   
   const [scheduleDialog, setScheduleDialog] = useState<{
     isOpen: boolean;
@@ -70,75 +73,59 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [hoveredCard, setHoveredCard] = useState<string | null>(null);
 
-  // Generate date range based on time filter
+  // Generate available years and months
+  const availableYears = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    return Array.from({ length: 5 }, (_, i) => currentYear - 1 + i); // Previous year to 3 years ahead
+  }, []);
+
+  const availableMonths = useMemo(() => [
+    { value: 0, label: 'January' },
+    { value: 1, label: 'February' },
+    { value: 2, label: 'March' },
+    { value: 3, label: 'April' },
+    { value: 4, label: 'May' },
+    { value: 5, label: 'June' },
+    { value: 6, label: 'July' },
+    { value: 7, label: 'August' },
+    { value: 8, label: 'September' },
+    { value: 9, label: 'October' },
+    { value: 10, label: 'November' },
+    { value: 11, label: 'December' }
+  ], []);
+
+  // Generate date range based on selected years and months
   const dates = useMemo(() => {
-    const today = new Date();
-    let minStartDate = new Date(today);
-    let maxEndDate = new Date(today);
+    if (selectedYears.length === 0 || selectedMonths.length === 0) {
+      // Fallback to current month if nothing selected
+      const today = new Date();
+      const start = new Date(today.getFullYear(), today.getMonth(), 1);
+      const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+      
+      const daysDiff = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+      return Array.from({ length: daysDiff }, (_, i) => {
+        const date = new Date(start);
+        date.setDate(date.getDate() + i);
+        return date;
+      });
+    }
+
+    // Create all date combinations for selected years and months
+    const allDates: Date[] = [];
     
-    // Set date range based on filter
-    if (timeFilter === 'week') {
-      // Show current week + next 3 weeks
-      const startOfWeek = new Date(today);
-      startOfWeek.setDate(today.getDate() - today.getDay());
-      minStartDate = startOfWeek;
-      
-      maxEndDate = new Date(startOfWeek);
-      maxEndDate.setDate(startOfWeek.getDate() + 28); // 4 weeks
-    } else if (timeFilter === 'month') {
-      // Show current month + next 2 months
-      const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-      minStartDate = startOfMonth;
-      
-      maxEndDate = new Date(today.getFullYear(), today.getMonth() + 3, 0); // End of 3rd month
-    } else {
-      // 'all' - include past dates where orders are scheduled + future buffer
-      maxEndDate.setDate(maxEndDate.getDate() + 90); // Default 90 days into future
-    }
-
-    // For 'all' filter, adjust for scheduled orders
-    if (timeFilter === 'all') {
-      const scheduledOrders = orders.filter(order => order.status === 'scheduled');
-      
-      if (scheduledOrders.length > 0) {
-        const earliestStartDate = Math.min(
-          ...scheduledOrders
-            .filter(order => order.planStartDate)
-            .map(order => order.planStartDate!.getTime())
-        );
+    selectedYears.forEach(year => {
+      selectedMonths.forEach(month => {
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
         
-        const latestEndDate = Math.max(
-          ...scheduledOrders
-            .filter(order => order.planEndDate)
-            .map(order => order.planEndDate!.getTime())
-        );
-
-        if (earliestStartDate !== Infinity) {
-          const calculatedMinDate = new Date(earliestStartDate);
-          calculatedMinDate.setDate(calculatedMinDate.getDate() - 7);
-          minStartDate = calculatedMinDate;
+        for (let day = 1; day <= daysInMonth; day++) {
+          allDates.push(new Date(year, month, day));
         }
-
-        if (latestEndDate !== -Infinity) {
-          const calculatedMaxDate = new Date(latestEndDate);
-          calculatedMaxDate.setDate(calculatedMaxDate.getDate() + 14);
-          if (calculatedMaxDate > maxEndDate) {
-            maxEndDate = calculatedMaxDate;
-          }
-        }
-      }
-    }
-
-    // Calculate number of days
-    const daysDiff = Math.ceil((maxEndDate.getTime() - minStartDate.getTime()) / (1000 * 60 * 60 * 24));
-    const numberOfDays = Math.max(7, daysDiff); // Ensure at least 7 days
-
-    return Array.from({ length: numberOfDays }, (_, i) => {
-      const date = new Date(minStartDate);
-      date.setDate(date.getDate() + i);
-      return date;
+      });
     });
-  }, [orders, timeFilter]);
+
+    // Sort dates chronologically
+    return allDates.sort((a, b) => a.getTime() - b.getTime());
+  }, [selectedYears, selectedMonths]);
 
   // Filter orders based on search query
   const filteredOrders = useMemo(() => {
@@ -150,6 +137,28 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       order.styleId.toLowerCase().includes(query)
     );
   }, [orders, searchQuery]);
+
+  // Year selection handlers
+  const handleYearToggle = (year: number) => {
+    setSelectedYears(prev => {
+      if (prev.includes(year)) {
+        return prev.filter(y => y !== year);
+      } else {
+        return [...prev, year].sort();
+      }
+    });
+  };
+
+  // Month selection handlers
+  const handleMonthToggle = (month: number) => {
+    setSelectedMonths(prev => {
+      if (prev.includes(month)) {
+        return prev.filter(m => m !== month);
+      } else {
+        return [...prev, month].sort();
+      }
+    });
+  };
 
   // Helper functions
   const isHoliday = useCallback((date: Date) => {
@@ -671,11 +680,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   return (
     <div className="w-full h-full flex flex-col bg-background">
-      {/* Search Bar and Time Filter */}
+      {/* Search Bar and Date Filter */}
       <div className="sticky top-0 z-30 bg-white border-b border-gray-200 p-4 shadow-sm">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 flex-wrap">
           {/* Search Bar */}
-          <div className="flex-1 max-w-md">
+          <div className="flex-1 min-w-64 max-w-md">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
               <Input
@@ -693,36 +702,51 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             )}
           </div>
           
-          {/* Time Filter */}
+          {/* Year Selection */}
           <div className="flex items-center gap-2">
-            <Label className="text-sm font-medium text-gray-700">View:</Label>
-            <ToggleGroup
-              type="single"
-              value={timeFilter}
-              onValueChange={(value: 'week' | 'month' | 'all') => value && setTimeFilter(value)}
-              className="bg-gray-50 rounded-lg p-1"
-            >
-              <ToggleGroupItem 
-                value="week" 
-                className="px-3 py-2 text-sm data-[state=on]:bg-white data-[state=on]:shadow-sm"
-              >
-                4 Weeks
-              </ToggleGroupItem>
-              <ToggleGroupItem 
-                value="month" 
-                className="px-3 py-2 text-sm data-[state=on]:bg-white data-[state=on]:shadow-sm"
-              >
-                3 Months
-              </ToggleGroupItem>
-              <ToggleGroupItem 
-                value="all" 
-                className="px-3 py-2 text-sm data-[state=on]:bg-white data-[state=on]:shadow-sm"
-              >
-                All Dates
-              </ToggleGroupItem>
-            </ToggleGroup>
+            <Label className="text-sm font-medium text-gray-700 whitespace-nowrap">Years:</Label>
+            <div className="flex flex-wrap gap-2 max-w-80">
+              {availableYears.map(year => (
+                <div key={year} className="flex items-center space-x-2">
+                  <Checkbox
+                    id={`year-${year}`}
+                    checked={selectedYears.includes(year)}
+                    onCheckedChange={() => handleYearToggle(year)}
+                  />
+                  <Label htmlFor={`year-${year}`} className="text-sm font-medium cursor-pointer">
+                    {year}
+                  </Label>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Month Selection */}
+          <div className="flex items-center gap-2">
+            <Label className="text-sm font-medium text-gray-700 whitespace-nowrap">Months:</Label>
+            <div className="flex flex-wrap gap-2 max-w-96">
+              {availableMonths.map(month => (
+                <div key={month.value} className="flex items-center space-x-2">
+                  <Checkbox
+                    id={`month-${month.value}`}
+                    checked={selectedMonths.includes(month.value)}
+                    onCheckedChange={() => handleMonthToggle(month.value)}
+                  />
+                  <Label htmlFor={`month-${month.value}`} className="text-sm font-medium cursor-pointer whitespace-nowrap">
+                    {month.label.slice(0, 3)}
+                  </Label>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
+
+        {/* Selected date range info */}
+        {dates.length > 0 && (
+          <div className="mt-3 text-sm text-gray-600">
+            Showing {dates.length} days from {dates[0].toLocaleDateString()} to {dates[dates.length - 1].toLocaleDateString()}
+          </div>
+        )}
       </div>
 
       {/* PDF REPORTS (hidden, for each line) */}
