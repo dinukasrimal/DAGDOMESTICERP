@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Label } from './ui/label';
+import { ToggleGroup, ToggleGroupItem } from './ui/toggle-group';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown, Search } from 'lucide-react';
 import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
@@ -31,6 +32,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   onOrderSplit
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [timeFilter, setTimeFilter] = useState<'week' | 'month' | 'all'>('month');
+  
   const [scheduleDialog, setScheduleDialog] = useState<{
     isOpen: boolean;
     order: Order | null;
@@ -67,58 +70,75 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [hoveredCard, setHoveredCard] = useState<string | null>(null);
 
-  // Generate date range that includes past dates where orders are scheduled
+  // Generate date range based on time filter
   const dates = useMemo(() => {
     const today = new Date();
     let minStartDate = new Date(today);
     let maxEndDate = new Date(today);
-    maxEndDate.setDate(maxEndDate.getDate() + 60); // Default 60 days into future
-
-    // Find the earliest start date and latest end date from all scheduled orders
-    const scheduledOrders = orders.filter(order => order.status === 'scheduled');
     
-    if (scheduledOrders.length > 0) {
-      // Find earliest start date (including past dates)
-      const earliestStartDate = Math.min(
-        ...scheduledOrders
-          .filter(order => order.planStartDate)
-          .map(order => order.planStartDate!.getTime())
-      );
+    // Set date range based on filter
+    if (timeFilter === 'week') {
+      // Show current week + next 3 weeks
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - today.getDay());
+      minStartDate = startOfWeek;
       
-      // Find latest end date
-      const latestEndDate = Math.max(
-        ...scheduledOrders
-          .filter(order => order.planEndDate)
-          .map(order => order.planEndDate!.getTime())
-      );
+      maxEndDate = new Date(startOfWeek);
+      maxEndDate.setDate(startOfWeek.getDate() + 28); // 4 weeks
+    } else if (timeFilter === 'month') {
+      // Show current month + next 2 months
+      const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+      minStartDate = startOfMonth;
+      
+      maxEndDate = new Date(today.getFullYear(), today.getMonth() + 3, 0); // End of 3rd month
+    } else {
+      // 'all' - include past dates where orders are scheduled + future buffer
+      maxEndDate.setDate(maxEndDate.getDate() + 90); // Default 90 days into future
+    }
 
-      if (earliestStartDate !== Infinity) {
-        const calculatedMinDate = new Date(earliestStartDate);
-        // Add some buffer before the earliest order (7 days)
-        calculatedMinDate.setDate(calculatedMinDate.getDate() - 7);
-        minStartDate = calculatedMinDate;
-      }
+    // For 'all' filter, adjust for scheduled orders
+    if (timeFilter === 'all') {
+      const scheduledOrders = orders.filter(order => order.status === 'scheduled');
+      
+      if (scheduledOrders.length > 0) {
+        const earliestStartDate = Math.min(
+          ...scheduledOrders
+            .filter(order => order.planStartDate)
+            .map(order => order.planStartDate!.getTime())
+        );
+        
+        const latestEndDate = Math.max(
+          ...scheduledOrders
+            .filter(order => order.planEndDate)
+            .map(order => order.planEndDate!.getTime())
+        );
 
-      if (latestEndDate !== -Infinity) {
-        const calculatedMaxDate = new Date(latestEndDate);
-        // Add buffer after latest order (14 days)
-        calculatedMaxDate.setDate(calculatedMaxDate.getDate() + 14);
-        if (calculatedMaxDate > maxEndDate) {
-          maxEndDate = calculatedMaxDate;
+        if (earliestStartDate !== Infinity) {
+          const calculatedMinDate = new Date(earliestStartDate);
+          calculatedMinDate.setDate(calculatedMinDate.getDate() - 7);
+          minStartDate = calculatedMinDate;
+        }
+
+        if (latestEndDate !== -Infinity) {
+          const calculatedMaxDate = new Date(latestEndDate);
+          calculatedMaxDate.setDate(calculatedMaxDate.getDate() + 14);
+          if (calculatedMaxDate > maxEndDate) {
+            maxEndDate = calculatedMaxDate;
+          }
         }
       }
     }
 
-    // Calculate number of days from minStartDate to maxEndDate
+    // Calculate number of days
     const daysDiff = Math.ceil((maxEndDate.getTime() - minStartDate.getTime()) / (1000 * 60 * 60 * 24));
-    const numberOfDays = Math.max(30, daysDiff); // Ensure at least 30 days
+    const numberOfDays = Math.max(7, daysDiff); // Ensure at least 7 days
 
     return Array.from({ length: numberOfDays }, (_, i) => {
       const date = new Date(minStartDate);
       date.setDate(date.getDate() + i);
       return date;
     });
-  }, [orders]);
+  }, [orders, timeFilter]);
 
   // Filter orders based on search query
   const filteredOrders = useMemo(() => {
@@ -651,24 +671,57 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
   return (
     <div className="w-full h-full flex flex-col bg-background">
-      {/* Search Bar */}
+      {/* Search Bar and Time Filter */}
       <div className="sticky top-0 z-30 bg-white border-b border-gray-200 p-4 shadow-sm">
-        <div className="max-w-md">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
-            <Input
-              type="text"
-              placeholder="Search by PO number or style..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10 pr-4"
-            />
-          </div>
-          {searchQuery && (
-            <div className="mt-2 text-sm text-gray-600">
-              {filteredOrders.filter(o => o.status === 'scheduled').length} scheduled orders found
+        <div className="flex items-center gap-4">
+          {/* Search Bar */}
+          <div className="flex-1 max-w-md">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+              <Input
+                type="text"
+                placeholder="Search by PO number or style..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-10 pr-4"
+              />
             </div>
-          )}
+            {searchQuery && (
+              <div className="mt-2 text-sm text-gray-600">
+                {filteredOrders.filter(o => o.status === 'scheduled').length} scheduled orders found
+              </div>
+            )}
+          </div>
+          
+          {/* Time Filter */}
+          <div className="flex items-center gap-2">
+            <Label className="text-sm font-medium text-gray-700">View:</Label>
+            <ToggleGroup
+              type="single"
+              value={timeFilter}
+              onValueChange={(value: 'week' | 'month' | 'all') => value && setTimeFilter(value)}
+              className="bg-gray-50 rounded-lg p-1"
+            >
+              <ToggleGroupItem 
+                value="week" 
+                className="px-3 py-2 text-sm data-[state=on]:bg-white data-[state=on]:shadow-sm"
+              >
+                4 Weeks
+              </ToggleGroupItem>
+              <ToggleGroupItem 
+                value="month" 
+                className="px-3 py-2 text-sm data-[state=on]:bg-white data-[state=on]:shadow-sm"
+              >
+                3 Months
+              </ToggleGroupItem>
+              <ToggleGroupItem 
+                value="all" 
+                className="px-3 py-2 text-sm data-[state=on]:bg-white data-[state=on]:shadow-sm"
+              >
+                All Dates
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </div>
         </div>
       </div>
 
