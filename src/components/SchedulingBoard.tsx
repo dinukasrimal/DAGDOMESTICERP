@@ -5,9 +5,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Label } from './ui/label';
-import { Checkbox } from './ui/checkbox';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
-import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown, Search, Filter } from 'lucide-react';
+import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown, Search } from 'lucide-react';
 import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
 import { downloadElementAsPdf } from '../lib/pdfUtils';
 import { OrderSlot } from './OrderSlot';
@@ -32,16 +31,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   onOrderSplit
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedMonths, setSelectedMonths] = useState<string[]>(() => {
-    const now = new Date();
-    const months = [];
-    for (let i = 0; i < 3; i++) {
-      const date = new Date(now.getFullYear(), now.getMonth() + i, 1);
-      months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
-    }
-    return months;
-  });
-
   const [scheduleDialog, setScheduleDialog] = useState<{
     isOpen: boolean;
     order: Order | null;
@@ -78,23 +67,25 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [hoveredCard, setHoveredCard] = useState<string | null>(null);
 
-  // Generate available months for filter
-  const availableMonths = useMemo(() => {
+  // Generate date range that includes past dates where orders are scheduled
+  const dates = useMemo(() => {
     const today = new Date();
-    let minDate = new Date(today);
-    let maxDate = new Date(today);
-    maxDate.setDate(maxDate.getDate() + 365); // Default 1 year into future
+    let minStartDate = new Date(today);
+    let maxEndDate = new Date(today);
+    maxEndDate.setDate(maxEndDate.getDate() + 60); // Default 60 days into future
 
     // Find the earliest start date and latest end date from all scheduled orders
     const scheduledOrders = orders.filter(order => order.status === 'scheduled');
     
     if (scheduledOrders.length > 0) {
+      // Find earliest start date (including past dates)
       const earliestStartDate = Math.min(
         ...scheduledOrders
           .filter(order => order.planStartDate)
           .map(order => order.planStartDate!.getTime())
       );
       
+      // Find latest end date
       const latestEndDate = Math.max(
         ...scheduledOrders
           .filter(order => order.planEndDate)
@@ -103,52 +94,31 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
 
       if (earliestStartDate !== Infinity) {
         const calculatedMinDate = new Date(earliestStartDate);
-        calculatedMinDate.setDate(calculatedMinDate.getDate() - 30);
-        if (calculatedMinDate < minDate) {
-          minDate = calculatedMinDate;
-        }
+        // Add some buffer before the earliest order (7 days)
+        calculatedMinDate.setDate(calculatedMinDate.getDate() - 7);
+        minStartDate = calculatedMinDate;
       }
 
       if (latestEndDate !== -Infinity) {
         const calculatedMaxDate = new Date(latestEndDate);
-        calculatedMaxDate.setDate(calculatedMaxDate.getDate() + 30);
-        if (calculatedMaxDate > maxDate) {
-          maxDate = calculatedMaxDate;
+        // Add buffer after latest order (14 days)
+        calculatedMaxDate.setDate(calculatedMaxDate.getDate() + 14);
+        if (calculatedMaxDate > maxEndDate) {
+          maxEndDate = calculatedMaxDate;
         }
       }
     }
 
-    const months = [];
-    const current = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
-    
-    while (current <= maxDate) {
-      const monthKey = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}`;
-      const monthLabel = current.toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
-      months.push({ key: monthKey, label: monthLabel });
-      current.setMonth(current.getMonth() + 1);
-    }
+    // Calculate number of days from minStartDate to maxEndDate
+    const daysDiff = Math.ceil((maxEndDate.getTime() - minStartDate.getTime()) / (1000 * 60 * 60 * 24));
+    const numberOfDays = Math.max(30, daysDiff); // Ensure at least 30 days
 
-    return months;
-  }, [orders]);
-
-  // Generate date range based on selected months
-  const dates = useMemo(() => {
-    if (selectedMonths.length === 0) return [];
-
-    const allDates: Date[] = [];
-    
-    selectedMonths.forEach(monthKey => {
-      const [year, month] = monthKey.split('-').map(Number);
-      const startOfMonth = new Date(year, month - 1, 1);
-      const endOfMonth = new Date(year, month, 0);
-      
-      for (let date = new Date(startOfMonth); date <= endOfMonth; date.setDate(date.getDate() + 1)) {
-        allDates.push(new Date(date));
-      }
+    return Array.from({ length: numberOfDays }, (_, i) => {
+      const date = new Date(minStartDate);
+      date.setDate(date.getDate() + i);
+      return date;
     });
-
-    return allDates.sort((a, b) => a.getTime() - b.getTime());
-  }, [selectedMonths]);
+  }, [orders]);
 
   // Filter orders based on search query
   const filteredOrders = useMemo(() => {
@@ -224,98 +194,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return overlappingOrders;
   }, [orders, productionLines]);
 
-  // New function to preserve shared capacity patterns
-  const getSharedCapacityProductionPlan = useCallback((
-    ordersToMove: Order[], 
-    targetDate: Date, 
-    lineId: string
-  ) => {
-    const line = productionLines.find(l => l.id === lineId);
-    if (!line) return [];
-
-    // Step 1: Extract the combined production timeline from original orders
-    const combinedTimeline: { [date: string]: { [orderId: string]: number } } = {};
-    let earliestOriginalDate: Date | null = null;
-    let latestOriginalDate: Date | null = null;
-
-    ordersToMove.forEach(order => {
-      if (!order.actualProduction) return;
-      
-      Object.entries(order.actualProduction).forEach(([dateStr, qty]) => {
-        if (qty > 0) {
-          const date = new Date(dateStr);
-          if (!earliestOriginalDate || date < earliestOriginalDate) {
-            earliestOriginalDate = date;
-          }
-          if (!latestOriginalDate || date > latestOriginalDate) {
-            latestOriginalDate = date;
-          }
-          
-          if (!combinedTimeline[dateStr]) {
-            combinedTimeline[dateStr] = {};
-          }
-          combinedTimeline[dateStr][order.id] = qty;
-        }
-      });
-    });
-
-    if (!earliestOriginalDate || !latestOriginalDate) return [];
-
-    // Step 2: Calculate the offset from original start to new target date
-    const dayOffset = Math.floor((targetDate.getTime() - earliestOriginalDate.getTime()) / (1000 * 60 * 60 * 24));
-
-    // Step 3: Create new production plans maintaining the same patterns
-    const newProductionPlans: Array<{
-      order: Order;
-      startDate: Date;
-      endDate: Date;
-      dailyPlan: { [date: string]: number };
-    }> = [];
-
-    ordersToMove.forEach(order => {
-      const dailyPlan: { [date: string]: number } = {};
-      let newStartDate: Date | null = null;
-      let newEndDate: Date | null = null;
-
-      // Shift the original production pattern to the new timeline
-      if (order.actualProduction) {
-        Object.entries(order.actualProduction).forEach(([originalDateStr, qty]) => {
-          if (qty > 0) {
-            const originalDate = new Date(originalDateStr);
-            const newDate = new Date(originalDate);
-            newDate.setDate(newDate.getDate() + dayOffset);
-
-            // Skip holidays
-            while (isHoliday(newDate)) {
-              newDate.setDate(newDate.getDate() + 1);
-            }
-
-            const newDateStr = newDate.toISOString().split('T')[0];
-            dailyPlan[newDateStr] = qty;
-
-            if (!newStartDate || newDate < newStartDate) {
-              newStartDate = newDate;
-            }
-            if (!newEndDate || newDate > newEndDate) {
-              newEndDate = newDate;
-            }
-          }
-        });
-      }
-
-      if (newStartDate && newEndDate && Object.keys(dailyPlan).length > 0) {
-        newProductionPlans.push({
-          order: { ...order, assignedLineId: lineId },
-          startDate: newStartDate,
-          endDate: newEndDate,
-          dailyPlan
-        });
-      }
-    });
-
-    return newProductionPlans;
-  }, [productionLines, isHoliday]);
-
   const calculateDailyProductionWithSharing = useCallback((order: Order, line: ProductionLine, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
@@ -365,14 +243,16 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return dailyPlan;
   }, [isHoliday, planningMethod, selectedRampUpPlanId, rampUpPlans, getAvailableCapacity]);
 
-  // Multi-select functionality
+  // Multi-select functionality - updated to work with checkboxes
   const handleOrderClick = useCallback((e: React.MouseEvent, orderId: string) => {
+    // Always enable multi-select mode when checkbox is used (simulated via ctrlKey)
     if (e.ctrlKey || e.metaKey) {
       setIsMultiSelectMode(true);
       setSelectedOrders(prev => {
         const newSet = new Set(prev);
         if (newSet.has(orderId)) {
           newSet.delete(orderId);
+          // If no orders selected, exit multi-select mode
           if (newSet.size === 0) {
             setIsMultiSelectMode(false);
           }
@@ -382,6 +262,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         return newSet;
       });
     } else if (!selectedOrders.has(orderId)) {
+      // Clear selection if clicking on unselected order without ctrl
       setSelectedOrders(new Set());
       setIsMultiSelectMode(false);
     }
@@ -410,6 +291,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     console.log('🔄 Starting drag for scheduled order:', order.poNumber);
     e.dataTransfer.effectAllowed = 'move';
     
+    // If this order is part of a multi-selection, drag all selected orders
     let ordersToDrag = [order];
     let dragType = 'single-order-drag';
     
@@ -422,7 +304,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     e.dataTransfer.setData('text/plain', JSON.stringify({
       type: dragType,
       orders: ordersToDrag,
-      sourceOrderId: order.id
+      sourceOrderId: order.id // Track which order initiated the drag
     }));
 
     if (e.currentTarget instanceof HTMLElement) {
@@ -430,7 +312,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [isMultiSelectMode, selectedOrders, orders]);
 
-  // Improved handleDrop function with shared capacity preservation
+  // Fixed handleDrop function to properly handle single vs multi-order drops
   const handleDrop = useCallback(async (e: React.DragEvent, lineId: string, date: Date) => {
     e.preventDefault();
     setDragHighlight(null);
@@ -440,16 +322,50 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
       
       if (dragData.type === 'multi-order-drag' && dragData.orders) {
-        // Handle multi-order drop with shared capacity preservation
+        // Handle multi-order drop - place directly without overlap dialog or moving other orders
         const ordersToDrop = dragData.orders as Order[];
         console.log(`📍 Multi-drop: ${ordersToDrop.length} orders on ${lineId} at ${date.toLocaleDateString()}`);
         
-        // Get the shared capacity production plans
-        const productionPlans = getSharedCapacityProductionPlan(ordersToDrop, date, lineId);
-        
-        // Schedule all orders with their preserved patterns
-        for (const plan of productionPlans) {
-          await onOrderScheduled(plan.order, plan.startDate, plan.endDate, plan.dailyPlan);
+        // For multi-order drops, don't move existing orders to pending - just place sequentially
+        let currentDate = new Date(date);
+        for (let i = 0; i < ordersToDrop.length; i++) {
+          const order = ordersToDrop[i];
+          console.log(`📋 Scheduling order ${i + 1}/${ordersToDrop.length}: ${order.poNumber}`);
+          
+          // Find next available date that doesn't conflict
+          while (true) {
+            const selectedLine = productionLines.find(l => l.id === lineId);
+            if (!selectedLine) break;
+            
+            // Check if we can place the order starting from currentDate
+            const dailyPlan = getContiguousProductionPlan(
+              order.orderQuantity,
+              selectedLine.capacity,
+              currentDate,
+              isHoliday,
+              0
+            );
+            
+            const planDates = Object.keys(dailyPlan);
+            if (planDates.length > 0) {
+              const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
+              const updatedOrder = { ...order, assignedLineId: lineId };
+              await onOrderScheduled(updatedOrder, currentDate, endDate, dailyPlan);
+              
+              // Calculate where this order would end to position next order
+              if (i < ordersToDrop.length - 1) { // Only calculate for non-last orders
+                const estimatedDays = Math.ceil(order.orderQuantity / selectedLine.capacity);
+                const endDateForNext = new Date(currentDate);
+                endDateForNext.setDate(endDateForNext.getDate() + estimatedDays);
+                currentDate = new Date(endDateForNext);
+                currentDate.setDate(currentDate.getDate() + 1); // Start next order day after
+              }
+              break;
+            } else {
+              // Move to next day if can't place
+              currentDate.setDate(currentDate.getDate() + 1);
+            }
+          }
         }
         
         // Clear selection after successful multi-drop
@@ -484,11 +400,32 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             startDate: date
           });
         }
+      } else if (dragData && dragData.id && dragData.poNumber) {
+        // Handle legacy single order drop format (fallback)
+        const overlappingOrders = getOverlappingOrders(dragData, lineId, date);
+        const lineName = productionLines.find(l => l.id === lineId)?.name || 'Unknown Line';
+        if (overlappingOrders.length > 0) {
+          setOverlapDialog({
+            isOpen: true,
+            newOrder: dragData,
+            overlappingOrders,
+            targetDate: date,
+            targetLine: lineName,
+            originalTargetDate: date
+          });
+        } else {
+          setScheduleDialog({
+            isOpen: true,
+            order: dragData,
+            lineId,
+            startDate: date
+          });
+        }
       }
     } catch (error) {
       console.error('❌ Failed to parse dropped order data:', error);
     }
-  }, [isHoliday, getOverlappingOrders, productionLines, onOrderScheduled, getSharedCapacityProductionPlan]);
+  }, [isHoliday, getOverlappingOrders, productionLines, onOrderScheduled]);
 
   const [pendingReschedule, setPendingReschedule] = useState<{
     toSchedule: Order[];
@@ -675,6 +612,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     if (e.currentTarget instanceof HTMLElement) {
       e.currentTarget.style.opacity = '1';
     }
+    // Don't clear selection on drag end to maintain multi-select state
   }, []);
 
   const shouldHighlightRed = useCallback((order: Order, date: Date) => {
@@ -711,82 +649,26 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       );
   };
 
-  // Month filter handlers
-  const handleMonthToggle = (monthKey: string) => {
-    setSelectedMonths(prev => {
-      if (prev.includes(monthKey)) {
-        return prev.filter(m => m !== monthKey);
-      } else {
-        return [...prev, monthKey].sort();
-      }
-    });
-  };
-
-  const handleSelectAllMonths = () => {
-    setSelectedMonths(availableMonths.map(m => m.key));
-  };
-
-  const handleClearAllMonths = () => {
-    setSelectedMonths([]);
-  };
-
   return (
     <div className="w-full h-full flex flex-col bg-background">
-      {/* Search Bar and Month Filter */}
+      {/* Search Bar */}
       <div className="sticky top-0 z-30 bg-white border-b border-gray-200 p-4 shadow-sm">
-        <div className="flex items-center gap-4">
-          {/* Search Bar */}
-          <div className="max-w-md">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
-              <Input
-                type="text"
-                placeholder="Search by PO number or style..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10 pr-4"
-              />
+        <div className="max-w-md">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+            <Input
+              type="text"
+              placeholder="Search by PO number or style..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-10 pr-4"
+            />
+          </div>
+          {searchQuery && (
+            <div className="mt-2 text-sm text-gray-600">
+              {filteredOrders.filter(o => o.status === 'scheduled').length} scheduled orders found
             </div>
-            {searchQuery && (
-              <div className="mt-2 text-sm text-gray-600">
-                {filteredOrders.filter(o => o.status === 'scheduled').length} scheduled orders found
-              </div>
-            )}
-          </div>
-
-          {/* Month Filter */}
-          <div className="flex items-center gap-2">
-            <Filter className="h-4 w-4 text-gray-500" />
-            <Select>
-              <SelectTrigger className="w-48">
-                <SelectValue placeholder={`${selectedMonths.length} months selected`} />
-              </SelectTrigger>
-              <SelectContent>
-                <div className="p-2 border-b">
-                  <div className="flex gap-2">
-                    <Button variant="ghost" size="sm" onClick={handleSelectAllMonths}>
-                      Select All
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={handleClearAllMonths}>
-                      Clear All
-                    </Button>
-                  </div>
-                </div>
-                {availableMonths.map(month => (
-                  <div key={month.key} className="flex items-center space-x-2 p-2">
-                    <Checkbox
-                      id={month.key}
-                      checked={selectedMonths.includes(month.key)}
-                      onCheckedChange={() => handleMonthToggle(month.key)}
-                    />
-                    <Label htmlFor={month.key} className="text-sm font-normal">
-                      {month.label}
-                    </Label>
-                  </div>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          )}
         </div>
       </div>
 
@@ -853,7 +735,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         <div className="sticky top-16 z-20 bg-blue-50 border-b border-blue-200 px-4 py-2">
           <div className="flex items-center justify-between">
             <span className="text-blue-800 font-medium text-sm">
-              {selectedOrders.size} orders selected - Drag together to preserve shared utilization patterns
+              {selectedOrders.size} orders selected - Use checkboxes to select/deselect, then drag to move together
             </span>
             <Button
               size="sm"
@@ -875,7 +757,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         <div className="min-w-max">
           {/* Header Row */}
           <div className="sticky top-0 z-30 bg-white border-b-2 border-gray-200 shadow-sm flex">
-            {/* Production Lines Header */}
+            {/* Production Lines Header - Reduced width from w-80 to w-56 */}
             <div className="sticky left-0 z-40 w-56 bg-white border-r-2 border-gray-300 shadow-lg">
               <div className="h-20 p-3 flex items-center justify-center bg-gradient-to-r from-blue-50 to-blue-100 border-r border-gray-300">
                 <div className="flex items-center space-x-2">
@@ -911,7 +793,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           {/* Production Line Rows */}
           {productionLines.map(line => (
             <div key={line.id} className="flex border-b border-gray-200">
-              {/* Line Header */}
+              {/* Line Header - Reduced width from w-80 to w-56 */}
               <div className="sticky left-0 z-20 w-56 bg-white border-r-2 border-gray-300 shadow-md">
                 <div className="h-40 p-3 flex flex-col justify-between bg-gradient-to-r from-gray-50 to-gray-100">
                   <div className="space-y-1">
