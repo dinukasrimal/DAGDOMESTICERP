@@ -67,30 +67,54 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [hoveredCard, setHoveredCard] = useState<string | null>(null);
 
-  // Generate date range dynamically based on scheduled orders
+  // Generate date range that includes past dates where orders are scheduled
   const dates = useMemo(() => {
     const today = new Date();
+    let minStartDate = new Date(today);
     let maxEndDate = new Date(today);
-    maxEndDate.setDate(maxEndDate.getDate() + 30); // Default minimum 30 days
+    maxEndDate.setDate(maxEndDate.getDate() + 60); // Default 60 days into future
 
-    // Find the latest end date from all scheduled orders
-    const scheduledOrders = orders.filter(order => order.status === 'scheduled' && order.planEndDate);
+    // Find the earliest start date and latest end date from all scheduled orders
+    const scheduledOrders = orders.filter(order => order.status === 'scheduled');
+    
     if (scheduledOrders.length > 0) {
-      const latestEndDate = Math.max(...scheduledOrders.map(order => order.planEndDate!.getTime()));
-      const calculatedMaxDate = new Date(latestEndDate);
-      calculatedMaxDate.setDate(calculatedMaxDate.getDate() + 14); // Add 2 weeks buffer
+      // Find earliest start date (including past dates)
+      const earliestStartDate = Math.min(
+        ...scheduledOrders
+          .filter(order => order.planStartDate)
+          .map(order => order.planStartDate!.getTime())
+      );
       
-      if (calculatedMaxDate > maxEndDate) {
-        maxEndDate = calculatedMaxDate;
+      // Find latest end date
+      const latestEndDate = Math.max(
+        ...scheduledOrders
+          .filter(order => order.planEndDate)
+          .map(order => order.planEndDate!.getTime())
+      );
+
+      if (earliestStartDate !== Infinity) {
+        const calculatedMinDate = new Date(earliestStartDate);
+        // Add some buffer before the earliest order (7 days)
+        calculatedMinDate.setDate(calculatedMinDate.getDate() - 7);
+        minStartDate = calculatedMinDate;
+      }
+
+      if (latestEndDate !== -Infinity) {
+        const calculatedMaxDate = new Date(latestEndDate);
+        // Add buffer after latest order (14 days)
+        calculatedMaxDate.setDate(calculatedMaxDate.getDate() + 14);
+        if (calculatedMaxDate > maxEndDate) {
+          maxEndDate = calculatedMaxDate;
+        }
       }
     }
 
-    // Calculate number of days from today to maxEndDate
-    const daysDiff = Math.ceil((maxEndDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    // Calculate number of days from minStartDate to maxEndDate
+    const daysDiff = Math.ceil((maxEndDate.getTime() - minStartDate.getTime()) / (1000 * 60 * 60 * 24));
     const numberOfDays = Math.max(30, daysDiff); // Ensure at least 30 days
 
     return Array.from({ length: numberOfDays }, (_, i) => {
-      const date = new Date(today);
+      const date = new Date(minStartDate);
       date.setDate(date.getDate() + i);
       return date;
     });
@@ -733,12 +757,12 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         <div className="min-w-max">
           {/* Header Row */}
           <div className="sticky top-0 z-30 bg-white border-b-2 border-gray-200 shadow-sm flex">
-            {/* Production Lines Header - Fixed at front */}
-            <div className="sticky left-0 z-40 w-80 bg-white border-r-2 border-gray-300 shadow-lg">
-              <div className="h-20 p-4 flex items-center justify-center bg-gradient-to-r from-blue-50 to-blue-100 border-r border-gray-300">
-                <div className="flex items-center space-x-3">
-                  <CalendarDays className="h-6 w-6 text-blue-600" />
-                  <span className="font-bold text-lg text-gray-800">Production Lines</span>
+            {/* Production Lines Header - Reduced width from w-80 to w-56 */}
+            <div className="sticky left-0 z-40 w-56 bg-white border-r-2 border-gray-300 shadow-lg">
+              <div className="h-20 p-3 flex items-center justify-center bg-gradient-to-r from-blue-50 to-blue-100 border-r border-gray-300">
+                <div className="flex items-center space-x-2">
+                  <CalendarDays className="h-5 w-5 text-blue-600" />
+                  <span className="font-bold text-base text-gray-800">Production Lines</span>
                 </div>
               </div>
             </div>
@@ -769,11 +793,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           {/* Production Line Rows */}
           {productionLines.map(line => (
             <div key={line.id} className="flex border-b border-gray-200">
-              {/* Line Header - Fixed at front */}
-              <div className="sticky left-0 z-20 w-80 bg-white border-r-2 border-gray-300 shadow-md">
-                <div className="h-40 p-4 flex flex-col justify-between bg-gradient-to-r from-gray-50 to-gray-100">
-                  <div className="space-y-2">
-                    <div className="font-bold text-gray-800 text-lg">{line.name}</div>
+              {/* Line Header - Reduced width from w-80 to w-56 */}
+              <div className="sticky left-0 z-20 w-56 bg-white border-r-2 border-gray-300 shadow-md">
+                <div className="h-40 p-3 flex flex-col justify-between bg-gradient-to-r from-gray-50 to-gray-100">
+                  <div className="space-y-1">
+                    <div className="font-bold text-gray-800 text-base">{line.name}</div>
                     <div className="text-sm text-gray-600">
                       Capacity: <span className="font-semibold text-gray-800">{line.capacity}</span>
                     </div>
@@ -781,11 +805,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                   <Button
                     variant="outline"
                     size="sm"
-                    className="w-full text-xs h-9 flex items-center gap-2 font-medium border-gray-300 hover:bg-blue-50 hover:border-blue-300"
+                    className="w-full text-xs h-8 flex items-center gap-2 font-medium border-gray-300 hover:bg-blue-50 hover:border-blue-300"
                     onClick={() => handleDownloadLinePdf(line.id, line.name)}
                     title="Download Production Plan PDF"
                   >
-                    <FileDown className="w-4 h-4" />
+                    <FileDown className="w-3 h-3" />
                     Download Plan
                   </Button>
                 </div>
