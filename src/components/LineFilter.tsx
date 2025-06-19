@@ -1,11 +1,10 @@
-
 import React, { useState } from 'react';
 import { Button } from './ui/button';
 import { Checkbox } from './ui/checkbox';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { ProductionLine } from '../types/scheduler';
-import { move } from 'lucide-react';
+import { Move } from 'lucide-react';
 
 interface LineFilterProps {
   productionLines: ProductionLine[];
@@ -128,7 +127,7 @@ export const LineFilter: React.FC<LineFilterProps> = ({
               onDragEnd={handleDragEnd}
             >
               {onLineReorder && (
-                <move className="h-4 w-4 text-muted-foreground cursor-grab" />
+                <Move className="h-4 w-4 text-muted-foreground cursor-grab" />
               )}
               <Checkbox
                 id={`line-${line.id}`}
