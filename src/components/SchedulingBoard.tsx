@@ -890,11 +890,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             </div>
 
             {/* Temporary Hold Area Header */}
-            <div className="w-56 bg-white border-r-2 border-gray-300">
-              <div className="h-20 p-3 flex items-center justify-center bg-gradient-to-r from-amber-50 to-amber-100 border-r border-gray-300">
-                <div className="flex items-center space-x-2">
-                  <Package className="h-5 w-5 text-amber-600" />
-                  <span className="font-bold text-base text-gray-800">Temp Hold</span>
+            <div className="sticky left-56 z-40 w-32 bg-white border-r-2 border-gray-300 shadow-lg">
+              <div className="h-20 p-2 flex items-center justify-center bg-gradient-to-r from-amber-50 to-amber-100 border-r border-gray-300">
+                <div className="flex flex-col items-center space-y-1">
+                  <Package className="h-4 w-4 text-amber-600" />
+                  <span className="font-bold text-xs text-gray-800">Temp Hold</span>
                 </div>
               </div>
             </div>
@@ -948,27 +948,27 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
               </div>
 
               {/* Temporary Hold Area for this row */}
-              <div className="w-56 border-r-2 border-gray-300">
+              <div className="sticky left-56 z-20 w-32 border-r-2 border-gray-300 bg-white shadow-md">
                 <div
-                  className="h-40 bg-gradient-to-r from-amber-50 to-amber-100 border border-amber-200 border-dashed relative overflow-hidden p-2"
+                  className="h-40 bg-gradient-to-r from-amber-50 to-amber-100 border border-amber-200 border-dashed relative overflow-hidden p-1"
                   onDrop={handleTempHoldDrop}
                   onDragOver={handleDragOver}
                 >
                   {line === productionLines[0] && (
-                    <div className="h-full flex flex-col gap-1 overflow-y-auto">
+                    <div className="h-full flex flex-col gap-0.5 overflow-y-auto">
                       {tempHoldOrders.map((order, index) => (
                         <div
                           key={`temp-${order.id}-${index}`}
-                          className="bg-amber-200 border border-amber-300 rounded p-2 text-xs cursor-move relative group"
+                          className="bg-amber-200 border border-amber-300 rounded p-1 text-xs cursor-move relative group"
                           draggable
                           onDragStart={(e) => handleOrderDragStart(e, order)}
                           onDragEnd={handleOrderDragEnd}
                         >
-                          <div className="font-semibold text-amber-800 truncate">{order.poNumber}</div>
-                          <div className="text-amber-700 truncate">{order.styleId}</div>
+                          <div className="font-semibold text-amber-800 truncate text-xs">{order.poNumber}</div>
+                          <div className="text-amber-700 truncate text-xs">{order.styleId}</div>
                           <button
                             onClick={() => handleRemoveFromTempHold(order.id)}
-                            className="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                            className="absolute top-0 right-0 w-3 h-3 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
                             title="Remove from temp hold"
                           >
                             ×
@@ -976,8 +976,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                         </div>
                       ))}
                       {tempHoldOrders.length === 0 && (
-                        <div className="h-full flex items-center justify-center text-amber-600 text-sm">
-                          Drop orders here temporarily
+                        <div className="h-full flex items-center justify-center text-amber-600 text-xs text-center">
+                          Drop here
                         </div>
                       )}
                     </div>
