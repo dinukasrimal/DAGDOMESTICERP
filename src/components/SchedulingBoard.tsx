@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -400,6 +401,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           }
         }
         
+        // Remove successfully scheduled orders from temp hold
+        setTempHoldOrders(prev => prev.filter(tempOrder => 
+          !ordersToDrop.some(droppedOrder => droppedOrder.id === tempOrder.id)
+        ));
+        
         // Clear selection after successful multi-drop
         console.log('🧹 Clearing selection after multi-drop');
         setSelectedOrders(new Set());
@@ -579,6 +585,10 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const endDate = new Date(Math.max(...planDates.map(d => new Date(d).getTime())));
       const updatedOrder = { ...order, assignedLineId: lineId };
       await onOrderScheduled(updatedOrder, startDate, endDate, dailyPlan);
+      
+      // Remove the scheduled order from temp hold if it was there
+      setTempHoldOrders(prev => prev.filter(tempOrder => tempOrder.id !== order.id));
+      
       setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
       setPlanningMethod('capacity');
       setSelectedRampUpPlanId('');
