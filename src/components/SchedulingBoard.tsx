@@ -7,7 +7,7 @@ import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Label } from './ui/label';
 import { Checkbox } from './ui/checkbox';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
-import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown, Search } from 'lucide-react';
+import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown, Search, Package } from 'lucide-react';
 import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
 import { downloadElementAsPdf } from '../lib/pdfUtils';
 import { OrderSlot } from './OrderSlot';
@@ -36,6 +36,9 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   // Year/Month selection state
   const [selectedYears, setSelectedYears] = useState<number[]>([new Date().getFullYear()]);
   const [selectedMonths, setSelectedMonths] = useState<number[]>([new Date().getMonth()]);
+  
+  // Temporary holding area state
+  const [tempHoldOrders, setTempHoldOrders] = useState<Order[]>([]);
   
   const [scheduleDialog, setScheduleDialog] = useState<{
     isOpen: boolean;
@@ -678,6 +681,48 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       );
   };
 
+  // Handle drop in temporary hold area
+  const handleTempHoldDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    
+    try {
+      const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
+      
+      if (dragData.type === 'multi-order-drag' && dragData.orders) {
+        const ordersToDrop = dragData.orders as Order[];
+        console.log(`📦 Adding ${ordersToDrop.length} orders to temp hold`);
+        
+        // Move orders to temp hold and remove from their current positions
+        ordersToDrop.forEach(order => {
+          if (order.status === 'scheduled') {
+            onOrderMovedToPending(order);
+          }
+        });
+        
+        setTempHoldOrders(prev => [...prev, ...ordersToDrop]);
+        setSelectedOrders(new Set());
+        setIsMultiSelectMode(false);
+        
+      } else if (dragData.type === 'single-order-drag' && dragData.orders && dragData.orders.length === 1) {
+        const singleOrder = dragData.orders[0];
+        console.log(`📦 Adding order ${singleOrder.poNumber} to temp hold`);
+        
+        if (singleOrder.status === 'scheduled') {
+          onOrderMovedToPending(singleOrder);
+        }
+        
+        setTempHoldOrders(prev => [...prev, singleOrder]);
+      }
+    } catch (error) {
+      console.error('❌ Failed to parse dropped order data for temp hold:', error);
+    }
+  }, [onOrderMovedToPending]);
+
+  // Remove order from temp hold
+  const handleRemoveFromTempHold = useCallback((orderId: string) => {
+    setTempHoldOrders(prev => prev.filter(order => order.id !== orderId));
+  }, []);
+
   return (
     <div className="w-full h-full flex flex-col bg-background">
       {/* Search Bar and Date Filter */}
@@ -834,12 +879,22 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         <div className="min-w-max">
           {/* Header Row */}
           <div className="sticky top-0 z-30 bg-white border-b-2 border-gray-200 shadow-sm flex">
-            {/* Production Lines Header - Reduced width from w-80 to w-56 */}
+            {/* Production Lines Header */}
             <div className="sticky left-0 z-40 w-56 bg-white border-r-2 border-gray-300 shadow-lg">
               <div className="h-20 p-3 flex items-center justify-center bg-gradient-to-r from-blue-50 to-blue-100 border-r border-gray-300">
                 <div className="flex items-center space-x-2">
                   <CalendarDays className="h-5 w-5 text-blue-600" />
                   <span className="font-bold text-base text-gray-800">Production Lines</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Temporary Hold Area Header */}
+            <div className="w-56 bg-white border-r-2 border-gray-300">
+              <div className="h-20 p-3 flex items-center justify-center bg-gradient-to-r from-amber-50 to-amber-100 border-r border-gray-300">
+                <div className="flex items-center space-x-2">
+                  <Package className="h-5 w-5 text-amber-600" />
+                  <span className="font-bold text-base text-gray-800">Temp Hold</span>
                 </div>
               </div>
             </div>
@@ -870,7 +925,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           {/* Production Line Rows */}
           {productionLines.map(line => (
             <div key={line.id} className="flex border-b border-gray-200">
-              {/* Line Header - Reduced width from w-80 to w-56 */}
+              {/* Line Header */}
               <div className="sticky left-0 z-20 w-56 bg-white border-r-2 border-gray-300 shadow-md">
                 <div className="h-40 p-3 flex flex-col justify-between bg-gradient-to-r from-gray-50 to-gray-100">
                   <div className="space-y-1">
@@ -889,6 +944,47 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                     <FileDown className="w-3 h-3" />
                     Download Plan
                   </Button>
+                </div>
+              </div>
+
+              {/* Temporary Hold Area for this row */}
+              <div className="w-56 border-r-2 border-gray-300">
+                <div
+                  className="h-40 bg-gradient-to-r from-amber-50 to-amber-100 border border-amber-200 border-dashed relative overflow-hidden p-2"
+                  onDrop={handleTempHoldDrop}
+                  onDragOver={handleDragOver}
+                >
+                  {line === productionLines[0] && (
+                    <div className="h-full flex flex-col gap-1 overflow-y-auto">
+                      {tempHoldOrders.map((order, index) => (
+                        <div
+                          key={`temp-${order.id}-${index}`}
+                          className="bg-amber-200 border border-amber-300 rounded p-2 text-xs cursor-move relative group"
+                          draggable
+                          onDragStart={(e) => handleOrderDragStart(e, order)}
+                          onDragEnd={handleOrderDragEnd}
+                        >
+                          <div className="font-semibold text-amber-800 truncate">{order.poNumber}</div>
+                          <div className="text-amber-700 truncate">{order.styleId}</div>
+                          <button
+                            onClick={() => handleRemoveFromTempHold(order.id)}
+                            className="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                            title="Remove from temp hold"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                      {tempHoldOrders.length === 0 && (
+                        <div className="h-full flex items-center justify-center text-amber-600 text-sm">
+                          Drop orders here temporarily
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {line !== productionLines[0] && (
+                    <div className="h-full opacity-30"></div>
+                  )}
                 </div>
               </div>
 
