@@ -473,9 +473,9 @@ export const ProductionScheduler: React.FC = () => {
           />
         )}
         
-        {/* Line Filter with Fullscreen Toggle */}
-        <div className="p-4 border-b border-border bg-card">
-          <div className="flex items-center justify-between">
+        {/* Compact Line Filter with Fullscreen Toggle */}
+        <div className="px-4 py-2 border-b border-border bg-card flex items-center justify-between">
+          <div className="flex items-center gap-4">
             <LineFilter
               productionLines={productionLines}
               selectedLineIds={selectedLineIds}
@@ -484,28 +484,28 @@ export const ProductionScheduler: React.FC = () => {
               onDeselectAll={handleDeselectAll}
               onLineReorder={handleLineReorder}
             />
-            
-            <Button
-              onClick={toggleFullscreen}
-              variant="outline"
-              size="sm"
-              className="ml-4"
-            >
-              {isFullscreen ? (
-                <>
-                  <Minimize className="h-4 w-4 mr-2" />
-                  Exit Fullscreen
-                </>
-              ) : (
-                <>
-                  <Maximize className="h-4 w-4 mr-2" />
-                  Fullscreen Plan
-                </>
-              )}
-            </Button>
           </div>
+          
+          <Button
+            onClick={toggleFullscreen}
+            variant="outline"
+            size="sm"
+          >
+            {isFullscreen ? (
+              <>
+                <Minimize className="h-4 w-4 mr-2" />
+                Exit Fullscreen
+              </>
+            ) : (
+              <>
+                <Maximize className="h-4 w-4 mr-2" />
+                Fullscreen Plan
+              </>
+            )}
+          </Button>
         </div>
         
+        {/* Main content area with more space for the plan */}
         <div className="flex-1 flex overflow-hidden">
           {/* Sidebar container: Hidden in fullscreen mode */}
           {!isFullscreen && (
