@@ -210,6 +210,21 @@ export class GoogleSheetsService {
     }
   }
 
+  // New method to get cut/issue quantities for existing orders
+  async getCutAndIssueQuantities(): Promise<{ cutQtyMap: Map<string, number>, issueQtyMap: Map<string, number> }> {
+    try {
+      const [cutQtyMap, issueQtyMap] = await Promise.all([
+        this.fetchCutQuantities(),
+        this.fetchIssueQuantities()
+      ]);
+
+      return { cutQtyMap, issueQtyMap };
+    } catch (error) {
+      console.error('❌ Error fetching cut and issue quantities:', error);
+      return { cutQtyMap: new Map(), issueQtyMap: new Map() };
+    }
+  }
+
   async fetchOrders(): Promise<SheetOrder[]> {
     try {
       // Fetch all data in parallel

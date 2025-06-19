@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback } from 'react';
 import { useSupabaseProductionData } from '../hooks/useSupabaseProductionData';
 import { SchedulingBoard } from './SchedulingBoard';
@@ -7,7 +8,7 @@ import { GoogleSheetsConfig } from './GoogleSheetsConfig';
 import { Header } from './Header';
 import { LineFilter } from './LineFilter';
 import { Button } from './ui/button';
-import { RefreshCw, FileText } from 'lucide-react';
+import { RefreshCw, FileText, Maximize, Minimize } from 'lucide-react';
 import { TooltipProvider } from './ui/tooltip';
 import { Order, ProductionLine } from '../types/scheduler';
 import { ReportDialog } from './reports/ReportDialog';
@@ -27,6 +28,7 @@ export const ProductionScheduler: React.FC = () => {
   const [showLinePlanReport, setShowLinePlanReport] = useState(false);
   const [selectedProductionLine, setSelectedProductionLine] = useState<ProductionLine | null>(null);
   const [selectedLineIds, setSelectedLineIds] = useState<string[]>([]);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   
   const {
     orders,
@@ -80,6 +82,14 @@ export const ProductionScheduler: React.FC = () => {
 
   const handleDeselectAll = () => {
     setSelectedLineIds([]);
+  };
+
+  const handleLineReorder = (reorderedLines: ProductionLine[]) => {
+    setProductionLines(reorderedLines);
+  };
+
+  const toggleFullscreen = () => {
+    setIsFullscreen(!isFullscreen);
   };
 
   // Filter production lines based on selection
@@ -454,96 +464,122 @@ export const ProductionScheduler: React.FC = () => {
 
   return (
     <TooltipProvider>
-      <div className="flex flex-col h-screen bg-background">
-        <Header
-          userRole={userRole}
-          onToggleAdmin={handleToggleAdmin}
-          onRoleChange={handleRoleChange}
-        />
-        
-        {/* Line Filter */}
-        <div className="p-4 border-b border-border bg-card">
-          <LineFilter
-            productionLines={productionLines}
-            selectedLineIds={selectedLineIds}
-            onLineToggle={handleLineToggle}
-            onSelectAll={handleSelectAll}
-            onDeselectAll={handleDeselectAll}
+      <div className={`flex flex-col bg-background ${isFullscreen ? 'fixed inset-0 z-50' : 'h-screen'}`}>
+        {!isFullscreen && (
+          <Header
+            userRole={userRole}
+            onToggleAdmin={handleToggleAdmin}
+            onRoleChange={handleRoleChange}
           />
+        )}
+        
+        {/* Line Filter with Fullscreen Toggle */}
+        <div className="p-4 border-b border-border bg-card">
+          <div className="flex items-center justify-between">
+            <LineFilter
+              productionLines={productionLines}
+              selectedLineIds={selectedLineIds}
+              onLineToggle={handleLineToggle}
+              onSelectAll={handleSelectAll}
+              onDeselectAll={handleDeselectAll}
+              onLineReorder={handleLineReorder}
+            />
+            
+            <Button
+              onClick={toggleFullscreen}
+              variant="outline"
+              size="sm"
+              className="ml-4"
+            >
+              {isFullscreen ? (
+                <>
+                  <Minimize className="h-4 w-4 mr-2" />
+                  Exit Fullscreen
+                </>
+              ) : (
+                <>
+                  <Maximize className="h-4 w-4 mr-2" />
+                  Fullscreen Plan
+                </>
+              )}
+            </Button>
+          </div>
         </div>
         
         <div className="flex-1 flex overflow-hidden">
-          {/* Sidebar container: Now scrollable if content overflows, fix width */}
-          <div className="w-80 h-full border-r border-border bg-card flex flex-col overflow-y-auto">
-            {/* Top section: Google Sheets Config and Refresh Plan */}
-            <div className="p-4 border-b border-border space-y-4 flex-shrink-0">
-              <GoogleSheetsConfig
-                isLoading={isLoading}
-                error={error}
-                isConfigured={isGoogleSheetsConfigured}
-                onSync={fetchOrdersFromGoogleSheets}
-                onConfigure={configureGoogleSheets}
-                onClearError={clearError}
-              />
+          {/* Sidebar container: Hidden in fullscreen mode */}
+          {!isFullscreen && (
+            <div className="w-80 h-full border-r border-border bg-card flex flex-col overflow-y-auto">
+              {/* Top section: Google Sheets Config and Refresh Plan */}
+              <div className="p-4 border-b border-border space-y-4 flex-shrink-0">
+                <GoogleSheetsConfig
+                  isLoading={isLoading}
+                  error={error}
+                  isConfigured={isGoogleSheetsConfigured}
+                  onSync={fetchOrdersFromGoogleSheets}
+                  onConfigure={configureGoogleSheets}
+                  onClearError={clearError}
+                />
+                
+                <Button
+                  onClick={refreshPlan}
+                  disabled={isRefreshing || isLoading}
+                  className="w-full"
+                  variant="outline"
+                >
+                  <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  {isRefreshing ? 'Refreshing Plan...' : 'Refresh Plan'}
+                </Button>
+              </div>
               
-              <Button
-                onClick={refreshPlan}
-                disabled={isRefreshing || isLoading}
-                className="w-full"
-                variant="outline"
-              >
-                <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
-                {isRefreshing ? 'Refreshing Plan...' : 'Refresh Plan'}
-              </Button>
-            </div>
-            
-            {/* Middle section: Pending Orders */}
-            <div className="flex-1 min-h-[350px] max-h-[none] overflow-y-auto py-4">
-              <PendingOrdersSidebar
-                orders={pendingOrders}
-                onOrderSplit={handleOrderSplit}
-                onOrderDelete={handleOrderDelete}
-              />
-            </div>
+              {/* Middle section: Pending Orders */}
+              <div className="flex-1 min-h-[350px] max-h-[none] overflow-y-auto py-4">
+                <PendingOrdersSidebar
+                  orders={pendingOrders}
+                  onOrderSplit={handleOrderSplit}
+                  onOrderDelete={handleOrderDelete}
+                />
+              </div>
 
-            {/* Bottom section: Reports */}
-            <div className="p-4 border-t border-border space-y-2 mt-auto flex-shrink-0">
-              <h4 className="text-sm font-medium text-muted-foreground pt-2">Reports</h4>
-              <Button
-                onClick={() => setShowCuttingReport(true)}
-                className="w-full"
-                variant="outline"
-              >
-                <FileText className="h-4 w-4 mr-2" />
-                Cutting Report
-              </Button>
-              <Button
-                onClick={() => setShowDeliveryReport(true)}
-                className="w-full"
-                variant="outline"
-              >
-                <FileText className="h-4 w-4 mr-2" />
-                Delivery Report
-              </Button>
-              
-              {/* Line Reports */}
-              <div className="space-y-1">
-                <h5 className="text-xs font-medium text-muted-foreground">Line Reports</h5>
-                {productionLines.map(line => (
-                  <Button
-                    key={line.id}
-                    onClick={() => handleLinePlanReport(line)}
-                    className="w-full text-xs"
-                    variant="outline"
-                    size="sm"
-                  >
-                    <FileText className="h-3 w-3 mr-1" />
-                    {line.name} Plan
-                  </Button>
-                ))}
+              {/* Bottom section: Reports */}
+              <div className="p-4 border-t border-border space-y-2 mt-auto flex-shrink-0">
+                <h4 className="text-sm font-medium text-muted-foreground pt-2">Reports</h4>
+                <Button
+                  onClick={() => setShowCuttingReport(true)}
+                  className="w-full"
+                  variant="outline"
+                >
+                  <FileText className="h-4 w-4 mr-2" />
+                  Cutting Report
+                </Button>
+                <Button
+                  onClick={() => setShowDeliveryReport(true)}
+                  className="w-full"
+                  variant="outline"
+                >
+                  <FileText className="h-4 w-4 mr-2" />
+                  Delivery Report
+                </Button>
+                
+                {/* Line Reports */}
+                <div className="space-y-1">
+                  <h5 className="text-xs font-medium text-muted-foreground">Line Reports</h5>
+                  {productionLines.map(line => (
+                    <Button
+                      key={line.id}
+                      onClick={() => handleLinePlanReport(line)}
+                      className="w-full text-xs"
+                      variant="outline"
+                      size="sm"
+                    >
+                      <FileText className="h-3 w-3 mr-1" />
+                      {line.name} Plan
+                    </Button>
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
+          )}
           
           <div className="flex-1 overflow-auto">
             <SchedulingBoard

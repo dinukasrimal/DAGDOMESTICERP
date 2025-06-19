@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+
+import React, { useState, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
@@ -24,6 +25,19 @@ export const GoogleSheetsConfig: React.FC<GoogleSheetsConfigProps> = ({
 }) => {
   const [apiKey, setApiKey] = useState('');
   const [spreadsheetId, setSpreadsheetId] = useState('');
+
+  // Load saved credentials on component mount
+  useEffect(() => {
+    const savedApiKey = localStorage.getItem('googleSheets_apiKey');
+    const savedSpreadsheetId = localStorage.getItem('googleSheets_spreadsheetId');
+    
+    if (savedApiKey) {
+      setApiKey(savedApiKey);
+    }
+    if (savedSpreadsheetId) {
+      setSpreadsheetId(savedSpreadsheetId);
+    }
+  }, []);
 
   const handleSave = async () => {
     if (!apiKey.trim() || !spreadsheetId.trim()) {

@@ -115,9 +115,29 @@ export const useSupabaseProductionData = () => {
     try {
       console.log('🔄 Starting to fetch orders from Google Sheets (READ-ONLY)...');
       
-      // Pass current orders to preserve scheduled ones
+      // Get current orders from database
       const currentOrders = await supabaseDataService.getOrders();
-      const fetchedOrders = await dataService.fetchOrdersFromSheet(currentOrders);
+      
+      // First update cut/issue quantities for ALL existing orders (including scheduled)
+      console.log('🔄 Updating cut/issue quantities for existing orders...');
+      const { updatedOrders, hasUpdates } = await dataService.updateCutAndIssueQuantities(currentOrders);
+      
+      if (hasUpdates) {
+        console.log('💾 Syncing updated cut/issue quantities to database...');
+        for (const order of updatedOrders) {
+          try {
+            await supabaseDataService.updateOrder(order.id, {
+              cutQuantity: order.cutQuantity,
+              issueQuantity: order.issueQuantity
+            });
+          } catch (error) {
+            console.error(`Failed to update cut/issue quantities for order ${order.poNumber}:`, error);
+          }
+        }
+      }
+      
+      // Then fetch new orders from sheet
+      const fetchedOrders = await dataService.fetchOrdersFromSheet(updatedOrders);
       
       console.log(`📥 Processed ${fetchedOrders.length} orders from Google Sheets sync (READ-ONLY)`);
       

@@ -1,4 +1,3 @@
-
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { GoogleSheetsService, SheetOrder } from './googleSheetsService';
 
@@ -71,6 +70,60 @@ export class DataService {
       planEndDate: null,
       actualProduction: {}
     };
+  }
+
+  async updateCutAndIssueQuantities(existingOrders: Order[]): Promise<{ updatedOrders: Order[], hasUpdates: boolean }> {
+    if (!this.googleSheetsService) {
+      throw new Error('Google Sheets service not initialized');
+    }
+
+    try {
+      console.log('🔄 Updating cut and issue quantities for existing orders...');
+      const { cutQtyMap, issueQtyMap } = await this.googleSheetsService.getCutAndIssueQuantities();
+      
+      let hasUpdates = false;
+      const updatedOrders = existingOrders.map(order => {
+        const basePONumber = order.basePONumber || order.poNumber.split(' Split ')[0];
+        const newCutQty = cutQtyMap.get(basePONumber) || 0;
+        const newIssueQty = issueQtyMap.get(basePONumber) || 0;
+        
+        // Check if cut or issue quantities have changed
+        if (order.cutQuantity !== newCutQty || order.issueQuantity !== newIssueQty) {
+          console.log(`📝 Updating quantities for ${order.poNumber}: Cut ${order.cutQuantity} → ${newCutQty}, Issue ${order.issueQuantity} → ${newIssueQty}`);
+          hasUpdates = true;
+          
+          // For split orders, calculate proportional quantities
+          if (order.poNumber.includes(' Split ') && order.basePONumber) {
+            const totalOrderQty = existingOrders
+              .filter(o => (o.basePONumber || o.poNumber.split(' Split ')[0]) === basePONumber)
+              .reduce((sum, o) => sum + o.orderQuantity, 0);
+            
+            const proportionalCut = totalOrderQty > 0 ? Math.round((order.orderQuantity / totalOrderQty) * newCutQty) : 0;
+            const proportionalIssue = totalOrderQty > 0 ? Math.round((order.orderQuantity / totalOrderQty) * newIssueQty) : 0;
+            
+            return {
+              ...order,
+              cutQuantity: proportionalCut,
+              issueQuantity: proportionalIssue
+            };
+          } else {
+            return {
+              ...order,
+              cutQuantity: newCutQty,
+              issueQuantity: newIssueQty
+            };
+          }
+        }
+        
+        return order;
+      });
+      
+      console.log(`✅ Cut/Issue quantity update complete. ${hasUpdates ? 'Updates found' : 'No updates needed'}`);
+      return { updatedOrders, hasUpdates };
+    } catch (error) {
+      console.error('❌ Error updating cut and issue quantities:', error);
+      return { updatedOrders: existingOrders, hasUpdates: false };
+    }
   }
 
   async fetchOrdersFromSheet(existingOrders: Order[] = []): Promise<Order[]> {
