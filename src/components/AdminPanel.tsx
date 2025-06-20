@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Calendar } from './ui/calendar';
 import { Checkbox } from './ui/checkbox';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
-import { Plus, Trash2, Edit, Settings, Calendar as CalendarIcon, Target, ArrowLeft } from 'lucide-react';
+import { Plus, Trash2, Edit, Settings, Calendar as CalendarIcon, Target, ArrowLeft, Check, X } from 'lucide-react';
 import { supabaseDataService } from '../services/supabaseDataService';
 import { toast } from './ui/use-toast';
 
@@ -46,6 +46,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   ]);
   const [finalEfficiency, setFinalEfficiency] = useState<number>(90);
   const [isLoading, setIsLoading] = useState(false);
+  const [editingLineId, setEditingLineId] = useState<string | null>(null);
+  const [editingLineName, setEditingLineName] = useState('');
+  const [editingLineCapacity, setEditingLineCapacity] = useState<number>(100);
 
   const handleAddProductionLine = async () => {
     if (newLineName.trim()) {
@@ -89,6 +92,53 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       toast({
         title: "Error",
         description: "Failed to delete production line",
+        variant: "destructive"
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const startEditingLine = (line: ProductionLine) => {
+    setEditingLineId(line.id);
+    setEditingLineName(line.name);
+    setEditingLineCapacity(line.capacity);
+  };
+
+  const cancelEditingLine = () => {
+    setEditingLineId(null);
+    setEditingLineName('');
+    setEditingLineCapacity(100);
+  };
+
+  const saveEditingLine = async () => {
+    if (!editingLineId || !editingLineName.trim()) return;
+
+    setIsLoading(true);
+    try {
+      const updatedLine = await supabaseDataService.updateProductionLine(editingLineId, {
+        name: editingLineName.trim(),
+        capacity: editingLineCapacity
+      });
+      
+      const updatedLines = productionLines.map(line => 
+        line.id === editingLineId ? updatedLine : line
+      );
+      onProductionLinesChange(updatedLines);
+      
+      setEditingLineId(null);
+      setEditingLineName('');
+      setEditingLineCapacity(100);
+      
+      toast({
+        title: "Success",
+        description: "Production line updated successfully"
+      });
+    } catch (error) {
+      console.error('Error updating production line:', error);
+      toast({
+        title: "Error",
+        description: "Failed to update production line",
         variant: "destructive"
       });
     } finally {
@@ -309,18 +359,70 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <div className="space-y-2">
                 {productionLines.map((line) => (
                   <div key={line.id} className="flex items-center justify-between p-3 border rounded-lg">
-                    <div>
-                      <div className="font-medium">{line.name}</div>
-                      <div className="text-sm text-muted-foreground">Capacity: {line.capacity}</div>
+                    {editingLineId === line.id ? (
+                      <div className="flex-1 grid grid-cols-2 gap-2 mr-4">
+                        <Input
+                          value={editingLineName}
+                          onChange={(e) => setEditingLineName(e.target.value)}
+                          placeholder="Line name"
+                          disabled={isLoading}
+                        />
+                        <Input
+                          type="number"
+                          value={editingLineCapacity}
+                          onChange={(e) => setEditingLineCapacity(parseInt(e.target.value) || 100)}
+                          placeholder="Capacity"
+                          disabled={isLoading}
+                        />
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="font-medium">{line.name}</div>
+                        <div className="text-sm text-muted-foreground">Capacity: {line.capacity}</div>
+                      </div>
+                    )}
+                    
+                    <div className="flex items-center space-x-2">
+                      {editingLineId === line.id ? (
+                        <>
+                          <Button
+                            variant="default"
+                            size="sm"
+                            onClick={saveEditingLine}
+                            disabled={isLoading || !editingLineName.trim()}
+                          >
+                            <Check className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={cancelEditingLine}
+                            disabled={isLoading}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => startEditingLine(line)}
+                            disabled={isLoading || editingLineId !== null}
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => handleDeleteProductionLine(line.id)}
+                            disabled={isLoading || editingLineId !== null}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </>
+                      )}
                     </div>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => handleDeleteProductionLine(line.id)}
-                      disabled={isLoading}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
                   </div>
                 ))}
               </div>
