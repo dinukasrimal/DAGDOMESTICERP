@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback } from 'react';
 import { useSupabaseProductionData } from '../hooks/useSupabaseProductionData';
 import { SchedulingBoard } from './SchedulingBoard';
@@ -8,7 +7,7 @@ import { GoogleSheetsConfig } from './GoogleSheetsConfig';
 import { Header } from './Header';
 import { LineFilter } from './LineFilter';
 import { Button } from './ui/button';
-import { RefreshCw, FileText, Maximize, Minimize } from 'lucide-react';
+import { RefreshCw, FileText, Maximize, Minimize, Database } from 'lucide-react';
 import { TooltipProvider } from './ui/tooltip';
 import { Order, ProductionLine } from '../types/scheduler';
 import { ReportDialog } from './reports/ReportDialog';
@@ -18,8 +17,10 @@ import { LinePlanReportDialog } from './reports/LinePlanReportDialog';
 import { downloadElementAsPdf } from '../lib/pdfUtils';
 import { toast } from "@/hooks/use-toast";
 import { dataService } from "../services/dataService";
+import { useNavigate } from 'react-router-dom';
 
 export const ProductionScheduler: React.FC = () => {
+  const navigate = useNavigate();
   const [userRole, setUserRole] = useState<'planner' | 'superuser'>('planner');
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -486,23 +487,34 @@ export const ProductionScheduler: React.FC = () => {
             />
           </div>
           
-          <Button
-            onClick={toggleFullscreen}
-            variant="outline"
-            size="sm"
-          >
-            {isFullscreen ? (
-              <>
-                <Minimize className="h-4 w-4 mr-2" />
-                Exit Fullscreen
-              </>
-            ) : (
-              <>
-                <Maximize className="h-4 w-4 mr-2" />
-                Fullscreen Plan
-              </>
-            )}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={() => navigate('/odoo')}
+              variant="outline"
+              size="sm"
+            >
+              <Database className="h-4 w-4 mr-2" />
+              Odoo Integration
+            </Button>
+            
+            <Button
+              onClick={toggleFullscreen}
+              variant="outline"
+              size="sm"
+            >
+              {isFullscreen ? (
+                <>
+                  <Minimize className="h-4 w-4 mr-2" />
+                  Exit Fullscreen
+                </>
+              ) : (
+                <>
+                  <Maximize className="h-4 w-4 mr-2" />
+                  Fullscreen Plan
+                </>
+              )}
+            </Button>
+          </div>
         </div>
         
         {/* Main content area with more space for the plan */}
