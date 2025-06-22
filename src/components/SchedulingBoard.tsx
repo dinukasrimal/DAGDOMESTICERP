@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -38,9 +37,9 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const [selectedYears, setSelectedYears] = useState<number[]>([new Date().getFullYear()]);
   const [selectedMonths, setSelectedMonths] = useState<number[]>([new Date().getMonth()]);
   
-  // Temporary holding area state
-  const [tempHoldOrders, setTempHoldOrders] = useState<Order[]>([]);
-  
+  // Temporary holding area state - now per line
+  const [tempHoldOrders, setTempHoldOrders] = useState<{ [lineId: string]: Order[] }>({});
+
   const [scheduleDialog, setScheduleDialog] = useState<{
     isOpen: boolean;
     order: Order | null;
@@ -345,7 +344,58 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [isMultiSelectMode, selectedOrders, orders]);
 
-  // Fixed handleDrop function to properly handle single vs multi-order drops
+  // Handle drop in temporary hold area - updated to work per line
+  const handleTempHoldDrop = useCallback((e: React.DragEvent, lineId: string) => {
+    e.preventDefault();
+    
+    try {
+      const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
+      
+      if (dragData.type === 'multi-order-drag' && dragData.orders) {
+        const ordersToDrop = dragData.orders as Order[];
+        console.log(`📦 Adding ${ordersToDrop.length} orders to temp hold for line ${lineId}`);
+        
+        // Move orders to temp hold and remove from their current positions
+        ordersToDrop.forEach(order => {
+          if (order.status === 'scheduled') {
+            onOrderMovedToPending(order);
+          }
+        });
+        
+        setTempHoldOrders(prev => ({
+          ...prev,
+          [lineId]: [...(prev[lineId] || []), ...ordersToDrop]
+        }));
+        setSelectedOrders(new Set());
+        setIsMultiSelectMode(false);
+        
+      } else if (dragData.type === 'single-order-drag' && dragData.orders && dragData.orders.length === 1) {
+        const singleOrder = dragData.orders[0];
+        console.log(`📦 Adding order ${singleOrder.poNumber} to temp hold for line ${lineId}`);
+        
+        if (singleOrder.status === 'scheduled') {
+          onOrderMovedToPending(singleOrder);
+        }
+        
+        setTempHoldOrders(prev => ({
+          ...prev,
+          [lineId]: [...(prev[lineId] || []), singleOrder]
+        }));
+      }
+    } catch (error) {
+      console.error('❌ Failed to parse dropped order data for temp hold:', error);
+    }
+  }, [onOrderMovedToPending]);
+
+  // Remove order from temp hold - updated to work per line
+  const handleRemoveFromTempHold = useCallback((orderId: string, lineId: string) => {
+    setTempHoldOrders(prev => ({
+      ...prev,
+      [lineId]: (prev[lineId] || []).filter(order => order.id !== orderId)
+    }));
+  }, []);
+
+  // Updated handleDrop function to remove orders from all temp hold areas
   const handleDrop = useCallback(async (e: React.DragEvent, lineId: string, date: Date) => {
     e.preventDefault();
     setDragHighlight(null);
@@ -401,10 +451,16 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
           }
         }
         
-        // Remove successfully scheduled orders from temp hold
-        setTempHoldOrders(prev => prev.filter(tempOrder => 
-          !ordersToDrop.some(droppedOrder => droppedOrder.id === tempOrder.id)
-        ));
+        // Remove successfully scheduled orders from ALL temp hold areas
+        setTempHoldOrders(prev => {
+          const updated = { ...prev };
+          Object.keys(updated).forEach(tempLineId => {
+            updated[tempLineId] = updated[tempLineId].filter(tempOrder => 
+              !ordersToDrop.some(droppedOrder => droppedOrder.id === tempOrder.id)
+            );
+          });
+          return updated;
+        });
         
         // Clear selection after successful multi-drop
         console.log('🧹 Clearing selection after multi-drop');
@@ -562,6 +618,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     return plan;
   };
 
+  // Updated handleScheduleConfirm to remove orders from temp hold
   const handleScheduleConfirm = useCallback(async () => {
     const { order, lineId, startDate, fillFirstDay } = scheduleDialog;
     if (!order || !lineId || !startDate) return;
@@ -586,8 +643,14 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       const updatedOrder = { ...order, assignedLineId: lineId };
       await onOrderScheduled(updatedOrder, startDate, endDate, dailyPlan);
       
-      // Remove the scheduled order from temp hold if it was there
-      setTempHoldOrders(prev => prev.filter(tempOrder => tempOrder.id !== order.id));
+      // Remove the scheduled order from ALL temp hold areas
+      setTempHoldOrders(prev => {
+        const updated = { ...prev };
+        Object.keys(updated).forEach(tempLineId => {
+          updated[tempLineId] = updated[tempLineId].filter(tempOrder => tempOrder.id !== order.id);
+        });
+        return updated;
+      });
       
       setScheduleDialog({ isOpen: false, order: null, lineId: '', startDate: null });
       setPlanningMethod('capacity');
@@ -690,48 +753,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         (a.planStartDate?.getTime() || 0) - (b.planStartDate?.getTime() || 0)
       );
   };
-
-  // Handle drop in temporary hold area
-  const handleTempHoldDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    
-    try {
-      const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
-      
-      if (dragData.type === 'multi-order-drag' && dragData.orders) {
-        const ordersToDrop = dragData.orders as Order[];
-        console.log(`📦 Adding ${ordersToDrop.length} orders to temp hold`);
-        
-        // Move orders to temp hold and remove from their current positions
-        ordersToDrop.forEach(order => {
-          if (order.status === 'scheduled') {
-            onOrderMovedToPending(order);
-          }
-        });
-        
-        setTempHoldOrders(prev => [...prev, ...ordersToDrop]);
-        setSelectedOrders(new Set());
-        setIsMultiSelectMode(false);
-        
-      } else if (dragData.type === 'single-order-drag' && dragData.orders && dragData.orders.length === 1) {
-        const singleOrder = dragData.orders[0];
-        console.log(`📦 Adding order ${singleOrder.poNumber} to temp hold`);
-        
-        if (singleOrder.status === 'scheduled') {
-          onOrderMovedToPending(singleOrder);
-        }
-        
-        setTempHoldOrders(prev => [...prev, singleOrder]);
-      }
-    } catch (error) {
-      console.error('❌ Failed to parse dropped order data for temp hold:', error);
-    }
-  }, [onOrderMovedToPending]);
-
-  // Remove order from temp hold
-  const handleRemoveFromTempHold = useCallback((orderId: string) => {
-    setTempHoldOrders(prev => prev.filter(order => order.id !== orderId));
-  }, []);
 
   return (
     <div className="w-full h-full flex flex-col bg-background">
@@ -957,44 +978,39 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                 </div>
               </div>
 
-              {/* Temporary Hold Area for this row */}
+              {/* Temporary Hold Area for this line */}
               <div className="sticky left-56 z-20 w-32 border-r-2 border-gray-300 bg-white shadow-md">
                 <div
                   className="h-40 bg-gradient-to-r from-amber-50 to-amber-100 border border-amber-200 border-dashed relative overflow-hidden p-1"
-                  onDrop={handleTempHoldDrop}
+                  onDrop={(e) => handleTempHoldDrop(e, line.id)}
                   onDragOver={handleDragOver}
                 >
-                  {line === productionLines[0] && (
-                    <div className="h-full flex flex-col gap-0.5 overflow-y-auto">
-                      {tempHoldOrders.map((order, index) => (
-                        <div
-                          key={`temp-${order.id}-${index}`}
-                          className="bg-amber-200 border border-amber-300 rounded p-1 text-xs cursor-move relative group"
-                          draggable
-                          onDragStart={(e) => handleOrderDragStart(e, order)}
-                          onDragEnd={handleOrderDragEnd}
+                  <div className="h-full flex flex-col gap-0.5 overflow-y-auto">
+                    {(tempHoldOrders[line.id] || []).map((order, index) => (
+                      <div
+                        key={`temp-${order.id}-${index}`}
+                        className="bg-amber-200 border border-amber-300 rounded p-1 text-xs cursor-move relative group"
+                        draggable
+                        onDragStart={(e) => handleOrderDragStart(e, order)}
+                        onDragEnd={handleOrderDragEnd}
+                      >
+                        <div className="font-semibold text-amber-800 truncate text-xs">{order.poNumber}</div>
+                        <div className="text-amber-700 truncate text-xs">{order.styleId}</div>
+                        <button
+                          onClick={() => handleRemoveFromTempHold(order.id, line.id)}
+                          className="absolute top-0 right-0 w-3 h-3 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                          title="Remove from temp hold"
                         >
-                          <div className="font-semibold text-amber-800 truncate text-xs">{order.poNumber}</div>
-                          <div className="text-amber-700 truncate text-xs">{order.styleId}</div>
-                          <button
-                            onClick={() => handleRemoveFromTempHold(order.id)}
-                            className="absolute top-0 right-0 w-3 h-3 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
-                            title="Remove from temp hold"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                      {tempHoldOrders.length === 0 && (
-                        <div className="h-full flex items-center justify-center text-amber-600 text-xs text-center">
-                          Drop here
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {line !== productionLines[0] && (
-                    <div className="h-full opacity-30"></div>
-                  )}
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                    {(tempHoldOrders[line.id] || []).length === 0 && (
+                      <div className="h-full flex items-center justify-center text-amber-600 text-xs text-center">
+                        Drop here
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
