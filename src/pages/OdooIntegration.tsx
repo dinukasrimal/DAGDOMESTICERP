@@ -1,14 +1,12 @@
-
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { Database, Download, RefreshCw, Settings, CheckCircle, AlertCircle } from 'lucide-react';
+import { Database, Download, RefreshCw, Settings, CheckCircle, AlertCircle, BarChart3 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import { useNavigate } from 'react-router-dom';
 
 interface SaleData {
   id: string;
@@ -30,6 +28,7 @@ interface PurchaseData {
 
 const OdooIntegration: React.FC = () => {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [saleData, setSaleData] = useState<SaleData[]>([]);
@@ -196,9 +195,19 @@ const OdooIntegration: React.FC = () => {
 
   return (
     <div className="container mx-auto p-6 space-y-6">
-      <div className="flex items-center space-x-2 mb-6">
-        <Database className="h-8 w-8 text-blue-600" />
-        <h1 className="text-3xl font-bold">Odoo Integration</h1>
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center space-x-2">
+          <Database className="h-8 w-8 text-blue-600" />
+          <h1 className="text-3xl font-bold">Odoo Integration</h1>
+        </div>
+        <Button 
+          onClick={() => navigate('/reports')} 
+          variant="outline"
+          className="flex items-center space-x-2"
+        >
+          <BarChart3 className="h-4 w-4" />
+          <span>View Reports</span>
+        </Button>
       </div>
 
       {/* Connection Status */}
