@@ -31,14 +31,14 @@ export const ReportDialog: React.FC<ReportDialogProps> = ({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[80vw] max-h-[90vh] flex flex-col">
-        <DialogHeader>
+      <DialogContent className="w-screen h-screen max-w-none max-h-none m-0 p-0 flex flex-col">
+        <DialogHeader className="p-4 border-b">
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
-        <div className="flex-grow overflow-auto p-1">
+        <div className="flex-grow overflow-auto p-4">
           {children}
         </div>
-        <DialogFooter className="mt-4">
+        <DialogFooter className="p-4 border-t">
           {onDownloadPdf && (
             <Button onClick={onDownloadPdf} variant="outline">
               {downloadButtonText}

@@ -34,11 +34,11 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
   const [selectedMonth, setSelectedMonth] = useState('all');
   const [selectedCategory, setSelectedCategory] = useState('all');
 
-  // Mock inventory data since we don't have real inventory from Odoo yet
+  // Mock inventory data with correct product categories
   const mockInventoryData: InventoryData[] = [
     {
-      product_name: "NADUNI FASHION - DEIYANDARA",
-      product_category: "EMBILIPITIYA",
+      product_name: "SOLACE MENS BRIEF",
+      product_category: "SOLACE",
       quantity_on_hand: 764,
       quantity_available: 774,
       incoming_qty: 253,
@@ -46,12 +46,12 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
       virtual_available: 1017,
       reorder_min: 100,
       reorder_max: 1000,
-      cost: 25.50,
+      cost: 3825.50,
       location: "WH/Stock"
     },
     {
-      product_name: "BOXER VEST",
-      product_category: "VEST",
+      product_name: "DELI BOXER SHORTS",
+      product_category: "DELI",
       quantity_on_hand: 18816,
       quantity_available: 10597,
       incoming_qty: 1204,
@@ -59,12 +59,12 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
       virtual_available: 20200,
       reorder_min: 5000,
       reorder_max: 25000,
-      cost: 15.75,
+      cost: 2362.75,
       location: "WH/Stock"
     },
     {
-      product_name: "BLACK VEST 100",
-      product_category: "VEST", 
+      product_name: "FEER COTTON VEST",
+      product_category: "FEER", 
       quantity_on_hand: 288,
       quantity_available: 398,
       incoming_qty: 110,
@@ -72,12 +72,12 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
       virtual_available: 288,
       reorder_min: 100,
       reorder_max: 500,
-      cost: 18.20,
+      cost: 2730.20,
       location: "WH/Stock"
     },
     {
-      product_name: "COLOR VEST 75",
-      product_category: "VEST",
+      product_name: "BOXER PREMIUM PACK",
+      product_category: "BOXER",
       quantity_on_hand: 293,
       quantity_available: 204,
       incoming_qty: 30,
@@ -85,12 +85,12 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
       virtual_available: 304,
       reorder_min: 50,
       reorder_max: 400,
-      cost: 16.80,
+      cost: 2520.80,
       location: "WH/Stock"
     },
     {
-      product_name: "SLEEVE LESS VEST",
-      product_category: "VEST",
+      product_name: "SOLACE LADIES BRIEF",
+      product_category: "SOLACE",
       quantity_on_hand: 635,
       quantity_available: 158,
       incoming_qty: 0,
@@ -98,7 +98,46 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
       virtual_available: 675,
       reorder_min: 200,
       reorder_max: 800,
-      cost: 14.30,
+      cost: 2145.30,
+      location: "WH/Stock"
+    },
+    {
+      product_name: "DELI COTTON PANTY",
+      product_category: "DELI",
+      quantity_on_hand: 1250,
+      quantity_available: 980,
+      incoming_qty: 200,
+      outgoing_qty: 470,
+      virtual_available: 1180,
+      reorder_min: 300,
+      reorder_max: 1500,
+      cost: 1890.75,
+      location: "WH/Stock"
+    },
+    {
+      product_name: "FEER SPORTS BRA",
+      product_category: "FEER",
+      quantity_on_hand: 420,
+      quantity_available: 350,
+      incoming_qty: 80,
+      outgoing_qty: 150,
+      virtual_available: 500,
+      reorder_min: 100,
+      reorder_max: 600,
+      cost: 4250.90,
+      location: "WH/Stock"
+    },
+    {
+      product_name: "BOXER KIDS BRIEF",
+      product_category: "BOXER",
+      quantity_on_hand: 890,
+      quantity_available: 720,
+      incoming_qty: 150,
+      outgoing_qty: 320,
+      virtual_available: 1040,
+      reorder_min: 200,
+      reorder_max: 1000,
+      cost: 1675.40,
       location: "WH/Stock"
     }
   ];

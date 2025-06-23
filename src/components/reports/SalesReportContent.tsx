@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { TrendingUp, TrendingDown, Calendar, DollarSign, Package } from 'lucide-react';
@@ -32,6 +33,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   const [selectedMonth, setSelectedMonth] = useState('all');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [selectedCustomer, setSelectedCustomer] = useState('all');
+  const [showValues, setShowValues] = useState(false);
 
   // Get available years from data
   const availableYears = [...new Set(salesData.map(item => 
@@ -53,7 +55,6 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
 
   // Calculate total quantity and value
   const totalQuantity = filteredData.reduce((sum, item) => {
-    // Assuming 1 unit per order for now - you may need to adjust based on order lines
     return sum + (item.order_lines?.reduce((lineSum, line) => lineSum + line.qty_delivered, 0) || 1);
   }, 0);
 
@@ -61,19 +62,44 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
 
   // Previous year comparison
   const previousYear = (parseInt(selectedYear) - 1).toString();
-  const previousYearData = salesData.filter(item => 
-    new Date(item.date_order).getFullYear().toString() === previousYear
-  );
+  const previousYearData = salesData.filter(item => {
+    const orderDate = new Date(item.date_order);
+    const year = orderDate.getFullYear().toString();
+    const month = orderDate.getMonth() + 1;
+    
+    if (year !== previousYear) return false;
+    if (selectedMonth !== 'all' && month.toString() !== selectedMonth) return false;
+    if (selectedCustomer !== 'all' && item.partner_name !== selectedCustomer) return false;
+    
+    return true;
+  });
+
   const previousYearQuantity = previousYearData.reduce((sum, item) => {
     return sum + (item.order_lines?.reduce((lineSum, line) => lineSum + line.qty_delivered, 0) || 1);
   }, 0);
+
+  const previousYearValue = previousYearData.reduce((sum, item) => sum + item.amount_total, 0);
 
   const quantityGrowth = previousYearQuantity > 0 
     ? ((totalQuantity - previousYearQuantity) / previousYearQuantity * 100).toFixed(1)
     : '0';
 
-  // Customer data aggregation
+  const valueGrowth = previousYearValue > 0 
+    ? ((totalValue - previousYearValue) / previousYearValue * 100).toFixed(1)
+    : '0';
+
+  // Customer data aggregation with previous year
   const customerData = filteredData.reduce((acc, item) => {
+    const customer = item.partner_name;
+    if (!acc[customer]) {
+      acc[customer] = { quantity: 0, value: 0 };
+    }
+    acc[customer].quantity += item.order_lines?.reduce((sum, line) => sum + line.qty_delivered, 0) || 1;
+    acc[customer].value += item.amount_total;
+    return acc;
+  }, {} as Record<string, { quantity: number; value: number }>);
+
+  const customerPreviousData = previousYearData.reduce((acc, item) => {
     const customer = item.partner_name;
     if (!acc[customer]) {
       acc[customer] = { quantity: 0, value: 0 };
@@ -86,11 +112,11 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   const customerChartData = Object.entries(customerData)
     .map(([customer, data]) => ({
       customer: customer.length > 15 ? customer.substring(0, 15) + '...' : customer,
-      quantity: data.quantity,
-      value: data.value,
+      current: showValues ? data.value : data.quantity,
+      previous: showValues ? (customerPreviousData[customer]?.value || 0) : (customerPreviousData[customer]?.quantity || 0),
       avgPrice: Math.round(data.value / data.quantity)
     }))
-    .sort((a, b) => b.quantity - a.quantity)
+    .sort((a, b) => b.current - a.current)
     .slice(0, 10);
 
   // Monthly data aggregation
@@ -105,11 +131,22 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     return acc;
   }, {} as Record<string, { quantity: number; value: number }>);
 
+  const monthlyPreviousData = previousYearData.reduce((acc, item) => {
+    const date = new Date(item.date_order);
+    const monthKey = date.toLocaleDateString('en-US', { month: 'short' });
+    if (!acc[monthKey]) {
+      acc[monthKey] = { quantity: 0, value: 0 };
+    }
+    acc[monthKey].quantity += item.order_lines?.reduce((sum, line) => sum + line.qty_delivered, 0) || 1;
+    acc[monthKey].value += item.amount_total;
+    return acc;
+  }, {} as Record<string, { quantity: number; value: number }>);
+
   const monthlyChartData = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
     .map(month => ({
       month,
-      current: monthlyData[month]?.quantity || 0,
-      previous: 0, // You can calculate previous year data here
+      current: showValues ? (monthlyData[month]?.value || 0) : (monthlyData[month]?.quantity || 0),
+      previous: showValues ? (monthlyPreviousData[month]?.value || 0) : (monthlyPreviousData[month]?.quantity || 0),
       variance: 0
     }));
 
@@ -117,20 +154,12 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   const customers = [...new Set(salesData.map(item => item.partner_name))].sort();
 
   const chartConfig = {
-    quantity: {
-      label: "Quantity",
-      color: "hsl(var(--chart-1))",
-    },
-    value: {
-      label: "Value",
-      color: "hsl(var(--chart-2))",
-    },
     current: {
-      label: "Current Year",
+      label: `Current Year (${selectedYear})`,
       color: "hsl(var(--chart-1))",
     },
     previous: {
-      label: "Previous Year",
+      label: `Previous Year (${previousYear})`,
       color: "hsl(var(--chart-2))",
     }
   };
@@ -188,6 +217,16 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                 </SelectContent>
               </Select>
             </div>
+            <div>
+              <label className="text-sm font-medium mb-2 block">Display</label>
+              <Button 
+                onClick={() => setShowValues(!showValues)}
+                variant={showValues ? "default" : "outline"}
+                className="w-full"
+              >
+                {showValues ? "Values (LKR)" : "Quantity"}
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -195,7 +234,9 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
       {/* Summary Card */}
       <Card>
         <CardHeader className="text-center">
-          <CardTitle className="text-xl font-bold">Sales Report By Quantity</CardTitle>
+          <CardTitle className="text-xl font-bold">
+            Sales Report By {showValues ? "Value" : "Quantity"}
+          </CardTitle>
           <div className="flex justify-center items-center space-x-8 mt-4">
             <div className="text-center">
               <div className="text-3xl font-bold">{selectedYear}</div>
@@ -206,19 +247,23 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
             </div>
           </div>
           <div className="text-center mt-4">
-            <div className="text-4xl font-bold text-blue-600">{totalQuantity.toLocaleString()}K</div>
+            <div className="text-4xl font-bold text-blue-600">
+              {showValues ? `LKR ${totalValue.toLocaleString()}` : `${totalQuantity.toLocaleString()}`}
+            </div>
             <div className="flex items-center justify-center mt-2">
-              <span className="text-sm mr-2">Previous Year: {Math.round(previousYearQuantity/1000)}K</span>
+              <span className="text-sm mr-2">
+                Previous Year: {showValues ? `LKR ${previousYearValue.toLocaleString()}` : `${previousYearQuantity.toLocaleString()}`}
+              </span>
               <div className="flex items-center">
-                {parseFloat(quantityGrowth) > 0 ? (
+                {parseFloat(showValues ? valueGrowth : quantityGrowth) > 0 ? (
                   <TrendingUp className="h-4 w-4 text-green-600 mr-1" />
                 ) : (
                   <TrendingDown className="h-4 w-4 text-red-600 mr-1" />
                 )}
                 <span className={`text-sm font-medium ${
-                  parseFloat(quantityGrowth) > 0 ? 'text-green-600' : 'text-red-600'
+                  parseFloat(showValues ? valueGrowth : quantityGrowth) > 0 ? 'text-green-600' : 'text-red-600'
                 }`}>
-                  {quantityGrowth}%
+                  {showValues ? valueGrowth : quantityGrowth}%
                 </span>
               </div>
             </div>
@@ -228,10 +273,10 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
 
       {/* Charts Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Customer Quantity Chart */}
+        {/* Customer Chart */}
         <Card>
           <CardHeader>
-            <CardTitle>Qty and AVERAGE PIECES by Customer</CardTitle>
+            <CardTitle>{showValues ? "Value" : "Qty"} by Customer</CardTitle>
             <Badge variant="outline">{selectedYear}</Badge>
           </CardHeader>
           <CardContent>
@@ -248,7 +293,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                   />
                   <YAxis />
                   <ChartTooltip content={<ChartTooltipContent />} />
-                  <Bar dataKey="quantity" fill="var(--color-quantity)" />
+                  <Bar dataKey="current" fill="var(--color-current)" />
                 </BarChart>
               </ResponsiveContainer>
             </ChartContainer>
@@ -258,7 +303,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
         {/* Year over Year Comparison */}
         <Card>
           <CardHeader>
-            <CardTitle>Current vs Previous Year Quantity By Customer</CardTitle>
+            <CardTitle>Current vs Previous Year {showValues ? "Value" : "Quantity"} By Customer</CardTitle>
           </CardHeader>
           <CardContent>
             <ChartContainer config={chartConfig} className="h-80">
@@ -274,7 +319,8 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                   />
                   <YAxis />
                   <ChartTooltip content={<ChartTooltipContent />} />
-                  <Bar dataKey="quantity" fill="var(--color-current)" />
+                  <Bar dataKey="current" fill="var(--color-current)" />
+                  <Bar dataKey="previous" fill="var(--color-previous)" />
                 </BarChart>
               </ResponsiveContainer>
             </ChartContainer>
@@ -284,7 +330,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
         {/* Monthly Trends */}
         <Card>
           <CardHeader>
-            <CardTitle>Qty and AVERAGE PIECES by MONTH_NAME and YEAR_ID</CardTitle>
+            <CardTitle>{showValues ? "Value" : "Qty"} by Month</CardTitle>
             <Badge variant="outline">{selectedYear}</Badge>
           </CardHeader>
           <CardContent>
@@ -295,17 +341,17 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                   <XAxis dataKey="month" />
                   <YAxis />
                   <ChartTooltip content={<ChartTooltipContent />} />
-                  <Bar dataKey="current" fill="var(--color-quantity)" />
+                  <Bar dataKey="current" fill="var(--color-current)" />
                 </BarChart>
               </ResponsiveContainer>
             </ChartContainer>
           </CardContent>
         </Card>
 
-        {/* Monthly Comparison with Variance Line */}
+        {/* Monthly Comparison with Previous Year */}
         <Card>
           <CardHeader>
-            <CardTitle>Current vs Previous Year Quantity By Month</CardTitle>
+            <CardTitle>Current vs Previous Year {showValues ? "Value" : "Quantity"} By Month</CardTitle>
           </CardHeader>
           <CardContent>
             <ChartContainer config={chartConfig} className="h-80">
@@ -338,7 +384,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                   <th className="border p-2 text-left">Month</th>
                   <th className="border p-2 text-left">Customer</th>
                   <th className="border p-2 text-right">Quantity</th>
-                  <th className="border p-2 text-right">Value</th>
+                  <th className="border p-2 text-right">Value (LKR)</th>
                 </tr>
               </thead>
               <tbody>
@@ -352,14 +398,14 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                       <td className="border p-2">{date.toLocaleDateString('en-US', { month: 'short' })}</td>
                       <td className="border p-2">{item.partner_name}</td>
                       <td className="border p-2 text-right">{quantity}</td>
-                      <td className="border p-2 text-right">${item.amount_total.toLocaleString()}</td>
+                      <td className="border p-2 text-right">LKR {item.amount_total.toLocaleString()}</td>
                     </tr>
                   );
                 })}
                 <tr className="bg-gray-100 font-bold">
                   <td className="border p-2" colSpan={3}>Total</td>
                   <td className="border p-2 text-right">{totalQuantity.toLocaleString()}</td>
-                  <td className="border p-2 text-right">${totalValue.toLocaleString()}</td>
+                  <td className="border p-2 text-right">LKR {totalValue.toLocaleString()}</td>
                 </tr>
               </tbody>
             </table>
