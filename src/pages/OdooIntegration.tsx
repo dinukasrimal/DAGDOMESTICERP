@@ -8,13 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Database, Download, RefreshCw, Settings, CheckCircle, AlertCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-
-interface OdooConfig {
-  url: string;
-  database: string;
-  username: string;
-  password: string;
-}
+import { supabase } from '@/integrations/supabase/client';
 
 interface SaleData {
   id: string;
@@ -36,44 +30,37 @@ interface PurchaseData {
 
 const OdooIntegration: React.FC = () => {
   const { toast } = useToast();
-  const [config, setConfig] = useState<OdooConfig>({
-    url: '',
-    database: '',
-    username: '',
-    password: ''
-  });
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [saleData, setSaleData] = useState<SaleData[]>([]);
   const [purchaseData, setPurchaseData] = useState<PurchaseData[]>([]);
 
-  const handleConfigChange = (field: keyof OdooConfig, value: string) => {
-    setConfig(prev => ({
-      ...prev,
-      [field]: value
-    }));
-  };
-
   const testConnection = async () => {
     setIsLoading(true);
     try {
-      // Simulate connection test
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      console.log('Testing Odoo connection...');
       
-      if (!config.url || !config.database || !config.username || !config.password) {
-        throw new Error('Please fill in all configuration fields');
+      const { data, error } = await supabase.functions.invoke('odoo-auth');
+      
+      if (error) {
+        throw new Error(`Connection error: ${error.message}`);
       }
-      
-      setIsConnected(true);
-      toast({
-        title: "Connection Successful",
-        description: "Successfully connected to Odoo instance",
-      });
+
+      if (data.success) {
+        setIsConnected(true);
+        toast({
+          title: "Connection Successful",
+          description: "Successfully connected to your Odoo server",
+        });
+      } else {
+        throw new Error(data.error || 'Authentication failed');
+      }
     } catch (error) {
+      console.error('Connection test failed:', error);
       setIsConnected(false);
       toast({
         title: "Connection Failed",
-        description: error instanceof Error ? error.message : "Failed to connect to Odoo",
+        description: error instanceof Error ? error.message : "Failed to connect to Odoo server",
         variant: "destructive",
       });
     } finally {
@@ -85,7 +72,7 @@ const OdooIntegration: React.FC = () => {
     if (!isConnected) {
       toast({
         title: "Not Connected",
-        description: "Please establish connection first",
+        description: "Please test connection first",
         variant: "destructive",
       });
       return;
@@ -93,37 +80,28 @@ const OdooIntegration: React.FC = () => {
 
     setIsLoading(true);
     try {
-      // Simulate API call to fetch sale data
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      console.log('Fetching sales data from Odoo...');
       
-      const mockSaleData: SaleData[] = [
-        {
-          id: "SO001",
-          name: "Sale Order 001",
-          partner_name: "Customer ABC",
-          date_order: "2024-01-15",
-          amount_total: 15000,
-          state: "sale"
-        },
-        {
-          id: "SO002",
-          name: "Sale Order 002",
-          partner_name: "Customer XYZ",
-          date_order: "2024-01-16",
-          amount_total: 25000,
-          state: "draft"
-        }
-      ];
+      const { data, error } = await supabase.functions.invoke('odoo-sales');
       
-      setSaleData(mockSaleData);
-      toast({
-        title: "Sale Data Fetched",
-        description: `Retrieved ${mockSaleData.length} sale orders`,
-      });
+      if (error) {
+        throw new Error(`Failed to fetch sales data: ${error.message}`);
+      }
+
+      if (data.success) {
+        setSaleData(data.data);
+        toast({
+          title: "Sales Data Fetched",
+          description: `Retrieved ${data.count} sale orders from your Odoo server`,
+        });
+      } else {
+        throw new Error(data.error || 'Failed to fetch sales data');
+      }
     } catch (error) {
+      console.error('Sales data fetch failed:', error);
       toast({
         title: "Error",
-        description: "Failed to fetch sale data from Odoo",
+        description: error instanceof Error ? error.message : "Failed to fetch sales data",
         variant: "destructive",
       });
     } finally {
@@ -135,7 +113,7 @@ const OdooIntegration: React.FC = () => {
     if (!isConnected) {
       toast({
         title: "Not Connected",
-        description: "Please establish connection first",
+        description: "Please test connection first",
         variant: "destructive",
       });
       return;
@@ -143,37 +121,28 @@ const OdooIntegration: React.FC = () => {
 
     setIsLoading(true);
     try {
-      // Simulate API call to fetch purchase data
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      console.log('Fetching purchase data from Odoo...');
       
-      const mockPurchaseData: PurchaseData[] = [
-        {
-          id: "PO001",
-          name: "Purchase Order 001",
-          partner_name: "Supplier ABC",
-          date_order: "2024-01-10",
-          amount_total: 8000,
-          state: "purchase"
-        },
-        {
-          id: "PO002",
-          name: "Purchase Order 002",
-          partner_name: "Supplier XYZ",
-          date_order: "2024-01-12",
-          amount_total: 12000,
-          state: "draft"
-        }
-      ];
+      const { data, error } = await supabase.functions.invoke('odoo-purchases');
       
-      setPurchaseData(mockPurchaseData);
-      toast({
-        title: "Purchase Data Fetched",
-        description: `Retrieved ${mockPurchaseData.length} purchase orders`,
-      });
+      if (error) {
+        throw new Error(`Failed to fetch purchase data: ${error.message}`);
+      }
+
+      if (data.success) {
+        setPurchaseData(data.data);
+        toast({
+          title: "Purchase Data Fetched",
+          description: `Retrieved ${data.count} purchase orders from your Odoo server`,
+        });
+      } else {
+        throw new Error(data.error || 'Failed to fetch purchase data');
+      }
     } catch (error) {
+      console.error('Purchase data fetch failed:', error);
       toast({
         title: "Error",
-        description: "Failed to fetch purchase data from Odoo",
+        description: error instanceof Error ? error.message : "Failed to fetch purchase data",
         variant: "destructive",
       });
     } finally {
@@ -232,12 +201,12 @@ const OdooIntegration: React.FC = () => {
         <h1 className="text-3xl font-bold">Odoo Integration</h1>
       </div>
 
-      {/* Connection Configuration */}
+      {/* Connection Status */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center space-x-2">
             <Settings className="h-5 w-5" />
-            <span>Odoo Configuration</span>
+            <span>Odoo Server Status</span>
             {isConnected ? (
               <CheckCircle className="h-5 w-5 text-green-600" />
             ) : (
@@ -245,66 +214,37 @@ const OdooIntegration: React.FC = () => {
             )}
           </CardTitle>
           <CardDescription>
-            Configure your Odoo instance connection settings
+            Your Odoo server connection status and controls
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="url">Odoo URL</Label>
-              <Input
-                id="url"
-                placeholder="https://your-odoo-instance.com"
-                value={config.url}
-                onChange={(e) => handleConfigChange('url', e.target.value)}
-              />
-            </div>
-            <div>
-              <Label htmlFor="database">Database Name</Label>
-              <Input
-                id="database"
-                placeholder="your-database-name"
-                value={config.database}
-                onChange={(e) => handleConfigChange('database', e.target.value)}
-              />
-            </div>
-            <div>
-              <Label htmlFor="username">Username</Label>
-              <Input
-                id="username"
-                placeholder="your-username"
-                value={config.username}
-                onChange={(e) => handleConfigChange('username', e.target.value)}
-              />
-            </div>
-            <div>
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                placeholder="your-password"
-                value={config.password}
-                onChange={(e) => handleConfigChange('password', e.target.value)}
-              />
-            </div>
+        <CardContent>
+          <div className="flex items-center space-x-4">
+            <Badge variant={isConnected ? "default" : "secondary"}>
+              {isConnected ? "Connected" : "Not Connected"}
+            </Badge>
+            <Button 
+              onClick={testConnection} 
+              disabled={isLoading}
+              variant={isConnected ? "outline" : "default"}
+            >
+              {isLoading ? (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  Testing Connection...
+                </>
+              ) : (
+                <>
+                  <Database className="mr-2 h-4 w-4" />
+                  Test Connection
+                </>
+              )}
+            </Button>
           </div>
-          <Button 
-            onClick={testConnection} 
-            disabled={isLoading}
-            className="w-full md:w-auto"
-          >
-            {isLoading ? (
-              <>
-                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                Testing Connection...
-              </>
-            ) : (
-              <>
-                <Database className="mr-2 h-4 w-4" />
-                Test Connection
-              </>
-            )}
-          </Button>
+          {isConnected && (
+            <p className="text-sm text-green-600 mt-2">
+              ✅ Connected to your Odoo server successfully
+            </p>
+          )}
         </CardContent>
       </Card>
 
@@ -320,22 +260,22 @@ const OdooIntegration: React.FC = () => {
             <CardHeader>
               <CardTitle>Sales Orders</CardTitle>
               <CardDescription>
-                Extract and view sales order data from your Odoo instance
+                Extract and view sales order data from your Odoo server
               </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="flex space-x-2 mb-4">
-                <Button onClick={fetchSaleData} disabled={isLoading}>
+                <Button onClick={fetchSaleData} disabled={isLoading || !isConnected}>
                   {isLoading ? (
                     <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
                   ) : (
                     <RefreshCw className="mr-2 h-4 w-4" />
                   )}
-                  Fetch Sale Data
+                  Fetch Sales Data
                 </Button>
                 <Button 
                   variant="outline" 
-                  onClick={() => exportToCSV(saleData, 'sales_data')}
+                  onClick={() => exportToCSV(saleData, 'odoo_sales_data')}
                   disabled={saleData.length === 0}
                 >
                   <Download className="mr-2 h-4 w-4" />
@@ -386,12 +326,12 @@ const OdooIntegration: React.FC = () => {
             <CardHeader>
               <CardTitle>Purchase Orders</CardTitle>
               <CardDescription>
-                Extract and view purchase order data from your Odoo instance
+                Extract and view purchase order data from your Odoo server
               </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="flex space-x-2 mb-4">
-                <Button onClick={fetchPurchaseData} disabled={isLoading}>
+                <Button onClick={fetchPurchaseData} disabled={isLoading || !isConnected}>
                   {isLoading ? (
                     <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
                   ) : (
@@ -401,7 +341,7 @@ const OdooIntegration: React.FC = () => {
                 </Button>
                 <Button 
                   variant="outline" 
-                  onClick={() => exportToCSV(purchaseData, 'purchase_data')}
+                  onClick={() => exportToCSV(purchaseData, 'odoo_purchase_data')}
                   disabled={purchaseData.length === 0}
                 >
                   <Download className="mr-2 h-4 w-4" />
