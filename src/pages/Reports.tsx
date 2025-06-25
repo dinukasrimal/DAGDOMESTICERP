@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -8,7 +7,8 @@ import { SalesReportContent } from '@/components/reports/SalesReportContent';
 import { InventoryReportContent } from '@/components/reports/InventoryReportContent';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
-import { FileText, BarChart3, Package, Download, RefreshCw } from 'lucide-react';
+import { FileText, BarChart3, Package, Download, RefreshCw, ArrowLeft } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
 interface SalesData {
   id: string;
@@ -17,6 +17,13 @@ interface SalesData {
   date_order: string;
   amount_total: number;
   state: string;
+  order_lines?: Array<{
+    product_name: string;
+    qty_delivered: number;
+    price_unit: number;
+    price_subtotal: number;
+    product_category: string;
+  }>;
 }
 
 interface PurchaseData {
@@ -30,6 +37,7 @@ interface PurchaseData {
 
 const Reports: React.FC = () => {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [activeDialog, setActiveDialog] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [salesData, setSalesData] = useState<SalesData[]>([]);
@@ -38,23 +46,23 @@ const Reports: React.FC = () => {
   const fetchSalesData = async () => {
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke('odoo-sales');
+      const { data, error } = await supabase.functions.invoke('odoo-invoices');
       
       if (error) {
-        throw new Error(`Failed to fetch sales data: ${error.message}`);
+        throw new Error(`Failed to fetch invoice data: ${error.message}`);
       }
 
       if (data.success) {
         setSalesData(data.data);
-        console.log('Sales data loaded:', data.data.length, 'records');
+        console.log('Invoice data loaded:', data.data.length, 'records');
       } else {
-        throw new Error(data.error || 'Failed to fetch sales data');
+        throw new Error(data.error || 'Failed to fetch invoice data');
       }
     } catch (error) {
-      console.error('Sales data fetch failed:', error);
+      console.error('Invoice data fetch failed:', error);
       toast({
         title: "Error",
-        description: error instanceof Error ? error.message : "Failed to fetch sales data",
+        description: error instanceof Error ? error.message : "Failed to fetch invoice data",
         variant: "destructive",
       });
     } finally {
@@ -120,9 +128,20 @@ const Reports: React.FC = () => {
   return (
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center space-x-2">
-          <FileText className="h-8 w-8 text-blue-600" />
-          <h1 className="text-3xl font-bold">Odoo Reports & Analytics</h1>
+        <div className="flex items-center space-x-4">
+          <Button 
+            variant="outline" 
+            size="sm"
+            onClick={() => navigate('/')}
+            className="flex items-center space-x-2"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span>Back</span>
+          </Button>
+          <div className="flex items-center space-x-2">
+            <FileText className="h-8 w-8 text-blue-600" />
+            <h1 className="text-3xl font-bold">Odoo Reports & Analytics</h1>
+          </div>
         </div>
         <Button onClick={refreshData} disabled={isLoading} variant="outline">
           {isLoading ? (
@@ -149,13 +168,13 @@ const Reports: React.FC = () => {
           <CardContent>
             <div className="space-y-2">
               <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Total Orders:</span>
+                <span className="text-sm text-muted-foreground">Total Invoices:</span>
                 <span className="font-semibold">{salesData.length}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-sm text-muted-foreground">Total Value:</span>
                 <span className="font-semibold">
-                  ${salesData.reduce((sum, item) => sum + item.amount_total, 0).toLocaleString()}
+                  LKR {salesData.reduce((sum, item) => sum + item.amount_total, 0).toLocaleString()}
                 </span>
               </div>
               <div className="flex justify-between">
@@ -223,7 +242,7 @@ const Reports: React.FC = () => {
               <div className="flex justify-between">
                 <span className="text-sm text-muted-foreground">Total Value:</span>
                 <span className="font-semibold">
-                  ${purchaseData.reduce((sum, item) => sum + item.amount_total, 0).toLocaleString()}
+                  LKR {purchaseData.reduce((sum, item) => sum + item.amount_total, 0).toLocaleString()}
                 </span>
               </div>
               <div className="flex justify-between">
@@ -282,7 +301,7 @@ const Reports: React.FC = () => {
                     <div className="text-sm text-muted-foreground">{purchase.partner_name}</div>
                   </div>
                   <div className="text-right">
-                    <div className="font-semibold">${purchase.amount_total.toLocaleString()}</div>
+                    <div className="font-semibold">LKR {purchase.amount_total.toLocaleString()}</div>
                     <div className="text-sm text-muted-foreground">{purchase.date_order}</div>
                   </div>
                 </div>

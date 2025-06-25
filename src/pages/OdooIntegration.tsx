@@ -1,9 +1,10 @@
+
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { Database, Download, RefreshCw, Settings, CheckCircle, AlertCircle, BarChart3 } from 'lucide-react';
+import { Database, Download, RefreshCw, Settings, CheckCircle, AlertCircle, BarChart3, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { useNavigate } from 'react-router-dom';
@@ -196,9 +197,20 @@ const OdooIntegration: React.FC = () => {
   return (
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center space-x-2">
-          <Database className="h-8 w-8 text-blue-600" />
-          <h1 className="text-3xl font-bold">Odoo Integration</h1>
+        <div className="flex items-center space-x-4">
+          <Button 
+            variant="outline" 
+            size="sm"
+            onClick={() => navigate('/')}
+            className="flex items-center space-x-2"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span>Back</span>
+          </Button>
+          <div className="flex items-center space-x-2">
+            <Database className="h-8 w-8 text-blue-600" />
+            <h1 className="text-3xl font-bold">Odoo Integration</h1>
+          </div>
         </div>
         <Button 
           onClick={() => navigate('/reports')} 

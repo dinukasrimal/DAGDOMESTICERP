@@ -46,7 +46,7 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
       virtual_available: 1017,
       reorder_min: 100,
       reorder_max: 1000,
-      cost: 3825.50,
+      cost: 382.55,
       location: "WH/Stock"
     },
     {
@@ -59,7 +59,7 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
       virtual_available: 20200,
       reorder_min: 5000,
       reorder_max: 25000,
-      cost: 2362.75,
+      cost: 236.28,
       location: "WH/Stock"
     },
     {
@@ -72,7 +72,7 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
       virtual_available: 288,
       reorder_min: 100,
       reorder_max: 500,
-      cost: 2730.20,
+      cost: 273.02,
       location: "WH/Stock"
     },
     {
@@ -85,7 +85,7 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
       virtual_available: 304,
       reorder_min: 50,
       reorder_max: 400,
-      cost: 2520.80,
+      cost: 252.08,
       location: "WH/Stock"
     },
     {
@@ -98,7 +98,7 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
       virtual_available: 675,
       reorder_min: 200,
       reorder_max: 800,
-      cost: 2145.30,
+      cost: 214.53,
       location: "WH/Stock"
     },
     {
@@ -111,7 +111,7 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
       virtual_available: 1180,
       reorder_min: 300,
       reorder_max: 1500,
-      cost: 1890.75,
+      cost: 189.08,
       location: "WH/Stock"
     },
     {
@@ -124,7 +124,7 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
       virtual_available: 500,
       reorder_min: 100,
       reorder_max: 600,
-      cost: 4250.90,
+      cost: 425.09,
       location: "WH/Stock"
     },
     {
@@ -137,7 +137,7 @@ export const InventoryReportContent: React.FC<InventoryReportContentProps> = ({
       virtual_available: 1040,
       reorder_min: 200,
       reorder_max: 1000,
-      cost: 1675.40,
+      cost: 167.54,
       location: "WH/Stock"
     }
   ];
