@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -49,7 +48,6 @@ const Reports: React.FC = () => {
     try {
       console.log('Fetching invoice data from Supabase...');
       
-      // First check if we have recent data in Supabase
       const { data: localData, error: localError } = await supabase
         .from('invoices')
         .select('*')
@@ -77,13 +75,10 @@ const Reports: React.FC = () => {
         }));
         
         setSalesData(transformedData);
-        setIsLoading(false);
-        return;
+      } else {
+        console.log('No local data found, syncing from Odoo...');
+        await syncFromOdoo();
       }
-
-      // If no local data, sync from Odoo
-      console.log('No local data found, syncing from Odoo...');
-      await syncFromOdoo();
       
     } catch (error) {
       console.error('Error fetching sales data:', error);
@@ -99,7 +94,7 @@ const Reports: React.FC = () => {
 
   const syncFromOdoo = async () => {
     try {
-      console.log('Syncing fresh data from Odoo...');
+      console.log('Syncing from Odoo...');
       const { data, error } = await supabase.functions.invoke('odoo-invoices');
       
       if (error) {
@@ -107,11 +102,11 @@ const Reports: React.FC = () => {
       }
 
       if (data.success) {
-        setSalesData(data.data);
-        console.log('Invoice data synced:', data.data.length, 'records');
+        setSalesData(data.data || []);
+        console.log('Invoice data synced:', data.count, 'records');
         toast({
           title: "Data Synced",
-          description: `${data.synced_to_supabase || data.data.length} invoices synced successfully`,
+          description: data.message || `${data.synced_to_supabase || data.count} invoices synced successfully`,
         });
       } else {
         throw new Error(data.error || 'Failed to sync invoice data');
