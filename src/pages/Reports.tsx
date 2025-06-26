@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -46,7 +47,9 @@ const Reports: React.FC = () => {
   const fetchSalesData = async () => {
     setIsLoading(true);
     try {
-      // First try to get data from local Supabase database
+      console.log('Fetching invoice data from Supabase...');
+      
+      // First check if we have recent data in Supabase
       const { data: localData, error: localError } = await supabase
         .from('invoices')
         .select('*')
@@ -55,7 +58,6 @@ const Reports: React.FC = () => {
       if (!localError && localData && localData.length > 0) {
         console.log('Using local invoice data:', localData.length, 'records');
         
-        // Transform the data to match our SalesData interface
         const transformedData: SalesData[] = localData.map(invoice => ({
           id: invoice.id,
           name: invoice.name || '',
@@ -79,29 +81,15 @@ const Reports: React.FC = () => {
         return;
       }
 
-      // If no local data, fetch from Odoo and sync
-      console.log('Fetching fresh data from Odoo...');
-      const { data, error } = await supabase.functions.invoke('odoo-invoices');
+      // If no local data, sync from Odoo
+      console.log('No local data found, syncing from Odoo...');
+      await syncFromOdoo();
       
-      if (error) {
-        throw new Error(`Failed to fetch invoice data: ${error.message}`);
-      }
-
-      if (data.success) {
-        setSalesData(data.data);
-        console.log('Invoice data loaded:', data.data.length, 'records');
-        toast({
-          title: "Data Synced",
-          description: `${data.synced_to_supabase || data.data.length} invoices synced to database`,
-        });
-      } else {
-        throw new Error(data.error || 'Failed to fetch invoice data');
-      }
     } catch (error) {
-      console.error('Invoice data fetch failed:', error);
+      console.error('Error fetching sales data:', error);
       toast({
         title: "Error",
-        description: error instanceof Error ? error.message : "Failed to fetch invoice data",
+        description: error instanceof Error ? error.message : "Failed to fetch sales data",
         variant: "destructive",
       });
     } finally {
@@ -109,8 +97,36 @@ const Reports: React.FC = () => {
     }
   };
 
+  const syncFromOdoo = async () => {
+    try {
+      console.log('Syncing fresh data from Odoo...');
+      const { data, error } = await supabase.functions.invoke('odoo-invoices');
+      
+      if (error) {
+        throw new Error(`Failed to sync invoice data: ${error.message}`);
+      }
+
+      if (data.success) {
+        setSalesData(data.data);
+        console.log('Invoice data synced:', data.data.length, 'records');
+        toast({
+          title: "Data Synced",
+          description: `${data.synced_to_supabase || data.data.length} invoices synced successfully`,
+        });
+      } else {
+        throw new Error(data.error || 'Failed to sync invoice data');
+      }
+    } catch (error) {
+      console.error('Sync from Odoo failed:', error);
+      toast({
+        title: "Sync Error",
+        description: error instanceof Error ? error.message : "Failed to sync from Odoo",
+        variant: "destructive",
+      });
+    }
+  };
+
   const fetchPurchaseData = async () => {
-    setIsLoading(true);
     try {
       const { data, error } = await supabase.functions.invoke('odoo-purchases');
       
@@ -131,8 +147,6 @@ const Reports: React.FC = () => {
         description: error instanceof Error ? error.message : "Failed to fetch purchase data",
         variant: "destructive",
       });
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -157,18 +171,15 @@ const Reports: React.FC = () => {
   };
 
   const refreshData = async () => {
-    // Force refresh from Odoo
-    const { data, error } = await supabase.functions.invoke('odoo-invoices');
+    setIsLoading(true);
+    toast({
+      title: "Refreshing Data",
+      description: "Syncing latest data from Odoo...",
+    });
     
-    if (!error && data.success) {
-      setSalesData(data.data);
-      toast({
-        title: "Data Refreshed",
-        description: `${data.synced_to_supabase || data.data.length} invoices synced from Odoo`,
-      });
-    }
-    
+    await syncFromOdoo();
     await fetchPurchaseData();
+    setIsLoading(false);
   };
 
   return (
@@ -251,7 +262,7 @@ const Reports: React.FC = () => {
             <div className="space-y-2">
               <div className="flex justify-between">
                 <span className="text-sm text-muted-foreground">Categories:</span>
-                <span className="font-semibold">8</span>
+                <span className="font-semibold">5</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-sm text-muted-foreground">Total Products:</span>

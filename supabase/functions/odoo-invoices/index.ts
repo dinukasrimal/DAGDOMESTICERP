@@ -20,11 +20,10 @@ interface Invoice {
 
 interface InvoiceLine {
   id: number;
-  product_id: [number, string];
+  product_id: [number, string] | false;
   quantity: number;
   price_unit: number;
   price_subtotal: number;
-  move_id: number;
 }
 
 serve(async (req) => {
@@ -50,9 +49,9 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    console.log('Syncing invoice data from Odoo to Supabase...');
+    console.log('Starting invoice sync from Odoo to Supabase...');
 
-    // First authenticate with Odoo
+    // Authenticate with Odoo
     const authResponse = await fetch(`${odooUrl}/jsonrpc`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -69,90 +68,67 @@ serve(async (req) => {
     });
 
     const authData = await authResponse.json();
-    console.log('Odoo authentication result:', authData);
+    console.log('Odoo authentication successful');
     const uid = authData.result;
 
     if (!uid) {
       throw new Error('Authentication failed');
     }
 
-    // Fetch all customer invoices in batches
-    let offset = 0;
-    const limit = 100;
-    let allInvoices: Invoice[] = [];
-    let hasMore = true;
-
-    while (hasMore) {
-      console.log(`Fetching invoices batch, offset: ${offset}`);
-      
-      const invoicesResponse = await fetch(`${odooUrl}/jsonrpc`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'call',
-          params: {
-            service: 'object',
-            method: 'execute_kw',
-            args: [
-              odooDatabase,
-              uid,
-              odooPassword,
-              'account.move',
-              'search_read',
+    // Fetch invoices with smaller batches to avoid timeout
+    const invoicesResponse = await fetch(`${odooUrl}/jsonrpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          service: 'object',
+          method: 'execute_kw',
+          args: [
+            odooDatabase,
+            uid,
+            odooPassword,
+            'account.move',
+            'search_read',
+            [
               [
-                [
-                  ['move_type', '=', 'out_invoice'],
-                  ['state', '=', 'posted']
-                ]
-              ],
-              {
-                fields: ['name', 'partner_id', 'invoice_date', 'amount_total', 'state', 'invoice_line_ids'],
-                limit: limit,
-                offset: offset,
-                order: 'invoice_date desc'
-              }
-            ]
-          },
-          id: Math.floor(Math.random() * 1000000)
-        }),
-      });
+                ['move_type', '=', 'out_invoice'],
+                ['state', '=', 'posted']
+              ]
+            ],
+            {
+              fields: ['name', 'partner_id', 'invoice_date', 'amount_total', 'state', 'invoice_line_ids'],
+              limit: 200, // Reduced batch size
+              order: 'invoice_date desc'
+            }
+          ]
+        },
+        id: Math.floor(Math.random() * 1000000)
+      }),
+    });
 
-      const invoicesData = await invoicesResponse.json();
-      console.log(`Batch ${Math.floor(offset/limit) + 1} - invoices fetched:`, invoicesData.result?.length || 0);
+    const invoicesData = await invoicesResponse.json();
+    console.log(`Invoices fetched: ${invoicesData.result?.length || 0}`);
 
-      if (invoicesData.error) {
-        throw new Error(`Odoo API error: ${invoicesData.error.message}`);
-      }
-
-      const batchInvoices = invoicesData.result || [];
-      if (batchInvoices.length === 0) {
-        hasMore = false;
-      } else {
-        allInvoices = allInvoices.concat(batchInvoices);
-        offset += limit;
-        
-        // Stop if we got less than the limit (last batch)
-        if (batchInvoices.length < limit) {
-          hasMore = false;
-        }
-      }
+    if (invoicesData.error) {
+      throw new Error(`Odoo API error: ${invoicesData.error.message}`);
     }
 
-    console.log(`Total invoices fetched: ${allInvoices.length}`);
+    const invoices = invoicesData.result || [];
 
     // Get all invoice line IDs
-    const allLineIds = allInvoices.flatMap((inv: Invoice) => inv.invoice_line_ids || []);
+    const allLineIds = invoices.flatMap((inv: Invoice) => inv.invoice_line_ids || []);
     
     let invoiceLines: InvoiceLine[] = [];
     
     if (allLineIds.length > 0) {
       console.log(`Fetching ${allLineIds.length} invoice lines...`);
       
-      // Fetch invoice lines in batches
-      const linesBatchSize = 500;
-      for (let i = 0; i < allLineIds.length; i += linesBatchSize) {
-        const batchLineIds = allLineIds.slice(i, i + linesBatchSize);
+      // Fetch invoice lines in smaller batches
+      const batchSize = 200;
+      for (let i = 0; i < allLineIds.length; i += batchSize) {
+        const batchLineIds = allLineIds.slice(i, i + batchSize);
         
         const linesResponse = await fetch(`${odooUrl}/jsonrpc`, {
           method: 'POST',
@@ -173,7 +149,7 @@ serve(async (req) => {
                   [['id', 'in', batchLineIds]]
                 ],
                 {
-                  fields: ['id', 'product_id', 'quantity', 'price_unit', 'price_subtotal', 'move_id']
+                  fields: ['id', 'product_id', 'quantity', 'price_unit', 'price_subtotal']
                 }
               ]
             },
@@ -184,70 +160,75 @@ serve(async (req) => {
         const linesData = await linesResponse.json();
         if (!linesData.error && linesData.result) {
           invoiceLines = invoiceLines.concat(linesData.result);
+          console.log(`Batch ${Math.floor(i/batchSize) + 1} lines fetched: ${linesData.result.length}`);
         }
       }
     }
 
-    console.log(`Invoice lines fetched: ${invoiceLines.length}`);
+    console.log(`Total invoice lines fetched: ${invoiceLines.length}`);
 
-    // Transform invoices for Supabase
-    const transformedInvoices = allInvoices.map((invoice: Invoice) => {
+    // Transform data for Supabase
+    const transformedInvoices = invoices.map((invoice: Invoice) => {
       const lines = invoiceLines.filter((line: InvoiceLine) => 
         invoice.invoice_line_ids && invoice.invoice_line_ids.includes(line.id)
       );
       
       const orderLines = lines
-        .filter((line: InvoiceLine) => line.product_id && line.product_id[1])
+        .filter((line: InvoiceLine) => line.product_id && Array.isArray(line.product_id) && line.product_id[1])
         .map((line: InvoiceLine) => ({
-          product_name: line.product_id[1],
+          product_name: Array.isArray(line.product_id) ? line.product_id[1] : 'Unknown Product',
           qty_delivered: line.quantity || 0,
           price_unit: line.price_unit || 0,
           price_subtotal: line.price_subtotal || 0,
-          product_category: getProductCategory(line.product_id[1])
+          product_category: getProductCategory(Array.isArray(line.product_id) ? line.product_id[1] : '')
         }));
 
       return {
         id: invoice.name || invoice.id.toString(),
         name: invoice.name,
         partner_name: Array.isArray(invoice.partner_id) ? invoice.partner_id[1] : 'Unknown Customer',
-        date_order: invoice.invoice_date ? invoice.invoice_date : new Date().toISOString().split('T')[0],
+        date_order: invoice.invoice_date || new Date().toISOString().split('T')[0],
         amount_total: invoice.amount_total || 0,
-        state: 'sale', // Invoices are considered as completed sales
+        state: 'sale',
         order_lines: orderLines
       };
     });
 
-    console.log(`Transformed invoices ready for sync: ${transformedInvoices.length}`);
+    console.log(`Transformed invoices: ${transformedInvoices.length}`);
 
-    // Sync to Supabase - use upsert to handle duplicates
-    console.log('Syncing invoices to Supabase...');
-    
-    // Insert in batches to avoid conflicts
-    const batchSize = 50;
+    // Clear existing data and insert new data
+    console.log('Clearing existing invoice data...');
+    const { error: deleteError } = await supabase
+      .from('invoices')
+      .delete()
+      .neq('id', 'dummy'); // Delete all records
+
+    if (deleteError) {
+      console.error('Error clearing existing data:', deleteError);
+    }
+
+    // Insert in smaller batches
+    console.log('Inserting new invoice data...');
+    const insertBatchSize = 50;
     let successCount = 0;
     
-    for (let i = 0; i < transformedInvoices.length; i += batchSize) {
-      const batch = transformedInvoices.slice(i, i + batchSize);
+    for (let i = 0; i < transformedInvoices.length; i += insertBatchSize) {
+      const batch = transformedInvoices.slice(i, i + insertBatchSize);
       
       const { data, error } = await supabase
         .from('invoices')
-        .upsert(batch, { 
-          onConflict: 'id',
-          ignoreDuplicates: false 
-        });
+        .insert(batch);
 
       if (error) {
-        console.error(`Error syncing batch ${Math.floor(i/batchSize) + 1}:`, error);
-        // Continue with next batch instead of failing completely
+        console.error(`Error inserting batch ${Math.floor(i/insertBatchSize) + 1}:`, error);
       } else {
         successCount += batch.length;
-        console.log(`Batch ${Math.floor(i/batchSize) + 1} synced successfully`);
+        console.log(`Batch ${Math.floor(i/insertBatchSize) + 1} inserted successfully`);
       }
     }
 
     console.log(`Sync completed. ${successCount} invoices synced to Supabase.`);
 
-    // Return the transformed data for immediate use
     return new Response(JSON.stringify({ 
       success: true, 
       data: transformedInvoices,
@@ -269,7 +250,7 @@ serve(async (req) => {
   }
 });
 
-// Helper function to determine product category based on product name
+// Helper function to determine product category
 function getProductCategory(productName: string): string {
   if (!productName) return 'OTHER';
   
