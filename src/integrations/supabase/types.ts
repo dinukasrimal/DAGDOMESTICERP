@@ -69,6 +69,72 @@ export type Database = {
         }
         Relationships: []
       }
+      inventory: {
+        Row: {
+          cost: number | null
+          id: string
+          incoming_qty: number | null
+          outgoing_qty: number | null
+          product_category: string | null
+          product_name: string | null
+          quantity_available: number | null
+          quantity_on_hand: number | null
+          reorder_min: number | null
+        }
+        Insert: {
+          cost?: number | null
+          id: string
+          incoming_qty?: number | null
+          outgoing_qty?: number | null
+          product_category?: string | null
+          product_name?: string | null
+          quantity_available?: number | null
+          quantity_on_hand?: number | null
+          reorder_min?: number | null
+        }
+        Update: {
+          cost?: number | null
+          id?: string
+          incoming_qty?: number | null
+          outgoing_qty?: number | null
+          product_category?: string | null
+          product_name?: string | null
+          quantity_available?: number | null
+          quantity_on_hand?: number | null
+          reorder_min?: number | null
+        }
+        Relationships: []
+      }
+      invoices: {
+        Row: {
+          amount_total: number | null
+          date_order: string | null
+          id: string
+          name: string | null
+          order_lines: Json | null
+          partner_name: string | null
+          state: string | null
+        }
+        Insert: {
+          amount_total?: number | null
+          date_order?: string | null
+          id: string
+          name?: string | null
+          order_lines?: Json | null
+          partner_name?: string | null
+          state?: string | null
+        }
+        Update: {
+          amount_total?: number | null
+          date_order?: string | null
+          id?: string
+          name?: string | null
+          order_lines?: Json | null
+          partner_name?: string | null
+          state?: string | null
+        }
+        Relationships: []
+      }
       orders: {
         Row: {
           actual_production: Json | null
@@ -191,6 +257,36 @@ export type Database = {
           phone?: string | null
           role?: Database["public"]["Enums"]["user_role"] | null
           updated_at?: string | null
+        }
+        Relationships: []
+      }
+      purchases: {
+        Row: {
+          amount_total: number | null
+          date_order: string | null
+          id: string
+          name: string | null
+          order_lines: Json | null
+          partner_name: string | null
+          state: string | null
+        }
+        Insert: {
+          amount_total?: number | null
+          date_order?: string | null
+          id: string
+          name?: string | null
+          order_lines?: Json | null
+          partner_name?: string | null
+          state?: string | null
+        }
+        Update: {
+          amount_total?: number | null
+          date_order?: string | null
+          id?: string
+          name?: string | null
+          order_lines?: Json | null
+          partner_name?: string | null
+          state?: string | null
         }
         Relationships: []
       }

@@ -46,6 +46,21 @@ const Reports: React.FC = () => {
   const fetchSalesData = async () => {
     setIsLoading(true);
     try {
+      // First try to get data from local Supabase database
+      const { data: localData, error: localError } = await supabase
+        .from('invoices')
+        .select('*')
+        .order('date_order', { ascending: false });
+
+      if (!localError && localData && localData.length > 0) {
+        console.log('Using local invoice data:', localData.length, 'records');
+        setSalesData(localData);
+        setIsLoading(false);
+        return;
+      }
+
+      // If no local data, fetch from Odoo and sync
+      console.log('Fetching fresh data from Odoo...');
       const { data, error } = await supabase.functions.invoke('odoo-invoices');
       
       if (error) {
@@ -55,6 +70,10 @@ const Reports: React.FC = () => {
       if (data.success) {
         setSalesData(data.data);
         console.log('Invoice data loaded:', data.data.length, 'records');
+        toast({
+          title: "Data Synced",
+          description: `${data.synced_to_supabase || data.data.length} invoices synced to database`,
+        });
       } else {
         throw new Error(data.error || 'Failed to fetch invoice data');
       }
@@ -118,11 +137,18 @@ const Reports: React.FC = () => {
   };
 
   const refreshData = async () => {
-    await Promise.all([fetchSalesData(), fetchPurchaseData()]);
-    toast({
-      title: "Data Refreshed",
-      description: "All report data has been updated from Odoo",
-    });
+    // Force refresh from Odoo
+    const { data, error } = await supabase.functions.invoke('odoo-invoices');
+    
+    if (!error && data.success) {
+      setSalesData(data.data);
+      toast({
+        title: "Data Refreshed",
+        description: `${data.synced_to_supabase || data.data.length} invoices synced from Odoo`,
+      });
+    }
+    
+    await fetchPurchaseData();
   };
 
   return (
