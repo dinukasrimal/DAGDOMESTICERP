@@ -54,7 +54,27 @@ const Reports: React.FC = () => {
 
       if (!localError && localData && localData.length > 0) {
         console.log('Using local invoice data:', localData.length, 'records');
-        setSalesData(localData);
+        
+        // Transform the data to match our SalesData interface
+        const transformedData: SalesData[] = localData.map(invoice => ({
+          id: invoice.id,
+          name: invoice.name || '',
+          partner_name: invoice.partner_name || '',
+          date_order: invoice.date_order || '',
+          amount_total: invoice.amount_total || 0,
+          state: invoice.state || '',
+          order_lines: Array.isArray(invoice.order_lines) 
+            ? invoice.order_lines as Array<{
+                product_name: string;
+                qty_delivered: number;
+                price_unit: number;
+                price_subtotal: number;
+                product_category: string;
+              }>
+            : []
+        }));
+        
+        setSalesData(transformedData);
         setIsLoading(false);
         return;
       }
