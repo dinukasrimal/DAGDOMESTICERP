@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -10,6 +9,7 @@ import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { FileText, BarChart3, Package, Download, RefreshCw, ArrowLeft } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { supabaseBatchFetch, SupabaseTable } from '@/lib/utils';
 
 interface SalesData {
   id: string;
@@ -50,20 +50,9 @@ const Reports: React.FC = () => {
   const fetchSalesData = async () => {
     setIsLoading(true);
     try {
-      console.log('Fetching invoice data from Supabase...');
-      
-      const { data: localData, error: localError } = await supabase
-        .from('invoices')
-        .select('*')
-        .order('date_order', { ascending: false });
-
-      if (localError) {
-        throw new Error(`Failed to fetch sales data: ${localError.message}`);
-      }
-
+      // Fetch all sales data in batches
+      const localData = await supabaseBatchFetch('invoices', 'date_order', 1000);
       if (localData && localData.length > 0) {
-        console.log('Sales data found:', localData.length, 'records');
-        
         const transformedData: SalesData[] = localData.map(invoice => ({
           id: invoice.id,
           name: invoice.name || '',
@@ -81,14 +70,10 @@ const Reports: React.FC = () => {
               }>
             : []
         }));
-        
         setSalesData(transformedData);
-        console.log('Sales data processed successfully');
       } else {
-        console.log('No local sales data found, syncing from Odoo...');
         await syncFromOdoo();
       }
-      
     } catch (error) {
       console.error('Error fetching sales data:', error);
       toast({
@@ -132,17 +117,37 @@ const Reports: React.FC = () => {
     }
   };
 
-  const fetchPurchaseData = async () => {
+  const syncFromOdooPurchases = async () => {
     try {
-      const { data, error } = await supabase
-        .from('purchases')
-        .select('*')
-        .order('date_order', { ascending: false });
-
+      console.log('Syncing purchases from Odoo...');
+      const { data, error } = await supabase.functions.invoke('odoo-purchases');
       if (error) {
-        throw new Error(`Failed to fetch purchase data: ${error.message}`);
+        throw new Error(`Failed to sync purchase data: ${error.message}`);
       }
+      if (data.success) {
+        console.log('Purchase data synced successfully:', data.count, 'records');
+        toast({
+          title: 'Purchases Synced',
+          description: data.message || `${data.count} purchases synced successfully`,
+        });
+      } else {
+        throw new Error(data.error || 'Failed to sync purchase data');
+      }
+    } catch (error) {
+      console.error('Sync from Odoo (purchases) failed:', error);
+      toast({
+        title: 'Sync Error',
+        description: error instanceof Error ? error.message : 'Failed to sync purchases from Odoo',
+        variant: 'destructive',
+      });
+    }
+  };
 
+  const fetchPurchaseData = async () => {
+    setIsLoading(true);
+    try {
+      // Fetch all purchase data in batches
+      const data = await supabaseBatchFetch('purchases', 'date_order', 1000);
       if (data) {
         const transformedData: PurchaseData[] = data.map(purchase => ({
           id: purchase.id,
@@ -155,15 +160,53 @@ const Reports: React.FC = () => {
           pending_qty: purchase.pending_qty || 0,
           expected_date: purchase.expected_date
         }));
-        
         setPurchaseData(transformedData);
-        console.log('Purchase data loaded:', transformedData.length, 'records');
       }
     } catch (error) {
       console.error('Purchase data fetch failed:', error);
       toast({
         title: "Error",
         description: error instanceof Error ? error.message : "Failed to fetch purchase data",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const syncProductsFromOdoo = async () => {
+    try {
+      const { data, error } = await supabase.functions.invoke('odoo-products');
+      if (error || !data.success) {
+        throw new Error(data?.error || error?.message || 'Failed to sync products from Odoo');
+      }
+      toast({
+        title: "Products Synced",
+        description: `Synced ${data.count} products from Odoo.`,
+      });
+    } catch (error) {
+      toast({
+        title: "Product Sync Error",
+        description: error instanceof Error ? error.message : "Failed to sync products from Odoo",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const syncInventoryFromOdoo = async () => {
+    try {
+      const { data, error } = await supabase.functions.invoke('odoo-inventory');
+      if (error || !data.success) {
+        throw new Error(data?.error || error?.message || 'Failed to sync inventory from Odoo');
+      }
+      toast({
+        title: "Inventory Synced",
+        description: `Synced ${data.count} inventory records from Odoo.`,
+      });
+    } catch (error) {
+      toast({
+        title: "Inventory Sync Error",
+        description: error instanceof Error ? error.message : "Failed to sync inventory from Odoo",
         variant: "destructive",
       });
     }
@@ -192,13 +235,44 @@ const Reports: React.FC = () => {
   const refreshData = async () => {
     setIsLoading(true);
     toast({
-      title: "Refreshing Data",
-      description: "Syncing latest data from Odoo...",
+      title: 'Refreshing Data',
+      description: 'Syncing latest data from Odoo...'
     });
-    
-    await syncFromOdoo();
-    await fetchPurchaseData();
-    setIsLoading(false);
+    try {
+      // Trigger all syncs in parallel
+      const syncResults = await Promise.all([
+        supabase.functions.invoke('odoo-inventory'),
+        supabase.functions.invoke('odoo-products'),
+        supabase.functions.invoke('odoo-purchases'),
+        supabase.functions.invoke('odoo-invoices')
+      ]);
+      const allOk = syncResults.every(res => !res.error && res.data && res.data.success !== false);
+      if (!allOk) {
+        toast({
+          title: 'Sync Error',
+          description: 'One or more syncs failed. Check logs.',
+          variant: 'destructive',
+        });
+      } else {
+        toast({
+          title: 'Sync Complete',
+          description: 'Odoo data synced successfully.',
+        });
+      }
+      // Reload both sales and purchase data
+      await Promise.all([
+        fetchSalesData(),
+        fetchPurchaseData()
+      ]);
+    } catch (error) {
+      toast({
+        title: 'Sync Error',
+        description: error instanceof Error ? error.message : 'Failed to sync from Odoo',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -370,7 +444,7 @@ const Reports: React.FC = () => {
           <div className="mt-6">
             <h4 className="font-medium mb-2">Recent Purchase Orders:</h4>
             <div className="space-y-2">
-              {purchaseData.slice(0, 10).map((purchase, index) => (
+              {purchaseData.map((purchase, index) => (
                 <div key={index} className="flex justify-between items-center p-2 bg-gray-50 rounded">
                   <div>
                     <div className="font-medium">{purchase.name}</div>

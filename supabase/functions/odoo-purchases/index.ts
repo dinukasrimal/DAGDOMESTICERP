@@ -1,4 +1,3 @@
-
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.50.0';
@@ -76,15 +75,25 @@ serve(async (req) => {
       throw new Error('Authentication failed');
     }
 
-    // Fetch purchase orders with pagination to avoid CPU limits
+    // Configurable batch size, delay, and offset limit
+    const batchSize = parseInt(Deno.env.get('ODOO_PURCHASE_BATCH_SIZE') || '100', 10);
+    const upsertBatchSize = parseInt(Deno.env.get('ODOO_PURCHASE_UPSERT_BATCH_SIZE') || '50', 10);
+    const lineBatchSize = parseInt(Deno.env.get('ODOO_PURCHASE_LINE_BATCH_SIZE') || '200', 10);
+    const delayMs = parseInt(Deno.env.get('ODOO_PURCHASE_DELAY_MS') || '100', 10);
+    const lineDelayMs = parseInt(Deno.env.get('ODOO_PURCHASE_LINE_DELAY_MS') || '50', 10);
+    const upsertDelayMs = parseInt(Deno.env.get('ODOO_PURCHASE_UPSERT_DELAY_MS') || '100', 10);
+    const offsetLimit = parseInt(Deno.env.get('ODOO_PURCHASE_OFFSET_LIMIT') || '100000', 10); // increased default
+
     let allPurchases: Purchase[] = [];
     let offset = 0;
-    const limit = 100; // Process in batches of 100
+    const limit = batchSize; // Use configurable batch size
     let hasMore = true;
+    let totalFetched = 0;
+    let fetchError = false;
 
     while (hasMore) {
-      console.log(`Fetching purchases batch: offset ${offset}, limit ${limit}`);
-      
+      console.log(`[Odoo Sync] Fetching purchases batch: offset ${offset}, limit ${limit}`);
+      try {
       const purchaseResponse = await fetch(`${odooUrl}/jsonrpc`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -116,32 +125,42 @@ serve(async (req) => {
       });
 
       const purchaseData = await purchaseResponse.json();
-      
       if (purchaseData.error) {
-        throw new Error(`Failed to fetch purchase data: ${purchaseData.error.message}`);
+          console.error(`[Odoo Sync] Failed to fetch purchase data: ${purchaseData.error.message}`);
+          fetchError = true;
+          break;
       }
-
       const batchPurchases = purchaseData.result || [];
-      console.log(`Fetched ${batchPurchases.length} purchases in this batch`);
-      
+        totalFetched += batchPurchases.length;
+        console.log(`[Odoo Sync] Fetched ${batchPurchases.length} purchases in this batch (total so far: ${totalFetched})`);
       if (batchPurchases.length === 0) {
         hasMore = false;
       } else {
         allPurchases = allPurchases.concat(batchPurchases);
         offset += limit;
-        
-        // Add small delay to avoid overwhelming the CPU
-        await new Promise(resolve => setTimeout(resolve, 100));
+          await new Promise(resolve => setTimeout(resolve, delayMs));
       }
-
-      // Safety check to prevent infinite loops
-      if (offset > 10000) {
-        console.log('Reached maximum offset limit, stopping fetch');
+        if (offset > offsetLimit) {
+          console.warn(`[Odoo Sync] Reached maximum offset limit (${offsetLimit}), stopping fetch`);
+          break;
+        }
+      } catch (err) {
+        console.error(`[Odoo Sync] Exception during fetch:`, err);
+        fetchError = true;
         break;
       }
     }
-
-    console.log(`Total purchases fetched: ${allPurchases.length}`);
+    if (fetchError) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Error occurred during Odoo purchase fetch. See logs for details.',
+        count: allPurchases.length
+      }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+    console.log(`[Odoo Sync] Total purchases fetched: ${allPurchases.length}`);
 
     // Fetch purchase lines for all purchases (in batches)
     const purchaseIds = allPurchases.flatMap(p => p.order_line || []);
@@ -150,10 +169,10 @@ serve(async (req) => {
     let allPurchaseLines: PurchaseLine[] = [];
     
     // Process purchase lines in batches to avoid CPU limits
-    for (let i = 0; i < purchaseIds.length; i += 200) {
-      const batchIds = purchaseIds.slice(i, i + 200);
-      
+    for (let i = 0; i < purchaseIds.length; i += lineBatchSize) {
+      const batchIds = purchaseIds.slice(i, i + lineBatchSize);
       if (batchIds.length > 0) {
+        try {
         const linesResponse = await fetch(`${odooUrl}/jsonrpc`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -178,18 +197,19 @@ serve(async (req) => {
             id: Math.floor(Math.random() * 1000000)
           }),
         });
-
         const linesData = await linesResponse.json();
         if (!linesData.error && linesData.result) {
           allPurchaseLines = allPurchaseLines.concat(linesData.result);
+          } else if (linesData.error) {
+            console.error(`[Odoo Sync] Error fetching purchase lines batch at index ${i}: ${linesData.error.message}`);
+          }
+        } catch (err) {
+          console.error(`[Odoo Sync] Exception during purchase line fetch at index ${i}:`, err);
         }
-        
-        // Small delay between batches
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise(resolve => setTimeout(resolve, lineDelayMs));
       }
     }
-
-    console.log(`Fetched ${allPurchaseLines.length} purchase lines`);
+    console.log(`[Odoo Sync] Fetched ${allPurchaseLines.length} purchase lines`);
 
     // Transform and sync purchase data with lines
     const transformedPurchases = allPurchases.map((purchase: Purchase) => {
@@ -224,11 +244,11 @@ serve(async (req) => {
     });
 
     // Upsert purchases to Supabase in batches
-    console.log('Syncing purchases to Supabase...');
-    
-    for (let i = 0; i < transformedPurchases.length; i += 50) {
-      const batch = transformedPurchases.slice(i, i + 50);
-      
+    console.log('[Odoo Sync] Syncing purchases to Supabase...');
+    let upsertErrors = 0;
+    for (let i = 0; i < transformedPurchases.length; i += upsertBatchSize) {
+      const batch = transformedPurchases.slice(i, i + upsertBatchSize);
+      try {
       const { error: purchaseError } = await supabase
         .from('purchases')
         .upsert(batch.map(p => ({
@@ -243,17 +263,24 @@ serve(async (req) => {
           expected_date: p.expected_date,
           order_lines: p.order_lines
         })), { onConflict: 'id' });
-
       if (purchaseError) {
-        console.error(`Failed to sync batch ${i}: ${purchaseError.message}`);
+          upsertErrors++;
+          console.error(`[Odoo Sync] Failed to sync purchase batch ${i}: ${purchaseError.message}`);
+        } else {
+          console.log(`[Odoo Sync] Synced purchase batch ${i} (${batch.length} records)`);
+        }
+      } catch (err) {
+        upsertErrors++;
+        console.error(`[Odoo Sync] Exception during purchase upsert batch ${i}:`, err);
       }
-      
-      // Small delay between batches
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, upsertDelayMs));
+    }
+    if (upsertErrors > 0) {
+      console.warn(`[Odoo Sync] Encountered ${upsertErrors} errors during purchase upsert batches.`);
     }
 
     // Also sync purchase lines to the purchase_lines table
-    console.log('Syncing purchase lines...');
+    console.log('[Odoo Sync] Syncing purchase lines...');
     const allLinesForSync = transformedPurchases.flatMap(purchase => 
       purchase.order_lines.map(line => ({
         id: line.id.toString(),
@@ -264,19 +291,27 @@ serve(async (req) => {
         price_unit: line.price_unit
       }))
     );
-
+    let lineUpsertErrors = 0;
     for (let i = 0; i < allLinesForSync.length; i += 100) {
       const batch = allLinesForSync.slice(i, i + 100);
-      
+      try {
       const { error: linesError } = await supabase
         .from('purchase_lines')
         .upsert(batch, { onConflict: 'id' });
-
       if (linesError) {
-        console.error(`Failed to sync purchase lines batch ${i}: ${linesError.message}`);
+          lineUpsertErrors++;
+          console.error(`[Odoo Sync] Failed to sync purchase lines batch ${i}: ${linesError.message}`);
+        } else {
+          console.log(`[Odoo Sync] Synced purchase lines batch ${i} (${batch.length} records)`);
+        }
+      } catch (err) {
+        lineUpsertErrors++;
+        console.error(`[Odoo Sync] Exception during purchase lines upsert batch ${i}:`, err);
       }
-      
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await new Promise(resolve => setTimeout(resolve, lineDelayMs));
+    }
+    if (lineUpsertErrors > 0) {
+      console.warn(`[Odoo Sync] Encountered ${lineUpsertErrors} errors during purchase lines upsert batches.`);
     }
 
     return new Response(JSON.stringify({ 

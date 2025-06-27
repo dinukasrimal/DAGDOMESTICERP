@@ -1,4 +1,3 @@
-
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.50.0';
@@ -93,47 +92,60 @@ serve(async (req) => {
 
     console.log(`Found ${existingInvoiceNames.size} existing invoices in Supabase`);
 
-    // Fetch ALL posted invoices from Odoo (no date restriction for historical data)
-    console.log('Fetching all posted invoices from Odoo...');
-    const allInvoicesResponse = await fetch(`${odooUrl}/jsonrpc`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'call',
-        params: {
-          service: 'object',
-          method: 'execute_kw',
-          args: [
-            odooDatabase,
-            uid,
-            odooPassword,
-            'account.move',
-            'search_read',
-            [
+    // Add batching for fetching all invoices
+    const batchSize = parseInt(Deno.env.get('ODOO_INVOICE_BATCH_SIZE') || '100', 10);
+    const delayMs = parseInt(Deno.env.get('ODOO_INVOICE_DELAY_MS') || '100', 10);
+    let allInvoices: Invoice[] = [];
+    let offset = 0;
+    let hasMore = true;
+    while (hasMore) {
+      console.log(`[Odoo Sync] Fetching invoices batch: offset ${offset}, limit ${batchSize}`);
+      const allInvoicesResponse = await fetch(`${odooUrl}/jsonrpc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'call',
+          params: {
+            service: 'object',
+            method: 'execute_kw',
+            args: [
+              odooDatabase,
+              uid,
+              odooPassword,
+              'account.move',
+              'search_read',
               [
-                ['move_type', '=', 'out_invoice'],
-                ['state', '=', 'posted'] // Only posted invoices, excluding cancelled
-              ]
-            ],
-            {
-              fields: ['name', 'partner_id', 'invoice_date', 'amount_total', 'state', 'invoice_line_ids'],
-              order: 'invoice_date desc'
-            }
-          ]
-        },
-        id: Math.floor(Math.random() * 1000000)
-      }),
-    });
-
-    const allInvoicesData = await allInvoicesResponse.json();
-    
-    if (allInvoicesData.error) {
-      throw new Error(`Failed to fetch invoices: ${allInvoicesData.error.message}`);
+                [
+                  ['move_type', '=', 'out_invoice'],
+                  ['state', '=', 'posted']
+                ]
+              ],
+              {
+                fields: ['name', 'partner_id', 'invoice_date', 'amount_total', 'state', 'invoice_line_ids'],
+                order: 'invoice_date desc',
+                limit: batchSize,
+                offset: offset
+              }
+            ]
+          },
+          id: Math.floor(Math.random() * 1000000)
+        }),
+      });
+      const allInvoicesData = await allInvoicesResponse.json();
+      if (allInvoicesData.error) {
+        throw new Error(`Failed to fetch invoices: ${allInvoicesData.error.message}`);
+      }
+      const batch = allInvoicesData.result || [];
+      allInvoices = allInvoices.concat(batch);
+      if (batch.length < batchSize) {
+        hasMore = false;
+      } else {
+        offset += batchSize;
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
     }
-
-    const allInvoices = allInvoicesData.result || [];
-    console.log(`Fetched ${allInvoices.length} total posted invoices from Odoo`);
+    console.log(`[Odoo Sync] Total invoices fetched: ${allInvoices.length}`);
 
     // Filter out existing invoices
     const newInvoices = allInvoices.filter((invoice: Invoice) => 
@@ -154,7 +166,6 @@ serve(async (req) => {
     }
 
     // Process invoices in batches to avoid timeout
-    const batchSize = 50;
     let totalSynced = 0;
     
     for (let i = 0; i < newInvoices.length; i += batchSize) {

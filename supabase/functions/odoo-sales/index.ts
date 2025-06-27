@@ -1,4 +1,3 @@
-
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
@@ -56,43 +55,56 @@ serve(async (req) => {
       throw new Error('Authentication failed');
     }
 
-    // Fetch sales orders
-    const salesResponse = await fetch(`${odooUrl}/jsonrpc`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'call',
-        params: {
-          service: 'object',
-          method: 'execute_kw',
-          args: [
-            odooDatabase,
-            uid,
-            odooPassword,
-            'sale.order',
-            'search_read',
-            [[]],  // domain (empty = all records)
-            {
-              fields: ['name', 'partner_id', 'date_order', 'amount_total', 'state'],
-              limit: 50,
-              order: 'date_order desc'
-            }
-          ]
-        },
-        id: Math.floor(Math.random() * 1000000)
-      }),
-    });
-
-    const salesData = await salesResponse.json();
-    console.log('Sales data received:', salesData);
-
-    if (salesData.error) {
-      throw new Error(`Odoo API error: ${salesData.error.message}`);
+    // Replace single fetch with batching for all sales orders
+    const batchSize = parseInt(Deno.env.get('ODOO_SALES_BATCH_SIZE') || '100', 10);
+    const delayMs = parseInt(Deno.env.get('ODOO_SALES_DELAY_MS') || '100', 10);
+    let allSales: SaleOrder[] = [];
+    let offset = 0;
+    let hasMore = true;
+    while (hasMore) {
+      console.log(`[Odoo Sync] Fetching sales batch: offset ${offset}, limit ${batchSize}`);
+      const salesResponse = await fetch(`${odooUrl}/jsonrpc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'call',
+          params: {
+            service: 'object',
+            method: 'execute_kw',
+            args: [
+              odooDatabase,
+              uid,
+              odooPassword,
+              'sale.order',
+              'search_read',
+              [[]],
+              {
+                fields: ['name', 'partner_id', 'date_order', 'amount_total', 'state'],
+                limit: batchSize,
+                offset: offset,
+                order: 'date_order desc'
+              }
+            ]
+          },
+          id: Math.floor(Math.random() * 1000000)
+        }),
+      });
+      const salesData = await salesResponse.json();
+      if (salesData.error) {
+        throw new Error(`Odoo API error: ${salesData.error.message}`);
+      }
+      const batch = salesData.result || [];
+      allSales = allSales.concat(batch);
+      if (batch.length < batchSize) {
+        hasMore = false;
+      } else {
+        offset += batchSize;
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
     }
-
-    const orders = salesData.result || [];
-    const transformedOrders = orders.map((order: SaleOrder) => ({
+    console.log(`[Odoo Sync] Total sales orders fetched: ${allSales.length}`);
+    const transformedOrders = allSales.map((order: SaleOrder) => ({
       id: order.name || order.id.toString(),
       name: order.name,
       partner_name: Array.isArray(order.partner_id) ? order.partner_id[1] : 'Unknown Customer',

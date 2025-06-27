@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -7,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { TrendingUp, TrendingDown, Calendar, DollarSign, Package } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
 
 interface SalesData {
   id: string;
@@ -34,6 +34,8 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [selectedCustomer, setSelectedCustomer] = useState('all');
   const [showValues, setShowValues] = useState(false);
+  const [extraCategories, setExtraCategories] = useState<string[]>([]);
+  const [products, setProducts] = useState<any[]>([]);
 
   // Get available years from data
   const availableYears = [...new Set(salesData.map(item => 
@@ -56,16 +58,41 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     return 1; // Default to 1 if no order lines
   };
 
-  // Filter data based on selections
+  // Helper to extract code in brackets from product_name
+  function extractCodeFromBrackets(name: string): string | null {
+    const match = name.match(/\[(.*?)\]/);
+    return match ? match[1].trim() : null;
+  }
+
+  // Get unique product categories from products table based on codes in order lines
+  const productCategories = ['all', ...Array.from(new Set(
+    salesData.flatMap(item =>
+      (item.order_lines || []).map(line => {
+        if (!line.product_name) return 'Uncategorized';
+        const code = extractCodeFromBrackets(line.product_name);
+        const found = code && products.find(p => p.default_code === code);
+        return found ? found.product_category || 'Uncategorized' : 'Uncategorized';
+      })
+    )
+  )).sort()];
+
+  // Filter data based on selections, including category
   const filteredData = salesData.filter(item => {
     const orderDate = new Date(item.date_order);
     const year = orderDate.getFullYear().toString();
     const month = orderDate.getMonth() + 1;
-    
     if (selectedYear !== 'all' && year !== selectedYear) return false;
     if (selectedMonth !== 'all' && month.toString() !== selectedMonth) return false;
     if (selectedCustomer !== 'all' && item.partner_name !== selectedCustomer) return false;
-    
+    if (selectedCategory !== 'all') {
+      // Only include if at least one order line matches the selected category
+      if (!item.order_lines || !item.order_lines.some(line => {
+        if (!line.product_name) return false;
+        const code = extractCodeFromBrackets(line.product_name);
+        const found = code && products.find(p => p.default_code === code);
+        return found ? (found.product_category || 'Uncategorized') === selectedCategory : 'Uncategorized' === selectedCategory;
+      })) return false;
+    }
     return true;
   });
 
@@ -189,6 +216,67 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     }
   };
 
+  // Fetch products table on mount
+  useEffect(() => {
+    const fetchProducts = async () => {
+      const { data, error } = await (supabase as any).from('products').select('*');
+      if (error) {
+        console.error('Failed to fetch products:', error);
+      } else {
+        setProducts(data || []);
+      }
+    };
+    fetchProducts();
+  }, []);
+
+  // Build a map of product_id to product info for fast lookup
+  const productMap: Record<string, any> = {};
+  products.forEach(prod => {
+    if (prod.id) productMap[String(prod.id)] = prod;
+  });
+
+  // --- Product Category Sales Aggregation ---
+  // Build a map: category -> { current: qty, previous: qty } for the selected month only
+  const productCategoryMap: Record<string, { current: number; previous: number }> = {};
+  salesData.forEach(item => {
+    if (item.order_lines && Array.isArray(item.order_lines)) {
+      const orderDate = new Date(item.date_order);
+      const year = orderDate.getFullYear().toString();
+      const month = orderDate.getMonth() + 1;
+      if (selectedMonth === 'all') return;
+      if (month.toString() !== selectedMonth) return;
+      item.order_lines.forEach(line => {
+        let category = 'Uncategorized';
+        if (line.product_name) {
+          const code = extractCodeFromBrackets(line.product_name);
+          const found = code && products.find(p => p.default_code === code);
+          if (found) category = found.product_category || 'Uncategorized';
+        }
+        const qty = Number(line.qty_delivered) || 0;
+        if (!productCategoryMap[category]) productCategoryMap[category] = { current: 0, previous: 0 };
+        if (year === selectedYear) productCategoryMap[category].current += qty;
+        if (year === previousYear) productCategoryMap[category].previous += qty;
+      });
+    }
+  });
+  // Get all categories that had sales in either year for the selected month
+  const allCategories = Object.keys(productCategoryMap);
+  // Top 10 by current year sales (for selected month)
+  const top10 = allCategories
+    .sort((a, b) => (productCategoryMap[b].current - productCategoryMap[a].current))
+    .slice(0, 10);
+  // Chart data: always show both years for each top 10 category
+  const productCategoryChartData = top10.map(cat => {
+    const current = productCategoryMap[cat]?.current || 0;
+    const previous = productCategoryMap[cat]?.previous || 0;
+    console.log(`[ProductCategoryChart] ${cat}: current=${current}, previous=${previous}, month=${selectedMonth}`);
+    return {
+      category: cat,
+      current,
+      previous
+    };
+  });
+
   return (
     <div className="space-y-6">
       {/* Filters */}
@@ -197,7 +285,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
           <CardTitle>Filter:</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div>
               <label className="text-sm font-medium mb-2 block">Year</label>
               <Select value={selectedYear} onValueChange={setSelectedYear}>
@@ -251,6 +339,19 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
               >
                 {showValues ? "Values (LKR)" : "Quantity"}
               </Button>
+            </div>
+            <div>
+              <label className="text-sm font-medium mb-2 block">Category</label>
+              <Select value={selectedCategory} onValueChange={setSelectedCategory}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {productCategories.map(cat => (
+                    <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
         </CardContent>
@@ -318,7 +419,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                   />
                   <YAxis />
                   <ChartTooltip content={<ChartTooltipContent />} />
-                  <Bar dataKey="current" fill="var(--color-current)" />
+                  <Bar dataKey="current" fill="#2563eb" />
                 </BarChart>
               </ResponsiveContainer>
             </ChartContainer>
@@ -344,8 +445,8 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                   />
                   <YAxis />
                   <ChartTooltip content={<ChartTooltipContent />} />
-                  <Bar dataKey="current" fill="var(--color-current)" />
-                  <Bar dataKey="previous" fill="var(--color-previous)" />
+                  <Bar dataKey="current" fill="#2563eb" />
+                  <Bar dataKey="previous" fill="#cbd5e1" />
                 </BarChart>
               </ResponsiveContainer>
             </ChartContainer>
@@ -366,7 +467,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                   <XAxis dataKey="month" />
                   <YAxis />
                   <ChartTooltip content={<ChartTooltipContent />} />
-                  <Bar dataKey="current" fill="var(--color-current)" />
+                  <Bar dataKey="current" fill="#2563eb" />
                 </BarChart>
               </ResponsiveContainer>
             </ChartContainer>
@@ -386,11 +487,37 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                   <XAxis dataKey="month" />
                   <YAxis />
                   <ChartTooltip content={<ChartTooltipContent />} />
-                  <Bar dataKey="current" fill="var(--color-current)" />
-                  <Bar dataKey="previous" fill="var(--color-previous)" />
+                  <Bar dataKey="current" fill="#2563eb" />
+                  <Bar dataKey="previous" fill="#cbd5e1" />
                 </BarChart>
               </ResponsiveContainer>
             </ChartContainer>
+          </CardContent>
+        </Card>
+
+        {/* --- Product Category Sales Comparison Chart --- */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Top 10 Product Categories: Current vs Previous Year Sales</CardTitle>
+            <Badge variant="outline">{selectedYear} vs {previousYear} ({selectedMonth !== 'all' ? new Date(2000, Number(selectedMonth) - 1).toLocaleString('en-US', { month: 'long' }) : 'Select Month'})</Badge>
+          </CardHeader>
+          <CardContent>
+            {selectedMonth === 'all' ? (
+              <div className="text-muted-foreground">Select a month to view product category comparison.</div>
+            ) : (
+              <ChartContainer config={chartConfig} className="h-80">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={productCategoryChartData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="category" angle={-45} textAnchor="end" height={80} fontSize={12} />
+                    <YAxis />
+                    <ChartTooltip content={<ChartTooltipContent />} />
+                    <Bar dataKey="current" fill="#2563eb" />
+                    <Bar dataKey="previous" fill="#cbd5e1" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </ChartContainer>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -414,7 +541,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                 </tr>
               </thead>
               <tbody>
-                {filteredData.slice(0, 20).map((item, index) => {
+                {filteredData.map((item, index) => {
                   const date = new Date(item.date_order);
                   const quantity = getInvoiceQuantity(item);
                   const orderLinesCount = item.order_lines ? item.order_lines.length : 0;

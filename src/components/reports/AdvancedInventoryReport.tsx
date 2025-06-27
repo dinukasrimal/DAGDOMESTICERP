@@ -16,9 +16,13 @@ import {
   Calendar,
   RotateCcw
 } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { downloadElementAsPdf } from '@/lib/pdfUtils';
+import { Popover } from '@/components/ui/popover';
 
 interface InventoryData {
   id: string;
+  product_id?: string | number;
   product_name: string;
   product_category: string;
   quantity_on_hand: number;
@@ -71,6 +75,70 @@ interface ExpandedPurchases {
   [key: string]: boolean;
 }
 
+// Define a type for raw inventory rows from Supabase, including product_id as optional
+interface RawInventoryRow {
+  id: string;
+  product_id?: string | number;
+  product_name?: string;
+  product_category?: string;
+  quantity_on_hand?: number;
+  quantity_available?: number;
+  incoming_qty?: number;
+  outgoing_qty?: number;
+  virtual_available?: number;
+  reorder_min?: number;
+  reorder_max?: number;
+  cost?: number;
+  location?: string;
+  [key: string]: any;
+}
+
+// Type guard for product_id
+function hasProductId(obj: any): obj is { product_id: string | number } {
+  return obj && (typeof obj.product_id === 'string' || typeof obj.product_id === 'number');
+}
+
+// Helper to extract size from product name
+function extractSize(productName: string): string | number | null {
+  if (!productName) return null;
+  const sizePattern = /(\b(2XL|3XL|4XL|XL|L|M|S)\b|\b(22|24|26|28|30|32|34|36|38|40|42)\b)$/i;
+  const match = productName.match(sizePattern);
+  if (match) {
+    const size = match[0].toUpperCase();
+    if (!isNaN(Number(size))) return Number(size);
+    return size;
+  }
+  return null;
+}
+
+// Helper to extract base name (everything except the size at the end)
+function extractBaseName(productName: string): string {
+  if (!productName) return '';
+  const sizePattern = /(\b(2XL|3XL|4XL|XL|L|M|S)\b|\b(22|24|26|28|30|32|34|36|38|40|42)\b)$/i;
+  return productName.replace(sizePattern, '').trim().replace(/[-\s]+$/, '').toUpperCase();
+}
+
+// Custom sort order for sizes
+const sizeOrder = [22,24,26,28,30,32,34,36,38,40,42,'S','M','L','XL','2XL','3XL','4XL'];
+function getSizeSortValue(size: string | number | null): number {
+  if (size === null) return 9999;
+  const idx = sizeOrder.findIndex(s => String(s) === String(size));
+  return idx === -1 ? 9999 : idx;
+}
+
+// Update sortProductsBySize to sort by base name, then size
+function sortProductsBySize(products: any[]): any[] {
+  return [...products].sort((a, b) => {
+    const baseA = extractBaseName(a.product_name);
+    const baseB = extractBaseName(b.product_name);
+    if (baseA < baseB) return -1;
+    if (baseA > baseB) return 1;
+    const sizeA = extractSize(a.product_name);
+    const sizeB = extractSize(b.product_name);
+    return getSizeSortValue(sizeA) - getSizeSortValue(sizeB);
+  });
+}
+
 export const AdvancedInventoryReport: React.FC = () => {
   const { toast } = useToast();
   const [selectedMonths, setSelectedMonths] = useState('3');
@@ -83,6 +151,28 @@ export const AdvancedInventoryReport: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [expandedPurchases, setExpandedPurchases] = useState<ExpandedPurchases>({});
   const [isLoading, setIsLoading] = useState(false);
+  const [productsData, setProductsData] = useState<any[]>([]);
+  const [expandedIncoming, setExpandedIncoming] = useState<{ [productId: string]: boolean }>({});
+  const [searchPO, setSearchPO] = useState('');
+  const [viewCategoryDialog, setViewCategoryDialog] = useState<{ open: boolean, category: string | null }>({ open: false, category: null });
+  const [showUrgentPdfDialog, setShowUrgentPdfDialog] = useState(false);
+  const [salesQtyPercent, setSalesQtyPercent] = useState(0);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [categorySearch, setCategorySearch] = useState('');
+  const [hiddenCategories, setHiddenCategories] = useState<string[]>(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('hiddenCategories');
+      return stored ? JSON.parse(stored) : [];
+    }
+    return [];
+  });
+  const [showHideDropdown, setShowHideDropdown] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('hiddenCategories', JSON.stringify(hiddenCategories));
+    }
+  }, [hiddenCategories]);
 
   useEffect(() => {
     loadData();
@@ -94,16 +184,42 @@ export const AdvancedInventoryReport: React.FC = () => {
     }
   }, [inventoryData, salesData, selectedMonths, purchaseHolds]);
 
+  const syncAndLoadData = async () => {
+    setIsSyncing(true);
+    toast({ title: 'Syncing Odoo data...', description: 'Please wait while data is synced from Odoo.', variant: 'default' });
+    try {
+      // Call all edge functions in parallel
+      const syncResults = await Promise.all([
+        fetch('/functions/v1/odoo-purchases', { method: 'POST' }),
+        fetch('/functions/v1/odoo-invoices', { method: 'POST' }),
+        fetch('/functions/v1/odoo-inventory', { method: 'POST' }),
+        fetch('/functions/v1/odoo-products', { method: 'POST' })
+      ]);
+      const allOk = syncResults.every(res => res.ok);
+      if (!allOk) {
+        toast({ title: 'Sync Error', description: 'One or more syncs failed. Check logs.', variant: 'destructive' });
+      } else {
+        toast({ title: 'Sync Complete', description: 'Odoo data synced successfully.', variant: 'default' });
+      }
+      await loadData();
+    } catch (err) {
+      toast({ title: 'Sync Error', description: 'Failed to sync Odoo data: ' + (err as Error).message, variant: 'destructive' });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   const loadData = async () => {
     setIsLoading(true);
     try {
       console.log('Loading inventory and sales data...');
       
-      const [inventoryRes, purchaseRes, purchaseHoldsRes, salesRes] = await Promise.all([
+      const [inventoryRes, purchaseRes, purchaseHoldsRes, salesRes, productsRes] = await Promise.all([
         supabase.from('inventory').select('*'),
         supabase.from('purchases').select('*').order('date_order', { ascending: false }),
         supabase.from('purchase_holds').select('*'),
-        supabase.from('invoices').select('*').order('date_order', { ascending: false })
+        supabase.from('invoices').select('*').order('date_order', { ascending: false }),
+        ((supabase as any).from('products')).select('*')
       ]);
 
       console.log('Data loaded:', {
@@ -131,8 +247,9 @@ export const AdvancedInventoryReport: React.FC = () => {
       }
 
       // Transform the data to ensure proper types
-      const transformedInventory = (inventoryRes.data || []).map(item => ({
+      const transformedInventory = ((inventoryRes.data as RawInventoryRow[] || []).map(item => ({
         id: item.id,
+        product_id: typeof item.product_id === 'string' || typeof item.product_id === 'number' ? item.product_id : undefined,
         product_name: item.product_name || 'Unknown Product',
         product_category: item.product_category || 'Uncategorized',
         quantity_on_hand: Number(item.quantity_on_hand) || 0,
@@ -144,7 +261,7 @@ export const AdvancedInventoryReport: React.FC = () => {
         reorder_max: Number(item.reorder_max) || 0,
         cost: Number(item.cost) || 0,
         location: item.location || 'WH/Stock'
-      }));
+      }) as InventoryData)) as InventoryData[];
 
       const transformedPurchases = (purchaseRes.data || []).map(item => ({
         id: item.id,
@@ -156,62 +273,43 @@ export const AdvancedInventoryReport: React.FC = () => {
         received_qty: Number(item.received_qty) || 0,
         pending_qty: Number(item.pending_qty) || 0,
         expected_date: item.expected_date || '',
-        order_lines: Array.isArray(item.order_lines) ? item.order_lines : []
+        order_lines: Array.isArray(item.order_lines)
+          ? item.order_lines.map((line: any) => ({
+              id: Number(line.id),
+              product_name: String(line.product_name),
+              product_qty: Number(line.product_qty),
+              qty_received: Number(line.qty_received),
+              price_unit: Number(line.price_unit),
+              price_subtotal: Number(line.price_subtotal)
+            }))
+          : []
       }));
 
       setInventoryData(transformedInventory);
       setPurchaseData(transformedPurchases);
       setPurchaseHolds(purchaseHoldsRes.data || []);
-      setSalesData(salesRes.data || []);
+      setSalesData((salesRes.data || []).map(inv => ({
+        ...inv,
+        order_lines: Array.isArray(inv.order_lines)
+          ? inv.order_lines.map((line: any) => {
+              let normalizedProductId = undefined;
+              if (Array.isArray(line.product_id)) {
+                normalizedProductId = line.product_id[0];
+              } else if (typeof line.product_id === 'string' || typeof line.product_id === 'number') {
+                normalizedProductId = line.product_id;
+              }
+              return {
+                ...line,
+                product_id: normalizedProductId,
+              };
+            })
+          : []
+      })));
+      setProductsData(productsRes.data || []);
 
       // If we have no inventory data, create some sample data to show structure
       if (transformedInventory.length === 0) {
-        console.log('No inventory data found, creating sample data structure');
-        const sampleData = [
-          {
-            id: 'sample-1',
-            product_name: 'Sample Product A',
-            product_category: 'Category 1',
-            quantity_on_hand: 100,
-            quantity_available: 80,
-            incoming_qty: 50,
-            outgoing_qty: 20,
-            virtual_available: 130,
-            reorder_min: 30,
-            reorder_max: 200,
-            cost: 15.50,
-            location: 'WH/Stock'
-          },
-          {
-            id: 'sample-2',
-            product_name: 'Sample Product B',
-            product_category: 'Category 1',
-            quantity_on_hand: 75,
-            quantity_available: 60,
-            incoming_qty: 25,
-            outgoing_qty: 15,
-            virtual_available: 85,
-            reorder_min: 20,
-            reorder_max: 150,
-            cost: 12.00,
-            location: 'WH/Stock'
-          },
-          {
-            id: 'sample-3',
-            product_name: 'Sample Product C',
-            product_category: 'Category 2',
-            quantity_on_hand: 50,
-            quantity_available: 40,
-            incoming_qty: 0,
-            outgoing_qty: 10,
-            virtual_available: 40,
-            reorder_min: 25,
-            reorder_max: 100,
-            cost: 8.75,
-            location: 'WH/Stock'
-          }
-        ];
-        setInventoryData(sampleData);
+        console.log('No inventory data found, not showing sample data.');
       }
 
     } catch (error) {
@@ -227,60 +325,75 @@ export const AdvancedInventoryReport: React.FC = () => {
   };
 
   // Fixed sales forecast calculation - get previous year data for proper comparison
-  const calculateSalesForecast = (productName: string, months: number): number => {
+  const calculateSalesForecast = (productName: string, months: number, productId?: string | number): number => {
     const currentDate = new Date();
     const currentYear = currentDate.getFullYear();
-    const currentMonth = currentDate.getMonth(); // 0-based
-    
-    // For planning, we want to look at last year's data for the same period
-    // Example: if current is 2025/June and planning for 3 months, 
-    // get 2024 July, August, September
+    const currentMonth = currentDate.getMonth();
     const previousYear = currentYear - 1;
-    const startMonth = (currentMonth + 1) % 12; // Next month in previous year
-    
-    console.log(`Calculating forecast for ${productName}, months: ${months}, looking at year ${previousYear} starting from month ${startMonth + 1}`);
-
+    const startMonth = currentMonth;
+    const targetMonths = Array.from({ length: months }, (_, i) => (startMonth + i) % 12);
+    const debugLines: string[] = [];
     const relevantSales = salesData.filter(invoice => {
       const invoiceDate = new Date(invoice.date_order);
       const invoiceYear = invoiceDate.getFullYear();
       const invoiceMonth = invoiceDate.getMonth();
-      
       if (invoiceYear !== previousYear) return false;
-      
-      // Check if invoice month is within our target range
-      for (let i = 0; i < months; i++) {
-        const targetMonth = (startMonth + i) % 12;
-        if (invoiceMonth === targetMonth) {
-          return true;
-        }
-      }
-      return false;
+      return targetMonths.includes(invoiceMonth);
     });
-
     let totalQty = 0;
     relevantSales.forEach(invoice => {
       if (invoice.order_lines && Array.isArray(invoice.order_lines)) {
         invoice.order_lines.forEach((line: any) => {
-          if (line.product_name && line.product_name.toLowerCase().includes(productName.toLowerCase())) {
+          let match = false;
+          if (productId && line.product_id && String(line.product_id) === String(productId)) {
+            match = true;
+          } else if (!productId && line.product_name && line.product_name.toLowerCase().includes(productName.toLowerCase())) {
+            match = true;
+          }
+          if (match) {
             totalQty += line.qty_delivered || 0;
+            debugLines.push(`Matched sale: invoice ${invoice.id || invoice.name}, line ${line.product_id || line.product_name}, qty: ${line.qty_delivered}`);
           }
         });
       }
     });
-
-    console.log(`Found ${relevantSales.length} relevant invoices for ${productName}, total qty: ${totalQty}`);
+    console.log(`Forecast for ${productName} (${productId || 'no id'}), months: ${months}, year: ${previousYear}, months: ${targetMonths.map(m => m+1).join(', ')}. Found ${relevantSales.length} invoices, total qty: ${totalQty}`);
+    debugLines.forEach(l => console.log(l));
     return totalQty;
   };
 
   const analyzeCategories = () => {
     console.log('Analyzing categories with data:', {
       inventoryItems: inventoryData.length,
-      salesItems: salesData.length
+      salesItems: salesData.length,
+      products: productsData.length
     });
 
-    const categoryMap: { [key: string]: InventoryData[] } = {};
-    
-    inventoryData.forEach(item => {
+    // Build a map of product_id to product info
+    const productMap: { [id: string]: any } = {};
+    productsData.forEach(prod => {
+      if (prod.id) productMap[String(prod.id)] = prod;
+    });
+
+    // Join inventory to products by product_id (fallback to product_name if missing)
+    const joinedInventory = inventoryData.map(inv => {
+      let prod = undefined;
+      if (inv.product_id && productMap[String(inv.product_id)]) {
+        prod = productMap[String(inv.product_id)];
+      } else if (inv.product_name) {
+        prod = productsData.find(p => p.name && p.name.toLowerCase() === inv.product_name.toLowerCase());
+      }
+      return {
+        ...inv,
+        product_name: prod?.name || inv.product_name,
+        product_category: prod?.product_category || inv.product_category,
+        product_ref: prod,
+      };
+    });
+
+    // Group by category from products table
+    const categoryMap: { [key: string]: typeof joinedInventory } = {};
+    joinedInventory.forEach(item => {
       const category = item.product_category || 'Uncategorized';
       if (!categoryMap[category]) {
         categoryMap[category] = [];
@@ -291,19 +404,17 @@ export const AdvancedInventoryReport: React.FC = () => {
     const analysis: CategoryAnalysis[] = Object.keys(categoryMap).map(category => {
       const products = categoryMap[category];
       const totalStock = products.reduce((sum, p) => sum + p.quantity_on_hand, 0);
-      const totalIncoming = products.reduce((sum, p) => sum + getAvailableIncoming(p.product_name), 0);
+      const totalIncoming = products.reduce((sum, p) => sum + (p.incoming_qty || 0), 0);
       const totalOutgoing = products.reduce((sum, p) => sum + p.outgoing_qty, 0);
-      
       let needsPlanning = 0;
       products.forEach(product => {
-        const forecast = calculateSalesForecast(product.product_name, parseInt(selectedMonths));
-        const availableIncoming = getAvailableIncoming(product.product_name);
+        const forecast = calculateSalesForecast(product.product_name, parseInt(selectedMonths), product.product_id);
+        const availableIncoming = product.incoming_qty || 0;
         const stockWithIncoming = product.quantity_on_hand + availableIncoming;
         if (forecast > stockWithIncoming) {
           needsPlanning += forecast - stockWithIncoming;
         }
       });
-
       return {
         category,
         products,
@@ -319,14 +430,20 @@ export const AdvancedInventoryReport: React.FC = () => {
     setCategoryAnalysis(analysis.sort((a, b) => b.needsPlanning - a.needsPlanning));
   };
 
-  const getAvailableIncoming = (productName: string): number => {
+  const getAvailableIncoming = (productName: string, productId?: string | number): number => {
     const heldPurchaseIds = new Set(purchaseHolds.map(h => h.purchase_id));
     
     let totalIncoming = 0;
     purchaseData.forEach(purchase => {
       if (!heldPurchaseIds.has(purchase.id) && purchase.order_lines) {
         purchase.order_lines.forEach(line => {
-          if (line.product_name.toLowerCase().includes(productName.toLowerCase())) {
+          let match = false;
+          if (productId && 'product_id' in line && line.product_id && String(line.product_id) === String(productId)) {
+            match = true;
+          } else if (!productId && line.product_name && line.product_name.toLowerCase().includes(productName.toLowerCase())) {
+            match = true;
+          }
+          if (match) {
             totalIncoming += Math.max(0, line.product_qty - line.qty_received);
           }
         });
@@ -420,16 +537,148 @@ export const AdvancedInventoryReport: React.FC = () => {
     return categoryAnalysis.map(cat => ({
       ...cat,
       nextMonthSale: cat.products.reduce((sum, p) => 
-        sum + calculateSalesForecast(p.product_name, 1), 0
+        sum + calculateSalesForecast(p.product_name, 1, hasProductId(p) ? p.product_id : undefined), 0
       ),
       stockWithoutIncoming: cat.products.reduce((sum, p) => 
         sum + p.quantity_on_hand, 0),
       urgentNeeds: cat.products.filter(p => {
-        const nextMonthSale = calculateSalesForecast(p.product_name, 1);
+        const nextMonthSale = calculateSalesForecast(p.product_name, 1, hasProductId(p) ? p.product_id : undefined);
         return p.quantity_on_hand < nextMonthSale;
       }).length
     }));
   };
+
+  // Group purchases by supplier, only include POs with pending_qty > 0
+  const supplierGroups = React.useMemo(() => {
+    const groups: { [supplier: string]: PurchaseData[] } = {};
+    const relevantPurchases = (filteredPurchases.length > 0 ? filteredPurchases : purchaseData).filter(p => (p.pending_qty || 0) > 0);
+    relevantPurchases.forEach((purchase) => {
+      const supplier = purchase.partner_name || 'Unknown Supplier';
+      if (!groups[supplier]) groups[supplier] = [];
+      groups[supplier].push(purchase);
+    });
+    return groups;
+  }, [filteredPurchases, purchaseData, filteredPurchases.length]);
+
+  const [expandedSuppliers, setExpandedSuppliers] = React.useState<{ [supplier: string]: boolean }>({});
+  const toggleSupplierExpansion = (supplier: string) => {
+    setExpandedSuppliers(prev => ({ ...prev, [supplier]: !prev[supplier] }));
+  };
+
+  // Helper to calculate sum of pending for a product (excluding held POs)
+  function getPendingIncomingForProduct(product: InventoryData): number {
+    const heldPurchaseIds = new Set(purchaseHolds.map(h => h.purchase_id));
+    let sum = 0;
+    purchaseData.forEach(po => {
+      if (!heldPurchaseIds.has(po.id) && po.order_lines) {
+        po.order_lines.forEach(line => {
+          const anyLine = line as any;
+          let lineProductId = undefined;
+          if (Array.isArray(anyLine.product_id)) {
+            lineProductId = anyLine.product_id[0];
+          } else if (typeof anyLine.product_id === 'string' || typeof anyLine.product_id === 'number') {
+            lineProductId = anyLine.product_id;
+          }
+          let match = false;
+          if (product.product_id && lineProductId && String(lineProductId) === String(product.product_id)) {
+            match = true;
+          } else if (
+            (!product.product_id || !lineProductId) &&
+            anyLine.product_name &&
+            product.product_name &&
+            anyLine.product_name.toLowerCase().includes(product.product_name.toLowerCase())
+          ) {
+            match = true;
+          }
+          const pending = Math.max(0, anyLine.product_qty - anyLine.qty_received);
+          if (match && pending > 0) {
+            sum += pending;
+          }
+        });
+      }
+    });
+    return sum;
+  }
+
+  // Helper to calculate sales quantity (invoiced) for the same months in the previous year as the selected period
+  function getSalesQtyForProduct(product: InventoryData, months: number): number {
+    const currentDate = new Date();
+    const currentYear = currentDate.getFullYear();
+    const currentMonth = currentDate.getMonth(); // 0-based
+    // For planning, look at the same months in the previous year, but shifted forward by 1
+    // Example: if today is 2025/05 and months=3, get 2024/06, 2024/07, 2024/08
+    const previousYear = currentYear - 1;
+    const startMonth = (currentMonth + 1) % 12; // Next month
+    const targetMonths = Array.from({ length: months }, (_, i) => (startMonth + i) % 12);
+    let totalQty = 0;
+    salesData.forEach(invoice => {
+      const invoiceDate = new Date(invoice.date_order);
+      const invoiceYear = invoiceDate.getFullYear();
+      const invoiceMonth = invoiceDate.getMonth();
+      if (invoiceYear !== previousYear) return;
+      if (!targetMonths.includes(invoiceMonth)) return;
+      if (invoice.order_lines && Array.isArray(invoice.order_lines)) {
+        invoice.order_lines.forEach((line: any) => {
+          const anyLine = line as any;
+          let lineProductId = undefined;
+          if (Array.isArray(anyLine.product_id)) {
+            lineProductId = anyLine.product_id[0];
+          } else if (typeof anyLine.product_id === 'string' || typeof anyLine.product_id === 'number') {
+            lineProductId = anyLine.product_id;
+          }
+          let match = false;
+          if (product.product_id && lineProductId && String(lineProductId) === String(product.product_id)) {
+            match = true;
+          } else if (
+            (!product.product_id || !lineProductId) &&
+            anyLine.product_name &&
+            product.product_name &&
+            anyLine.product_name.toLowerCase().includes(product.product_name.toLowerCase())
+          ) {
+            match = true;
+          }
+          if (match) {
+            totalQty += anyLine.qty_delivered || 0;
+          }
+        });
+      }
+    });
+    return totalQty;
+  }
+
+  // Add Collapse All button and PO search box above tables
+  <div className="flex items-center justify-between mb-4">
+    <div className="flex items-center space-x-2">
+      <Button size="sm" variant="outline" onClick={() => {
+        setCategoryAnalysis(prev => prev.map(cat => ({ ...cat, expanded: false })));
+        setExpandedIncoming({});
+      }}>
+        Collapse All
+      </Button>
+    </div>
+    <div className="flex items-center space-x-2">
+      <input
+        type="text"
+        className="border rounded px-2 py-1 text-sm"
+        placeholder="Find PO number..."
+        value={searchPO}
+        onChange={e => setSearchPO(e.target.value)}
+        style={{ minWidth: 180 }}
+      />
+    </div>
+  </div>
+
+  // In Supplier Purchase Orders table, filter by searchPO
+  const filteredSupplierGroups = React.useMemo(() => {
+    if (!searchPO.trim()) return supplierGroups;
+    const lower = searchPO.trim().toLowerCase();
+    const filtered: typeof supplierGroups = {};
+    Object.entries(supplierGroups).forEach(([supplier, purchases]) => {
+      const filteredPurchases = purchases.filter(po => po.name && po.name.toLowerCase().includes(lower));
+      if (filteredPurchases.length > 0) filtered[supplier] = filteredPurchases;
+    });
+    return filtered;
+  }, [supplierGroups, searchPO]);
 
   if (isLoading) {
     return (
@@ -458,8 +707,8 @@ export const AdvancedInventoryReport: React.FC = () => {
               <SelectItem value="12">12 Months</SelectItem>
             </SelectContent>
           </Select>
-          <Button onClick={loadData} variant="outline" size="sm">
-            Refresh Data
+          <Button onClick={syncAndLoadData} variant="outline" size="sm" disabled={isSyncing}>
+            {isSyncing ? 'Syncing...' : 'Refresh Data'}
           </Button>
         </div>
       </div>
@@ -492,6 +741,61 @@ export const AdvancedInventoryReport: React.FC = () => {
         </Card>
       </div>
 
+      {/* Percentage input for 3-month planning */}
+      <div className="flex items-center mb-2">
+        <label className="mr-2 font-medium">Increase Sales Qty by (%)</label>
+        <input
+          type="number"
+          min="0"
+          max="100"
+          value={salesQtyPercent}
+          onChange={e => setSalesQtyPercent(Number(e.target.value))}
+          className="border rounded px-2 py-1 w-20 text-right"
+          style={{ minWidth: 60 }}
+        />
+      </div>
+
+      {/* Category Search Bar and Hide Dropdown */}
+      <div className="flex items-center mb-4 space-x-4">
+        <input
+          type="text"
+          className="border rounded px-2 py-1 text-sm"
+          placeholder="Search product category..."
+          value={categorySearch}
+          onChange={e => setCategorySearch(e.target.value)}
+          style={{ minWidth: 220 }}
+        />
+        <div className="relative">
+          <button
+            className="border rounded px-2 py-1 text-sm bg-white"
+            onClick={() => setShowHideDropdown(v => !v)}
+            type="button"
+          >
+            Hide categories...
+          </button>
+          {showHideDropdown && (
+            <div className="absolute z-10 bg-white border rounded shadow p-2 mt-1 min-w-[220px] max-h-60 overflow-y-auto" tabIndex={-1} onBlur={() => setShowHideDropdown(false)}>
+              {categoryAnalysis.map(cat => (
+                <label key={cat.category} className="flex items-center space-x-2 py-1 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={hiddenCategories.includes(cat.category)}
+                    onChange={e => {
+                      if (e.target.checked) {
+                        setHiddenCategories(prev => [...prev, cat.category]);
+                      } else {
+                        setHiddenCategories(prev => prev.filter(c => c !== cat.category));
+                      }
+                    }}
+                  />
+                  <span>{cat.category}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Supplier Purchase Orders Table with Pivot Style */}
       <Card>
         <CardHeader>
@@ -505,92 +809,165 @@ export const AdvancedInventoryReport: React.FC = () => {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center space-x-2">
+              <Button size="sm" variant="outline" onClick={() => {
+                setCategoryAnalysis(prev => prev.map(cat => ({ ...cat, expanded: false })));
+                setExpandedIncoming({});
+              }}>
+                Collapse All
+              </Button>
+            </div>
+            <div className="flex items-center space-x-2">
+              <input
+                type="text"
+                className="border rounded px-2 py-1 text-sm"
+                placeholder="Find PO number..."
+                value={searchPO}
+                onChange={e => setSearchPO(e.target.value)}
+                style={{ minWidth: 180 }}
+              />
+            </div>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="bg-slate-700 text-white">
-                  <th className="border p-2 text-left">PO Number</th>
                   <th className="border p-2 text-left">Supplier</th>
-                  <th className="border p-2 text-right">Total Amount</th>
-                  <th className="border p-2 text-right">Received</th>
-                  <th className="border p-2 text-right">Pending</th>
-                  <th className="border p-2 text-center">Expected Date</th>
-                  <th className="border p-2 text-center">Status</th>
+                  <th className="border p-2 text-right"># POs</th>
+                  <th className="border p-2 text-right">Total Quantity</th>
                   <th className="border p-2 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {(filteredPurchases.length > 0 ? filteredPurchases : purchaseData.slice(0, 20)).map((purchase) => {
-                  const isHeld = purchaseHolds.some(h => h.purchase_id === purchase.id);
-                  const isExpanded = expandedPurchases[purchase.id];
-                  const hasLines = purchase.order_lines && purchase.order_lines.length > 0;
-                  
+                {Object.entries(filteredSupplierGroups).map(([supplier, purchases]) => {
+                  const isSupplierExpanded = expandedSuppliers[supplier];
+                  const totalQty = purchases.reduce((sum, p) => sum + (p.order_lines ? p.order_lines.reduce((s, l) => s + (l.product_qty || 0), 0) : 0), 0);
                   return (
-                    <React.Fragment key={purchase.id}>
-                      <tr className={`hover:bg-gray-50 ${isHeld ? 'bg-red-50' : ''}`}>
+                    <React.Fragment key={supplier}>
+                      <tr className="hover:bg-gray-50 bg-slate-50 font-semibold">
                         <td className="border p-2">
                           <div className="flex items-center space-x-2">
-                            {hasLines && (
-                              <button
-                                onClick={() => togglePurchaseExpansion(purchase.id)}
-                                className="p-1 hover:bg-gray-200 rounded"
-                              >
-                                {isExpanded ? (
-                                  <ChevronDown className="h-4 w-4" />
-                                ) : (
-                                  <ChevronRight className="h-4 w-4" />
-                                )}
-                              </button>
-                            )}
-                            <span>{purchase.name}</span>
+                            <button
+                              onClick={() => toggleSupplierExpansion(supplier)}
+                              className="p-1 hover:bg-gray-200 rounded"
+                            >
+                              {isSupplierExpanded ? (
+                                <ChevronDown className="h-4 w-4" />
+                              ) : (
+                                <ChevronRight className="h-4 w-4" />
+                              )}
+                            </button>
+                            <span>{supplier}</span>
                           </div>
                         </td>
-                        <td className="border p-2">{purchase.partner_name}</td>
-                        <td className="border p-2 text-right">{purchase.amount_total.toLocaleString()}</td>
-                        <td className="border p-2 text-right">{purchase.received_qty || 0}</td>
-                        <td className="border p-2 text-right">{purchase.pending_qty || 0}</td>
-                        <td className="border p-2 text-center">{purchase.expected_date || 'TBD'}</td>
-                        <td className="border p-2 text-center">
-                          {isHeld ? (
-                            <Badge variant="destructive">Held</Badge>
-                          ) : (
-                            <Badge variant="outline">Active</Badge>
-                          )}
-                        </td>
-                        <td className="border p-2 text-center">
-                          <Button
-                            size="sm"
-                            variant={isHeld ? "default" : "destructive"}
-                            onClick={() => handlePurchaseHold(purchase.id)}
-                            className="flex items-center space-x-1"
-                          >
-                            {isHeld ? (
-                              <>
-                                <RotateCcw className="h-3 w-3" />
-                                <span>Activate</span>
-                              </>
-                            ) : (
-                              <span>Hold</span>
-                            )}
-                          </Button>
-                        </td>
+                        <td className="border p-2 text-right">{purchases.length}</td>
+                        <td className="border p-2 text-right">{totalQty}</td>
+                        <td className="border p-2 text-center">-</td>
                       </tr>
-                      {isExpanded && hasLines && purchase.order_lines!.map((line, lineIndex) => (
-                        <tr key={`${purchase.id}-line-${lineIndex}`} className="bg-gray-50">
-                          <td className="border p-2 pl-8 text-sm">└ {line.product_name}</td>
-                          <td className="border p-2 text-sm">-</td>
-                          <td className="border p-2 text-right text-sm">{line.price_subtotal.toLocaleString()}</td>
-                          <td className="border p-2 text-right text-sm">{line.qty_received}</td>
-                          <td className="border p-2 text-right text-sm">{Math.max(0, line.product_qty - line.qty_received)}</td>
-                          <td className="border p-2 text-center text-sm">-</td>
-                          <td className="border p-2 text-center text-sm">
-                            <Badge variant="secondary" className="text-xs">
-                              {line.product_qty} ordered
-                            </Badge>
+                      {isSupplierExpanded && (
+                        <tr>
+                          <td colSpan={4} className="border p-2">
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="bg-slate-200">
+                                  <th className="border p-1 text-left">PO Number</th>
+                                  <th className="border p-1 text-right">Received</th>
+                                  <th className="border p-1 text-right">Pending</th>
+                                  <th className="border p-1 text-center">Expected Date</th>
+                                  <th className="border p-1 text-center">Status</th>
+                                  <th className="border p-1 text-center">Actions</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {purchases.map((purchase) => {
+                                  const isHeld = purchaseHolds.some(h => h.purchase_id === purchase.id);
+                                  const isExpanded = expandedPurchases[purchase.id];
+                                  const hasLines = purchase.order_lines && purchase.order_lines.length > 0;
+                                  const totalQty = hasLines ? purchase.order_lines.reduce((sum, l) => sum + (l.product_qty || 0), 0) : 0;
+                                  return (
+                                    <React.Fragment key={purchase.id}>
+                                      <tr className={`hover:bg-gray-50 ${isHeld ? 'bg-red-50' : ''}`}>
+                                        <td className="border p-1">
+                                          <div className="flex items-center space-x-2">
+                                            {hasLines && (
+                                              <button
+                                                onClick={() => togglePurchaseExpansion(purchase.id)}
+                                                className="p-1 hover:bg-gray-200 rounded"
+                                              >
+                                                {isExpanded ? (
+                                                  <ChevronDown className="h-4 w-4" />
+                                                ) : (
+                                                  <ChevronRight className="h-4 w-4" />
+                                                )}
+                                              </button>
+                                            )}
+                                            <span>{purchase.name}</span>
+                                          </div>
+                                        </td>
+                                        <td className="border p-1 text-right">{purchase.received_qty || 0}</td>
+                                        <td className="border p-1 text-right">{purchase.pending_qty || 0}</td>
+                                        <td className="border p-1 text-center">{purchase.expected_date || 'TBD'}</td>
+                                        <td className="border p-1 text-center">
+                                          {isHeld ? (
+                                            <Badge variant="destructive">Held</Badge>
+                                          ) : (
+                                            <Badge variant="outline">Active</Badge>
+                                          )}
+                                        </td>
+                                        <td className="border p-1 text-center">
+                                          <Button
+                                            size="sm"
+                                            variant={isHeld ? "default" : "destructive"}
+                                            onClick={() => handlePurchaseHold(purchase.id)}
+                                            className="flex items-center space-x-1"
+                                          >
+                                            {isHeld ? (
+                                              <>
+                                                <RotateCcw className="h-3 w-3" />
+                                                <span>Activate</span>
+                                              </>
+                                            ) : (
+                                              <span>Hold</span>
+                                            )}
+                                          </Button>
+                                        </td>
+                                      </tr>
+                                      {isExpanded && hasLines && (
+                                        <tr className="bg-gray-50">
+                                          <td colSpan={6} className="border p-2 pl-8 text-sm">
+                                            <div className="font-semibold mb-1">Order Lines (Total Quantity: {totalQty})</div>
+                                            <table className="w-full text-xs">
+                                              <thead>
+                                                <tr>
+                                                  <th className="border p-1 text-left">Product</th>
+                                                  <th className="border p-1 text-right">Ordered Qty</th>
+                                                  <th className="border p-1 text-right">Received</th>
+                                                  <th className="border p-1 text-right">Pending</th>
+                                                </tr>
+                                              </thead>
+                                              <tbody>
+                                                {purchase.order_lines.map((line, lineIndex) => (
+                                                  <tr key={`${purchase.id}-line-${lineIndex}`}> 
+                                                    <td className="border p-1">{line.product_name}</td>
+                                                    <td className="border p-1 text-right">{line.product_qty}</td>
+                                                    <td className="border p-1 text-right">{line.qty_received}</td>
+                                                    <td className="border p-1 text-right">{Math.max(0, line.product_qty - line.qty_received)}</td>
+                                                  </tr>
+                                                ))}
+                                              </tbody>
+                                            </table>
+                                          </td>
+                                        </tr>
+                                      )}
+                                    </React.Fragment>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
                           </td>
-                          <td className="border p-2 text-center text-sm">-</td>
                         </tr>
-                      ))}
+                      )}
                     </React.Fragment>
                   );
                 })}
@@ -613,133 +990,633 @@ export const AdvancedInventoryReport: React.FC = () => {
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="bg-slate-700 text-white">
+                  <th className="border p-2 text-left">Product</th>
                   <th className="border p-2 text-left">Category</th>
+                  <th className="border p-2 text-right">Sales Quantity (Invoiced)</th>
                   <th className="border p-2 text-right">Current Stock</th>
                   <th className="border p-2 text-right">Incoming</th>
                   <th className="border p-2 text-right">Stock + Incoming</th>
-                  <th className="border p-2 text-right">{selectedMonths}M Forecast</th>
                   <th className="border p-2 text-right">Needs Planning</th>
                   <th className="border p-2 text-center">Action</th>
                 </tr>
               </thead>
               <tbody>
-                {categoryAnalysis.map((category, index) => (
-                  <React.Fragment key={category.category}>
-                    <tr 
-                      className="hover:bg-gray-50 cursor-pointer"
-                      onClick={() => toggleCategoryExpansion(index)}
-                    >
-                      <td className="border p-2 flex items-center space-x-2">
-                        {category.expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                        <span className="font-medium">{category.category}</span>
-                      </td>
-                      <td className="border p-2 text-right">{category.totalStock}</td>
-                      <td className="border p-2 text-right">{category.totalIncoming}</td>
-                      <td className="border p-2 text-right">{category.totalStock + category.totalIncoming}</td>
-                      <td className="border p-2 text-right">
-                        {category.products.reduce((sum, p) => 
-                          sum + calculateSalesForecast(p.product_name, parseInt(selectedMonths)), 0
-                        )}
-                      </td>
-                      <td className="border p-2 text-right">
-                        <span className={category.needsPlanning > 0 ? 'text-red-600 font-bold' : ''}>
-                          {category.needsPlanning > 0 ? category.needsPlanning : 'OK'}
-                        </span>
-                      </td>
-                      <td className="border p-2 text-center">
-                        <Button 
-                          size="sm" 
-                          variant="outline"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            filterPurchasesByCategory(category.category);
-                          }}
-                        >
-                          View POs
-                        </Button>
-                      </td>
-                    </tr>
-                    {category.expanded && category.products.map((product) => {
-                      const forecast = calculateSalesForecast(product.product_name, parseInt(selectedMonths));
-                      const availableIncoming = getAvailableIncoming(product.product_name);
-                      const stockWithIncoming = product.quantity_on_hand + availableIncoming;
-                      const needsPlanning = Math.max(0, forecast - stockWithIncoming);
-                      
-                      return (
-                        <tr key={product.id} className="bg-gray-50">
-                          <td className="border p-2 pl-8 text-sm">{product.product_name}</td>
-                          <td className="border p-2 text-right text-sm">{product.quantity_on_hand}</td>
-                          <td className="border p-2 text-right text-sm">{availableIncoming}</td>
-                          <td className="border p-2 text-right text-sm">{stockWithIncoming}</td>
-                          <td className="border p-2 text-right text-sm">{forecast}</td>
-                          <td className="border p-2 text-right text-sm">
-                            <span className={needsPlanning > 0 ? 'text-red-600 font-bold' : ''}>
-                              {needsPlanning > 0 ? needsPlanning : 'OK'}
-                            </span>
-                          </td>
-                          <td className="border p-2 text-center text-sm">-</td>
-                        </tr>
-                      );
-                    })}
-                  </React.Fragment>
-                ))}
+                {categoryAnalysis
+                  .filter(category => category.products && category.products.length > 0)
+                  .filter(category =>
+                    (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
+                    !hiddenCategories.includes(category.category)
+                  )
+                  .map((category, index) => (
+                    <React.Fragment key={category.category}>
+                      <tr 
+                        className="hover:bg-gray-50 cursor-pointer"
+                        onClick={() => toggleCategoryExpansion(index)}
+                      >
+                        <td className="border p-2 font-medium" colSpan={2}>
+                          {category.expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />} {category.category}
+                        </td>
+                        <td className="border p-2 text-right">-</td>
+                        <td className="border p-2 text-right">{category.totalStock}</td>
+                        <td className="border p-2 text-right">{category.totalIncoming}</td>
+                        <td className="border p-2 text-right">{category.totalStock + category.totalIncoming}</td>
+                        <td className="border p-2 text-right text-sm">
+                          <span className={category.needsPlanning > 0 ? 'text-red-600 font-bold' : ''}>
+                            {category.needsPlanning > 0 ? category.needsPlanning : 'OK'}
+                          </span>
+                        </td>
+                        <td className="border p-2 text-center">
+                          {!category.expanded && (
+                            (() => {
+                              // Check if any product in the category needs planning
+                              const anyProductNeedsPlanning = category.products.some(product => {
+                                const salesQty = getSalesQtyForProduct(product, parseInt(selectedMonths));
+                                const availableIncoming = getPendingIncomingForProduct(product);
+                                const stockWithIncoming = product.quantity_on_hand + availableIncoming;
+                                const needsPlanning = Math.max(0, salesQty - stockWithIncoming);
+                                return needsPlanning > 0;
+                              });
+                              return (
+                                <Button
+                                  size="sm"
+                                  variant={anyProductNeedsPlanning ? "destructive" : "outline"}
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    setViewCategoryDialog({ open: true, category: category.category });
+                                  }}
+                                >
+                                  View Product
+                                </Button>
+                              );
+                            })()
+                          )}
+                        </td>
+                      </tr>
+                      {category.expanded && sortProductsBySize(category.products).map((product) => {
+                        const salesQty = Math.round(getSalesQtyForProduct(product, parseInt(selectedMonths)) * (1 + salesQtyPercent / 100));
+                        const availableIncoming = getPendingIncomingForProduct(product);
+                        const stockWithIncoming = product.quantity_on_hand + availableIncoming;
+                        const needsPlanning = Math.max(0, salesQty - stockWithIncoming);
+                        const isIncomingExpanded = expandedIncoming[product.id];
+                        // Find all purchase order lines (not on hold) for this product
+                        const heldPurchaseIds = new Set(purchaseHolds.map(h => h.purchase_id));
+                        const supplierIncomingMap: { [supplier: string]: any[] } = {};
+                        purchaseData.forEach(po => {
+                          if (!heldPurchaseIds.has(po.id) && po.order_lines) {
+                            po.order_lines.forEach(line => {
+                              // Normalize product_id for robust matching
+                              const anyLine = line as any;
+                              let lineProductId = undefined;
+                              if (Array.isArray(anyLine.product_id)) {
+                                lineProductId = anyLine.product_id[0];
+                              } else if (typeof anyLine.product_id === 'string' || typeof anyLine.product_id === 'number') {
+                                lineProductId = anyLine.product_id;
+                              }
+                              let match = false;
+                              if (product.product_id && lineProductId && String(lineProductId) === String(product.product_id)) {
+                                match = true;
+                              } else if (
+                                (!product.product_id || !lineProductId) &&
+                                line.product_name &&
+                                product.product_name &&
+                                line.product_name.toLowerCase().includes(product.product_name.toLowerCase())
+                              ) {
+                                match = true;
+                              }
+                              if (match) {
+                                const pending = Math.max(0, anyLine.product_qty - anyLine.qty_received);
+                                if (pending > 0) {
+                                  const supplier = po.partner_name || 'Unknown Supplier';
+                                  if (!supplierIncomingMap[supplier]) supplierIncomingMap[supplier] = [];
+                                  supplierIncomingMap[supplier].push({
+                                    poNumber: po.name,
+                                    supplier,
+                                    ordered: anyLine.product_qty,
+                                    received: anyLine.qty_received,
+                                    pending
+                                  });
+                                }
+                              }
+                            });
+                          }
+                        });
+                        return (
+                          <React.Fragment key={product.id}>
+                            <tr className="bg-gray-50">
+                              <td className="border p-2 pl-8 text-sm">{product.product_name}</td>
+                              <td className="border p-2 text-sm">{product.product_category}</td>
+                              <td className="border p-2 text-right text-sm">{salesQty}</td>
+                              <td className="border p-2 text-right text-sm">{product.quantity_on_hand}</td>
+                              <td className="border p-2 text-right text-sm">
+                                {availableIncoming}
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="ml-2"
+                                  onClick={() => setExpandedIncoming(prev => ({ ...prev, [product.id]: !prev[product.id] }))}
+                                >
+                                  {isIncomingExpanded ? 'Hide' : 'View'}
+                                </Button>
+                              </td>
+                              <td className="border p-2 text-right text-sm">{stockWithIncoming}</td>
+                              <td className="border p-2 text-right text-sm">
+                                <span className={needsPlanning > 0 ? 'text-red-600 font-bold' : ''}>
+                                  {needsPlanning > 0 ? needsPlanning : 'OK'}
+                                </span>
+                              </td>
+                              <td className="border p-2 text-center text-sm">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    setViewCategoryDialog({ open: true, category: category.category });
+                                  }}
+                                >
+                                  View Product
+                                </Button>
+                              </td>
+                            </tr>
+                            {isIncomingExpanded && (
+                              <tr className="bg-blue-50">
+                                <td colSpan={9} className="border p-2 pl-12 text-xs">
+                                  <div className="font-semibold mb-1">Incoming Breakdown for {product.product_name} (Supplier-wise):</div>
+                                  {Object.entries(supplierIncomingMap)
+                                    .filter(([_, lines]) => lines.length > 0)
+                                    .map(([supplier, lines]) => (
+                                      <div key={supplier} className="mb-2">
+                                        <div className="font-semibold">Supplier: {supplier}</div>
+                                        <table className="w-full text-xs mb-1">
+                                          <thead>
+                                            <tr>
+                                              <th className="border p-1 text-left">PO Number</th>
+                                              <th className="border p-1 text-right">Ordered Qty</th>
+                                              <th className="border p-1 text-right">Received</th>
+                                              <th className="border p-1 text-right">Pending</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {lines.map((line, idx) => (
+                                              <tr key={idx}>
+                                                <td className="border p-1">{line.poNumber}</td>
+                                                <td className="border p-1 text-right">{line.ordered}</td>
+                                                <td className="border p-1 text-right">{line.received}</td>
+                                                <td className="border p-1 text-right">{line.pending}</td>
+                                              </tr>
+                                            ))}
+                                            <tr className="font-bold bg-slate-100">
+                                              <td className="border p-1 text-right" colSpan={3}>Supplier Total Pending</td>
+                                              <td className="border p-1 text-right">{lines.reduce((sum, l) => sum + l.pending, 0)}</td>
+                                            </tr>
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    ))}
+                                  {Object.values(supplierIncomingMap).flat().length === 0 && (
+                                    <div>No incoming purchase orders (not on hold) for this product.</div>
+                                  )}
+                                  <div className="text-muted-foreground">* Only purchase orders not on hold are included in this calculation.</div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </React.Fragment>
+                  ))}
               </tbody>
             </table>
           </div>
         </CardContent>
       </Card>
 
-      {/* Next Month Urgent Analysis */}
+      {/* Move the urgent PDF button to just above the Next Month Planning Analysis table */}
+      <div className="flex justify-end mb-2">
+        <Button variant="destructive" onClick={() => setShowUrgentPdfDialog(true)}>
+          View & Download Urgent Priorities PDF
+        </Button>
+      </div>
+
+      {/* Next Month Planning Analysis */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center space-x-2">
             <AlertTriangle className="h-5 w-5 text-red-600" />
-            <span>Next Month Urgent Requirements</span>
+            <span>Next Month Planning Analysis</span>
           </CardTitle>
           <CardDescription>
-            Items where stock without incoming is less than next month's sales forecast
+            Product-level planning for next month (using previous year's next month sales quantity)
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-sm">
               <thead>
-                <tr className="bg-red-700 text-white">
+                <tr className="bg-slate-700 text-white">
+                  <th className="border p-2 text-left">Product</th>
                   <th className="border p-2 text-left">Category</th>
-                  <th className="border p-2 text-right">Stock (No Incoming)</th>
-                  <th className="border p-2 text-right">Next Month Sale</th>
-                  <th className="border p-2 text-right">Shortfall</th>
-                  <th className="border p-2 text-center">Priority</th>
+                  <th className="border p-2 text-right">Sales Quantity (Invoiced)</th>
+                  <th className="border p-2 text-right">Current Stock</th>
+                  <th className="border p-2 text-right">Incoming</th>
+                  <th className="border p-2 text-right">Stock + Incoming</th>
+                  <th className="border p-2 text-right">Needs Urgent</th>
+                  <th className="border p-2 text-center">Action</th>
                 </tr>
               </thead>
               <tbody>
-                {getNextMonthAnalysis()
-                  .filter(cat => cat.stockWithoutIncoming < cat.nextMonthSale)
-                  .map((category) => (
-                    <tr key={category.category} className="hover:bg-red-50">
-                      <td className="border p-2 font-medium">{category.category}</td>
-                      <td className="border p-2 text-right">{category.stockWithoutIncoming}</td>
-                      <td className="border p-2 text-right">{category.nextMonthSale}</td>
-                      <td className="border p-2 text-right text-red-600 font-bold">
-                        {category.nextMonthSale - category.stockWithoutIncoming}
-                      </td>
-                      <td className="border p-2 text-center">
-                        <Badge variant="destructive">URGENT</Badge>
-                      </td>
-                    </tr>
+                {categoryAnalysis
+                  .filter(category => category.products && category.products.length > 0)
+                  .filter(category =>
+                    (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
+                    !hiddenCategories.includes(category.category)
+                  )
+                  .map((category, index) => (
+                    <React.Fragment key={category.category}>
+                      <tr 
+                        className="hover:bg-gray-50 cursor-pointer"
+                        onClick={() => toggleCategoryExpansion(index)}
+                      >
+                        <td className="border p-2 font-medium" colSpan={2}>
+                          {category.expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />} {category.category}
+                        </td>
+                        <td className="border p-2 text-right">-</td>
+                        <td className="border p-2 text-right">{category.totalStock}</td>
+                        <td className="border p-2 text-right">{category.totalIncoming}</td>
+                        <td className="border p-2 text-right">{category.totalStock + category.totalIncoming}</td>
+                        <td className="border p-2 text-right">
+                          <span className={category.products.some(product => {
+                            const salesQty = getSalesQtyForProduct(product, 1);
+                            const urgentQty = Math.max(0, salesQty - product.quantity_on_hand);
+                            return urgentQty > 0;
+                          }) ? 'text-red-600 font-bold' : ''}>
+                            {category.products.reduce((sum, product) => {
+                              const salesQty = getSalesQtyForProduct(product, 1);
+                              const urgentQty = Math.max(0, salesQty - product.quantity_on_hand);
+                              return sum + urgentQty;
+                            }, 0) > 0 ? category.products.reduce((sum, product) => {
+                              const salesQty = getSalesQtyForProduct(product, 1);
+                              const urgentQty = Math.max(0, salesQty - product.quantity_on_hand);
+                              return sum + urgentQty;
+                            }, 0) : 'OK'}
+                          </span>
+                        </td>
+                        <td className="border p-2 text-center">
+                          {!category.expanded && (
+                            (() => {
+                              // Check if any product in the category needs urgent planning
+                              const anyProductUrgent = category.products.some(product => {
+                                const salesQty = getSalesQtyForProduct(product, 1);
+                                const urgentQty = Math.max(0, salesQty - product.quantity_on_hand);
+                                return urgentQty > 0;
+                              });
+                              return (
+                                <Button
+                                  size="sm"
+                                  variant={anyProductUrgent ? "destructive" : "outline"}
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    setViewCategoryDialog({ open: true, category: category.category });
+                                  }}
+                                >
+                                  View Product
+                                </Button>
+                              );
+                            })()
+                          )}
+                        </td>
+                      </tr>
+                      {category.expanded && sortProductsBySize(category.products.filter(product => {
+                        const salesQty = getSalesQtyForProduct(product, 1);
+                        return salesQty > 0 && product.quantity_on_hand < salesQty;
+                      })).map((product) => {
+                        const salesQty = getSalesQtyForProduct(product, 1);
+                        const availableIncoming = getPendingIncomingForProduct(product);
+                        const stockWithIncoming = product.quantity_on_hand + availableIncoming;
+                        const urgentQty = Math.max(0, salesQty - product.quantity_on_hand);
+                        const isIncomingExpanded = expandedIncoming[product.id];
+                        // Find all purchase order lines (not on hold) for this product
+                        const heldPurchaseIds = new Set(purchaseHolds.map(h => h.purchase_id));
+                        const supplierIncomingMap: { [supplier: string]: any[] } = {};
+                        purchaseData.forEach(po => {
+                          if (!heldPurchaseIds.has(po.id) && po.order_lines) {
+                            po.order_lines.forEach(line => {
+                              // Normalize product_id for robust matching
+                              const anyLine = line as any;
+                              let lineProductId = undefined;
+                              if (Array.isArray(anyLine.product_id)) {
+                                lineProductId = anyLine.product_id[0];
+                              } else if (typeof anyLine.product_id === 'string' || typeof anyLine.product_id === 'number') {
+                                lineProductId = anyLine.product_id;
+                              }
+                              let match = false;
+                              if (product.product_id && lineProductId && String(lineProductId) === String(product.product_id)) {
+                                match = true;
+                              } else if (
+                                (!product.product_id || !lineProductId) &&
+                                line.product_name &&
+                                product.product_name &&
+                                line.product_name.toLowerCase().includes(product.product_name.toLowerCase())
+                              ) {
+                                match = true;
+                              }
+                              if (match) {
+                                const pending = Math.max(0, anyLine.product_qty - anyLine.qty_received);
+                                if (pending > 0) {
+                                  const supplier = po.partner_name || 'Unknown Supplier';
+                                  if (!supplierIncomingMap[supplier]) supplierIncomingMap[supplier] = [];
+                                  supplierIncomingMap[supplier].push({
+                                    poNumber: po.name,
+                                    supplier,
+                                    ordered: anyLine.product_qty,
+                                    received: anyLine.qty_received,
+                                    pending
+                                  });
+                                }
+                              }
+                            });
+                          }
+                        });
+                        return (
+                          <React.Fragment key={product.id}>
+                            <tr className="bg-gray-50">
+                              <td className="border p-2 pl-8 text-sm">{product.product_name}</td>
+                              <td className="border p-2 text-sm">{product.product_category}</td>
+                              <td className="border p-2 text-right text-sm">{salesQty}</td>
+                              <td className="border p-2 text-right text-sm">{product.quantity_on_hand}</td>
+                              <td className="border p-2 text-right text-sm">
+                                {availableIncoming}
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="ml-2"
+                                  onClick={() => setExpandedIncoming(prev => ({ ...prev, [product.id]: !prev[product.id] }))}
+                                >
+                                  {isIncomingExpanded ? 'Hide' : 'View'}
+                                </Button>
+                              </td>
+                              <td className="border p-2 text-right text-sm">{stockWithIncoming}</td>
+                              <td className="border p-2 text-right text-sm">
+                                <span className={urgentQty > 0 ? 'text-red-600 font-bold' : ''}>
+                                  {urgentQty > 0 ? urgentQty : 'OK'}
+                                </span>
+                              </td>
+                              <td className="border p-2 text-center text-sm">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    setViewCategoryDialog({ open: true, category: category.category });
+                                  }}
+                                >
+                                  View Product
+                                </Button>
+                              </td>
+                            </tr>
+                            {isIncomingExpanded && (
+                              <tr className="bg-blue-50">
+                                <td colSpan={9} className="border p-2 pl-12 text-xs">
+                                  <div className="font-semibold mb-1">Incoming Breakdown for {product.product_name} (Supplier-wise):</div>
+                                  {Object.entries(supplierIncomingMap)
+                                    .filter(([_, lines]) => lines.length > 0)
+                                    .map(([supplier, lines]) => (
+                                      <div key={supplier} className="mb-2">
+                                        <div className="font-semibold">Supplier: {supplier}</div>
+                                        <table className="w-full text-xs mb-1">
+                                          <thead>
+                                            <tr>
+                                              <th className="border p-1 text-left">PO Number</th>
+                                              <th className="border p-1 text-right">Ordered Qty</th>
+                                              <th className="border p-1 text-right">Received</th>
+                                              <th className="border p-1 text-right">Pending</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {lines.map((line, idx) => (
+                                              <tr key={idx}>
+                                                <td className="border p-1">{line.poNumber}</td>
+                                                <td className="border p-1 text-right">{line.ordered}</td>
+                                                <td className="border p-1 text-right">{line.received}</td>
+                                                <td className="border p-1 text-right">{line.pending}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    ))}
+                                  {Object.values(supplierIncomingMap).flat().length === 0 && (
+                                    <div>No incoming purchase orders (not on hold) for this product.</div>
+                                  )}
+                                  <div className="text-muted-foreground">* Only purchase orders not on hold are included in this calculation.</div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </React.Fragment>
                   ))}
               </tbody>
             </table>
-            {getNextMonthAnalysis().filter(cat => cat.stockWithoutIncoming < cat.nextMonthSale).length === 0 && (
-              <tr>
-                <td colSpan={5} className="border p-4 text-center text-muted-foreground">
-                  No urgent requirements for next month
-                </td>
-              </tr>
-            )}
           </div>
         </CardContent>
       </Card>
+
+      {/* Dialog for needs planning products in category */}
+      <Dialog open={viewCategoryDialog.open} onOpenChange={open => setViewCategoryDialog(v => ({ ...v, open }))}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Needs Planning for {viewCategoryDialog.category}</DialogTitle>
+          </DialogHeader>
+          <div>
+            {(() => {
+              const cat = categoryAnalysis.find(c => c.category === viewCategoryDialog.category);
+              if (!cat) return <div>No data found.</div>;
+              const products = cat.products
+                .map(product => {
+                  const salesQty = getSalesQtyForProduct(product, parseInt(selectedMonths));
+                  const availableIncoming = getPendingIncomingForProduct(product);
+                  const stockWithIncoming = product.quantity_on_hand + availableIncoming;
+                  const needsPlanning = Math.max(0, salesQty - stockWithIncoming);
+                  return { ...product, needsPlanning };
+                })
+                .filter(p => p.needsPlanning > 0);
+              if (products.length === 0) return <div>All products are OK in this category.</div>;
+              return (
+                <table className="w-full text-sm border mt-2">
+                  <thead>
+                    <tr className="bg-slate-100">
+                      <th className="border p-2 text-left">Product</th>
+                      <th className="border p-2 text-right">Needs Planning Qty</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {products.map(product => (
+                      <tr key={product.id}>
+                        <td className="border p-2">{product.product_name}</td>
+                        <td className="border p-2 text-right text-red-600 font-bold">{product.needsPlanning}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              );
+            })()}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* PDF Dialog for Next Month Urgent Priorities */}
+      <Dialog open={showUrgentPdfDialog} onOpenChange={setShowUrgentPdfDialog}>
+        <DialogContent className="max-w-5xl">
+          <DialogHeader>
+            <DialogTitle>Next Month Urgent Priorities (PDF View)</DialogTitle>
+          </DialogHeader>
+          <div
+            id="urgent-priorities-pdf"
+            className="bg-white p-6"
+            style={{
+              maxWidth: '1200px',
+              overflowX: 'auto',
+              border: '1px solid #e5e7eb',
+              borderRadius: '8px',
+            }}
+          >
+            <h2 className="text-2xl font-bold mb-4">Next Month Urgent Priorities</h2>
+            {categoryAnalysis.filter(cat => cat.products.some(product => {
+              const salesQty = getSalesQtyForProduct(product, 1);
+              return salesQty > 0 && product.quantity_on_hand < salesQty;
+            })).length === 0 && (
+              <div className="text-muted-foreground">No urgent priorities for next month.</div>
+            )}
+            {categoryAnalysis.filter(cat => cat.products.some(product => {
+              const salesQty = getSalesQtyForProduct(product, 1);
+              return salesQty > 0 && product.quantity_on_hand < salesQty;
+            })).map(cat => (
+              <div key={cat.category} className="mb-8">
+                <div className="font-bold text-lg mb-2 border-b pb-1">Category: {cat.category}</div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table
+                    className="w-full mb-4"
+                    style={{
+                      borderCollapse: 'collapse',
+                      tableLayout: 'fixed',
+                      minWidth: '900px',
+                    }}
+                  >
+                    <thead>
+                      <tr className="bg-slate-200">
+                        <th className="border p-3 text-left font-bold" style={{ width: '200px' }}>Product Name</th>
+                        <th className="border p-3 text-right font-bold" style={{ width: '120px' }}>Current Stock</th>
+                        <th className="border p-3 text-right font-bold" style={{ width: '120px' }}>Next Month Sale</th>
+                        <th className="border p-3 text-right font-bold" style={{ width: '120px' }}>Priority (Stock/Sale)</th>
+                        <th className="border p-3 text-right font-bold" style={{ width: '340px' }}>Incoming Analysis</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortProductsBySize(cat.products.filter(product => {
+                        const salesQty = getSalesQtyForProduct(product, 1);
+                        return salesQty > 0 && product.quantity_on_hand < salesQty;
+                      })).map(product => {
+                        const salesQty = getSalesQtyForProduct(product, 1);
+                        const priority = product.quantity_on_hand / salesQty;
+                        const availableIncoming = getPendingIncomingForProduct(product);
+                        // Supplier breakdown
+                        const heldPurchaseIds = new Set(purchaseHolds.map(h => h.purchase_id));
+                        const supplierIncomingMap: { [supplier: string]: any[] } = {};
+                        purchaseData.forEach(po => {
+                          if (!heldPurchaseIds.has(po.id) && po.order_lines) {
+                            po.order_lines.forEach(line => {
+                              // Normalize product_id for robust matching
+                              const anyLine = line as any;
+                              let lineProductId = undefined;
+                              if (Array.isArray(anyLine.product_id)) {
+                                lineProductId = anyLine.product_id[0];
+                              } else if (typeof anyLine.product_id === 'string' || typeof anyLine.product_id === 'number') {
+                                lineProductId = anyLine.product_id;
+                              }
+                              let match = false;
+                              if (product.product_id && lineProductId && String(lineProductId) === String(product.product_id)) {
+                                match = true;
+                              } else if (
+                                (!product.product_id || !lineProductId) &&
+                                line.product_name &&
+                                product.product_name &&
+                                line.product_name.toLowerCase().includes(product.product_name.toLowerCase())
+                              ) {
+                                match = true;
+                              }
+                              if (match) {
+                                const pending = Math.max(0, anyLine.product_qty - anyLine.qty_received);
+                                if (pending > 0) {
+                                  const supplier = po.partner_name || 'Unknown Supplier';
+                                  if (!supplierIncomingMap[supplier]) supplierIncomingMap[supplier] = [];
+                                  supplierIncomingMap[supplier].push({
+                                    poNumber: po.name,
+                                    supplier,
+                                    ordered: anyLine.product_qty,
+                                    received: anyLine.qty_received,
+                                    pending
+                                  });
+                                }
+                              }
+                            });
+                          }
+                        });
+                        return (
+                          <tr key={product.id}>
+                            <td className="border p-3">{product.product_name}</td>
+                            <td className="border p-3 text-right">{product.quantity_on_hand}</td>
+                            <td className="border p-3 text-right">{salesQty}</td>
+                            <td className={priority < 1 ? 'border p-3 text-right text-red-600 font-bold' : 'border p-3 text-right'}>
+                              {priority.toFixed(2)}
+                            </td>
+                            <td className="border p-3 text-right">
+                              {Object.entries(supplierIncomingMap).length > 0 ? (
+                                <div>
+                                  {Object.entries(supplierIncomingMap).map(([supplier, lines]) => (
+                                    <div key={supplier} className="mb-1">
+                                      <div className="font-semibold">{supplier}</div>
+                                      <table className="w-full text-xs mb-1">
+                                        <thead>
+                                          <tr>
+                                            <th className="border p-1 text-left">PO Number</th>
+                                            <th className="border p-1 text-right">Ordered</th>
+                                            <th className="border p-1 text-right">Received</th>
+                                            <th className="border p-1 text-right">Pending</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {lines.map((line, idx) => (
+                                            <tr key={idx}>
+                                              <td className="border p-1">{line.poNumber}</td>
+                                              <td className="border p-1 text-right">{line.ordered}</td>
+                                              <td className="border p-1 text-right">{line.received}</td>
+                                              <td className="border p-1 text-right">{line.pending}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span>No incoming POs</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex justify-end mt-4">
+            <Button variant="outline" onClick={() => downloadElementAsPdf('urgent-priorities-pdf', 'Next_Month_Urgent_Priorities')}>Download PDF</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
