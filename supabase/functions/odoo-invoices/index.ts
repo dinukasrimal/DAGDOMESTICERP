@@ -26,6 +26,12 @@ interface InvoiceLine {
   price_subtotal: number;
 }
 
+interface Product {
+  id: number;
+  name: string;
+  categ_id: [number, string] | false;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -49,7 +55,7 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    console.log('Starting optimized invoice sync from Odoo...');
+    console.log('Starting comprehensive invoice sync from Odoo...');
 
     // Authenticate with Odoo
     const authResponse = await fetch(`${odooUrl}/jsonrpc`, {
@@ -87,40 +93,88 @@ serve(async (req) => {
 
     console.log(`Found ${existingInvoiceNames.size} existing invoices in Supabase`);
 
-    // Process invoices in smaller date ranges to avoid timeouts
-    const currentDate = new Date();
-    const startDate = new Date('2024-01-01'); // Start from beginning of 2024
-    const dateRanges = [];
+    // Fetch ALL posted invoices from Odoo (no date restriction for historical data)
+    console.log('Fetching all posted invoices from Odoo...');
+    const allInvoicesResponse = await fetch(`${odooUrl}/jsonrpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          service: 'object',
+          method: 'execute_kw',
+          args: [
+            odooDatabase,
+            uid,
+            odooPassword,
+            'account.move',
+            'search_read',
+            [
+              [
+                ['move_type', '=', 'out_invoice'],
+                ['state', '=', 'posted'] // Only posted invoices, excluding cancelled
+              ]
+            ],
+            {
+              fields: ['name', 'partner_id', 'invoice_date', 'amount_total', 'state', 'invoice_line_ids'],
+              order: 'invoice_date desc'
+            }
+          ]
+        },
+        id: Math.floor(Math.random() * 1000000)
+      }),
+    });
+
+    const allInvoicesData = await allInvoicesResponse.json();
     
-    // Create monthly ranges to process data in smaller chunks
-    let rangeStart = new Date(startDate);
-    while (rangeStart < currentDate) {
-      const rangeEnd = new Date(rangeStart);
-      rangeEnd.setMonth(rangeEnd.getMonth() + 1);
-      if (rangeEnd > currentDate) rangeEnd.setTime(currentDate.getTime());
-      
-      dateRanges.push({
-        start: rangeStart.toISOString().split('T')[0],
-        end: rangeEnd.toISOString().split('T')[0]
-      });
-      
-      rangeStart = new Date(rangeEnd);
-      rangeStart.setDate(rangeStart.getDate() + 1);
+    if (allInvoicesData.error) {
+      throw new Error(`Failed to fetch invoices: ${allInvoicesData.error.message}`);
     }
 
-    console.log(`Processing ${dateRanges.length} date ranges`);
+    const allInvoices = allInvoicesData.result || [];
+    console.log(`Fetched ${allInvoices.length} total posted invoices from Odoo`);
 
-    let totalNewInvoices = 0;
-    let totalSyncedInvoices = 0;
+    // Filter out existing invoices
+    const newInvoices = allInvoices.filter((invoice: Invoice) => 
+      !existingInvoiceNames.has(invoice.name)
+    );
 
-    // Process each date range
-    for (let i = 0; i < dateRanges.length; i++) {
-      const range = dateRanges[i];
-      console.log(`Processing range ${i + 1}/${dateRanges.length}: ${range.start} to ${range.end}`);
+    console.log(`${newInvoices.length} new invoices to process`);
 
-      try {
-        // Fetch invoices for this date range - exclude cancelled invoices
-        const invoicesResponse = await fetch(`${odooUrl}/jsonrpc`, {
+    if (newInvoices.length === 0) {
+      return new Response(JSON.stringify({ 
+        success: true, 
+        totalInvoices: allInvoices.length,
+        newInvoices: 0,
+        message: 'All invoices are already synced'
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Process invoices in batches to avoid timeout
+    const batchSize = 50;
+    let totalSynced = 0;
+    
+    for (let i = 0; i < newInvoices.length; i += batchSize) {
+      const batch = newInvoices.slice(i, i + batchSize);
+      console.log(`Processing batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(newInvoices.length/batchSize)}: ${batch.length} invoices`);
+
+      // Collect all invoice line IDs for this batch
+      const allLineIds: number[] = [];
+      batch.forEach((invoice: Invoice) => {
+        if (invoice.invoice_line_ids && Array.isArray(invoice.invoice_line_ids)) {
+          allLineIds.push(...invoice.invoice_line_ids);
+        }
+      });
+
+      console.log(`Fetching ${allLineIds.length} invoice lines for batch`);
+
+      // Fetch invoice lines for this batch
+      const invoiceLines: { [key: number]: InvoiceLine } = {};
+      if (allLineIds.length > 0) {
+        const linesResponse = await fetch(`${odooUrl}/jsonrpc`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -133,20 +187,13 @@ serve(async (req) => {
                 odooDatabase,
                 uid,
                 odooPassword,
-                'account.move',
+                'account.move.line',
                 'search_read',
                 [
-                  [
-                    ['move_type', '=', 'out_invoice'],
-                    ['state', '=', 'posted'], // Only posted invoices
-                    ['invoice_date', '>=', range.start],
-                    ['invoice_date', '<=', range.end]
-                  ]
+                  [['id', 'in', allLineIds]]
                 ],
                 {
-                  fields: ['name', 'partner_id', 'invoice_date', 'amount_total', 'state', 'invoice_line_ids'],
-                  limit: 100, // Small batch size
-                  order: 'invoice_date desc'
+                  fields: ['id', 'product_id', 'quantity', 'price_unit', 'price_subtotal']
                 }
               ]
             },
@@ -154,167 +201,146 @@ serve(async (req) => {
           }),
         });
 
-        const invoicesData = await invoicesResponse.json();
+        const linesData = await linesResponse.json();
         
-        if (invoicesData.error) {
-          console.error(`Odoo API error for range ${range.start}-${range.end}:`, invoicesData.error.message);
-          continue;
+        if (linesData.result) {
+          linesData.result.forEach((line: InvoiceLine) => {
+            invoiceLines[line.id] = line;
+          });
         }
+      }
 
-        const rangeInvoices = invoicesData.result || [];
-        console.log(`Fetched ${rangeInvoices.length} invoices for range ${range.start}-${range.end}`);
+      // Get unique product IDs to fetch product categories
+      const productIds = new Set<number>();
+      Object.values(invoiceLines).forEach(line => {
+        if (line.product_id && Array.isArray(line.product_id)) {
+          productIds.add(line.product_id[0]);
+        }
+      });
 
-        if (rangeInvoices.length === 0) continue;
-
-        // Filter out existing invoices
-        const newInvoices = rangeInvoices.filter((invoice: Invoice) => 
-          !existingInvoiceNames.has(invoice.name)
-        );
-
-        console.log(`${newInvoices.length} new invoices to process in this range`);
-
-        if (newInvoices.length === 0) continue;
-
-        // Collect all invoice line IDs for this range
-        const allLineIds: number[] = [];
-        newInvoices.forEach((invoice: Invoice) => {
-          if (invoice.invoice_line_ids && Array.isArray(invoice.invoice_line_ids)) {
-            allLineIds.push(...invoice.invoice_line_ids);
-          }
+      // Fetch product details with categories
+      const products: { [key: number]: Product } = {};
+      if (productIds.size > 0) {
+        const productsResponse = await fetch(`${odooUrl}/jsonrpc`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'call',
+            params: {
+              service: 'object',
+              method: 'execute_kw',
+              args: [
+                odooDatabase,
+                uid,
+                odooPassword,
+                'product.product',
+                'search_read',
+                [
+                  [['id', 'in', Array.from(productIds)]]
+                ],
+                {
+                  fields: ['id', 'name', 'categ_id']
+                }
+              ]
+            },
+            id: Math.floor(Math.random() * 1000000)
+          }),
         });
 
-        console.log(`Fetching ${allLineIds.length} invoice lines for range ${range.start}-${range.end}`);
-
-        // Fetch invoice lines in smaller batches
-        const invoiceLines: { [key: number]: InvoiceLine } = {};
-        const lineBatchSize = 100; // Even smaller batch size for lines
+        const productsData = await productsResponse.json();
         
-        for (let j = 0; j < allLineIds.length; j += lineBatchSize) {
-          const batch = allLineIds.slice(j, j + lineBatchSize);
-          
-          try {
-            const linesResponse = await fetch(`${odooUrl}/jsonrpc`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                jsonrpc: '2.0',
-                method: 'call',
-                params: {
-                  service: 'object',
-                  method: 'execute_kw',
-                  args: [
-                    odooDatabase,
-                    uid,
-                    odooPassword,
-                    'account.move.line',
-                    'search_read',
-                    [
-                      [['id', 'in', batch]]
-                    ],
-                    {
-                      fields: ['id', 'product_id', 'quantity', 'price_unit', 'price_subtotal']
-                    }
-                  ]
-                },
-                id: Math.floor(Math.random() * 1000000)
-              }),
-            });
-
-            const linesData = await linesResponse.json();
-            
-            if (linesData.result) {
-              linesData.result.forEach((line: InvoiceLine) => {
-                invoiceLines[line.id] = line;
-              });
-            }
-          } catch (error) {
-            console.error(`Error fetching line batch:`, error);
-          }
+        if (productsData.result) {
+          productsData.result.forEach((product: Product) => {
+            products[product.id] = product;
+          });
         }
+      }
 
-        console.log(`Fetched ${Object.keys(invoiceLines).length} invoice lines for range`);
+      console.log(`Fetched ${Object.keys(products).length} product details`);
 
-        // Transform invoices with complete order lines
-        const transformedInvoices = newInvoices.map((invoice: Invoice) => {
-          const orderLines = (invoice.invoice_line_ids || [])
-            .map(lineId => invoiceLines[lineId])
-            .filter(line => line && line.product_id)
-            .map(line => ({
+      // Transform invoices with complete order lines and proper categories
+      const transformedInvoices = batch.map((invoice: Invoice) => {
+        const orderLines = (invoice.invoice_line_ids || [])
+          .map(lineId => invoiceLines[lineId])
+          .filter(line => line && line.product_id)
+          .map(line => {
+            const productId = Array.isArray(line.product_id) ? line.product_id[0] : null;
+            const product = productId ? products[productId] : null;
+            const categoryName = product?.categ_id && Array.isArray(product.categ_id) 
+              ? product.categ_id[1] 
+              : 'Uncategorized';
+
+            return {
               product_name: Array.isArray(line.product_id) ? line.product_id[1] : 'Unknown Product',
               qty_delivered: line.quantity || 0,
               price_unit: line.price_unit || 0,
-              // Use price_unit * quantity instead of price_subtotal to avoid discount issues
+              // Use price_unit * quantity to avoid discount issues
               price_subtotal: (line.price_unit || 0) * (line.quantity || 0),
-              product_category: getProductCategory(Array.isArray(line.product_id) ? line.product_id[1] : '')
-            }));
+              product_category: categoryName
+            };
+          });
 
-          return {
-            id: invoice.name || invoice.id.toString(),
-            name: invoice.name,
-            partner_name: Array.isArray(invoice.partner_id) ? invoice.partner_id[1] : 'Unknown Customer',
-            date_order: invoice.invoice_date || new Date().toISOString().split('T')[0],
-            // Recalculate amount_total from order lines to ensure consistency
-            amount_total: orderLines.reduce((sum, line) => sum + line.price_subtotal, 0) || invoice.amount_total || 0,
-            state: 'sale',
-            order_lines: orderLines
-          };
-        });
+        return {
+          id: invoice.name || invoice.id.toString(),
+          name: invoice.name,
+          partner_name: Array.isArray(invoice.partner_id) ? invoice.partner_id[1] : 'Unknown Customer',
+          date_order: invoice.invoice_date || new Date().toISOString().split('T')[0],
+          // Recalculate amount_total from order lines to ensure consistency
+          amount_total: orderLines.reduce((sum, line) => sum + line.price_subtotal, 0) || invoice.amount_total || 0,
+          state: 'sale',
+          order_lines: orderLines
+        };
+      });
 
-        console.log(`Transformed ${transformedInvoices.length} invoices for range`);
+      console.log(`Transformed ${transformedInvoices.length} invoices for batch`);
 
-        // Insert invoices in very small batches to avoid timeouts
-        const insertBatchSize = 15; // Very small batch size
-        let rangeSuccessCount = 0;
+      // Insert invoices in small sub-batches to avoid timeouts
+      const insertBatchSize = 10;
+      let batchSyncedCount = 0;
+      
+      for (let j = 0; j < transformedInvoices.length; j += insertBatchSize) {
+        const subBatch = transformedInvoices.slice(j, j + insertBatchSize);
         
-        for (let k = 0; k < transformedInvoices.length; k += insertBatchSize) {
-          const batch = transformedInvoices.slice(k, k + insertBatchSize);
-          
-          try {
-            const { error } = await supabase
-              .from('invoices')
-              .insert(batch);
+        try {
+          const { error } = await supabase
+            .from('invoices')
+            .insert(subBatch);
 
-            if (error) {
-              console.error(`Error inserting batch in range ${range.start}-${range.end}:`, error);
-            } else {
-              rangeSuccessCount += batch.length;
-              console.log(`Inserted batch of ${batch.length} invoices for range ${range.start}-${range.end}`);
-              
-              // Add small delay between batches to prevent overwhelming the system
-              await new Promise(resolve => setTimeout(resolve, 100));
-            }
-          } catch (error) {
-            console.error(`Batch insert error for range ${range.start}-${range.end}:`, error);
+          if (error) {
+            console.error(`Error inserting sub-batch:`, error);
+          } else {
+            batchSyncedCount += subBatch.length;
+            console.log(`Inserted sub-batch of ${subBatch.length} invoices`);
           }
+        } catch (error) {
+          console.error(`Sub-batch insert error:`, error);
         }
-
-        totalNewInvoices += transformedInvoices.length;
-        totalSyncedInvoices += rangeSuccessCount;
         
-        // Add to existing invoice names to prevent duplicates in subsequent ranges
-        transformedInvoices.forEach(invoice => {
-          existingInvoiceNames.add(invoice.name);
-        });
-
-        console.log(`Range ${range.start}-${range.end} completed: ${rangeSuccessCount}/${transformedInvoices.length} invoices synced`);
-
-        // Add delay between date ranges to prevent CPU exhaustion
-        await new Promise(resolve => setTimeout(resolve, 200));
-
-      } catch (error) {
-        console.error(`Error processing range ${range.start}-${range.end}:`, error);
-        continue; // Continue with next range even if this one fails
+        // Small delay between sub-batches
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
+
+      totalSynced += batchSyncedCount;
+      console.log(`Batch completed: ${batchSyncedCount}/${transformedInvoices.length} invoices synced`);
+      
+      // Add to existing invoice names to prevent duplicates in subsequent batches
+      transformedInvoices.forEach(invoice => {
+        existingInvoiceNames.add(invoice.name);
+      });
+
+      // Delay between batches to prevent CPU exhaustion
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
-    console.log(`Sync completed. ${totalSyncedInvoices}/${totalNewInvoices} new invoices synced to Supabase.`);
+    console.log(`Sync completed. ${totalSynced}/${newInvoices.length} new invoices synced to Supabase.`);
 
     return new Response(JSON.stringify({ 
       success: true, 
-      totalNewInvoices,
-      syncedToSupabase: totalSyncedInvoices,
-      processedRanges: dateRanges.length,
-      message: `Successfully processed ${dateRanges.length} date ranges and synced ${totalSyncedInvoices} new invoices with complete order lines`
+      totalInvoices: allInvoices.length,
+      newInvoices: newInvoices.length,
+      syncedToSupabase: totalSynced,
+      message: `Successfully synced ${totalSynced} new invoices with proper Odoo product categories and order lines`
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
@@ -330,17 +356,3 @@ serve(async (req) => {
     });
   }
 });
-
-// Helper function to determine product category
-function getProductCategory(productName: string): string {
-  if (!productName) return 'OTHER';
-  
-  const name = productName.toUpperCase();
-  
-  if (name.includes('SOLACE')) return 'SOLACE';
-  if (name.includes('DELI')) return 'DELI';
-  if (name.includes('FEER')) return 'FEER';
-  if (name.includes('BOXER')) return 'BOXER';
-  
-  return 'OTHER';
-}

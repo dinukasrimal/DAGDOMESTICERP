@@ -74,34 +74,43 @@ export type Database = {
           cost: number | null
           id: string
           incoming_qty: number | null
+          location: string | null
           outgoing_qty: number | null
           product_category: string | null
           product_name: string | null
           quantity_available: number | null
           quantity_on_hand: number | null
+          reorder_max: number | null
           reorder_min: number | null
+          virtual_available: number | null
         }
         Insert: {
           cost?: number | null
           id: string
           incoming_qty?: number | null
+          location?: string | null
           outgoing_qty?: number | null
           product_category?: string | null
           product_name?: string | null
           quantity_available?: number | null
           quantity_on_hand?: number | null
+          reorder_max?: number | null
           reorder_min?: number | null
+          virtual_available?: number | null
         }
         Update: {
           cost?: number | null
           id?: string
           incoming_qty?: number | null
+          location?: string | null
           outgoing_qty?: number | null
           product_category?: string | null
           product_name?: string | null
           quantity_available?: number | null
           quantity_on_hand?: number | null
+          reorder_max?: number | null
           reorder_min?: number | null
+          virtual_available?: number | null
         }
         Relationships: []
       }
@@ -260,32 +269,103 @@ export type Database = {
         }
         Relationships: []
       }
+      purchase_holds: {
+        Row: {
+          created_at: string | null
+          held_until: string
+          id: string
+          purchase_id: string
+        }
+        Insert: {
+          created_at?: string | null
+          held_until: string
+          id?: string
+          purchase_id: string
+        }
+        Update: {
+          created_at?: string | null
+          held_until?: string
+          id?: string
+          purchase_id?: string
+        }
+        Relationships: []
+      }
+      purchase_lines: {
+        Row: {
+          created_at: string | null
+          id: string
+          price_unit: number
+          product_category: string | null
+          product_name: string
+          purchase_id: string | null
+          qty_ordered: number
+          qty_received: number
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          price_unit?: number
+          product_category?: string | null
+          product_name: string
+          purchase_id?: string | null
+          qty_ordered?: number
+          qty_received?: number
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          price_unit?: number
+          product_category?: string | null
+          product_name?: string
+          purchase_id?: string | null
+          qty_ordered?: number
+          qty_received?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "purchase_lines_purchase_id_fkey"
+            columns: ["purchase_id"]
+            isOneToOne: false
+            referencedRelation: "purchases"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       purchases: {
         Row: {
           amount_total: number | null
           date_order: string | null
+          expected_date: string | null
           id: string
           name: string | null
           order_lines: Json | null
           partner_name: string | null
+          pending_qty: number | null
+          received_qty: number | null
           state: string | null
         }
         Insert: {
           amount_total?: number | null
           date_order?: string | null
+          expected_date?: string | null
           id: string
           name?: string | null
           order_lines?: Json | null
           partner_name?: string | null
+          pending_qty?: number | null
+          received_qty?: number | null
           state?: string | null
         }
         Update: {
           amount_total?: number | null
           date_order?: string | null
+          expected_date?: string | null
           id?: string
           name?: string | null
           order_lines?: Json | null
           partner_name?: string | null
+          pending_qty?: number | null
+          received_qty?: number | null
           state?: string | null
         }
         Relationships: []

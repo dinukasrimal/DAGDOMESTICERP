@@ -1,19 +1,29 @@
 
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.50.0';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-interface PurchaseOrder {
+interface Purchase {
   id: number;
   name: string;
   partner_id: [number, string];
   date_order: string;
   amount_total: number;
   state: string;
+  order_line?: number[];
+}
+
+interface PurchaseLine {
+  id: number;
+  product_id: [number, string] | false;
+  product_qty: number;
+  qty_received: number;
+  price_unit: number;
 }
 
 serve(async (req) => {
@@ -26,14 +36,22 @@ serve(async (req) => {
     const odooDatabase = Deno.env.get('ODOO_DATABASE');
     const odooUsername = Deno.env.get('ODOO_USERNAME');
     const odooPassword = Deno.env.get('ODOO_PASSWORD');
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
     if (!odooUrl || !odooDatabase || !odooUsername || !odooPassword) {
       throw new Error('Missing Odoo configuration');
     }
 
+    if (!supabaseUrl || !supabaseKey) {
+      throw new Error('Missing Supabase configuration');
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
     console.log('Fetching purchase data from Odoo...');
 
-    // First authenticate
+    // Authenticate with Odoo
     const authResponse = await fetch(`${odooUrl}/jsonrpc`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -72,11 +90,13 @@ serve(async (req) => {
             odooPassword,
             'purchase.order',
             'search_read',
-            [[]],  // domain (empty = all records)
+            [
+              [['state', 'in', ['purchase', 'done']]]
+            ],
             {
-              fields: ['name', 'partner_id', 'date_order', 'amount_total', 'state'],
-              limit: 50,
-              order: 'date_order desc'
+              fields: ['name', 'partner_id', 'date_order', 'amount_total', 'state', 'order_line'],
+              order: 'date_order desc',
+              limit: 50
             }
           ]
         },
@@ -85,26 +105,42 @@ serve(async (req) => {
     });
 
     const purchaseData = await purchaseResponse.json();
+    
     console.log('Purchase data received:', purchaseData);
 
     if (purchaseData.error) {
-      throw new Error(`Odoo API error: ${purchaseData.error.message}`);
+      throw new Error(`Failed to fetch purchase data: ${purchaseData.error.message}`);
     }
 
-    const orders = purchaseData.result || [];
-    const transformedOrders = orders.map((order: PurchaseOrder) => ({
-      id: order.name || order.id.toString(),
-      name: order.name,
-      partner_name: Array.isArray(order.partner_id) ? order.partner_id[1] : 'Unknown Supplier',
-      date_order: order.date_order ? order.date_order.split(' ')[0] : new Date().toISOString().split('T')[0],
-      amount_total: order.amount_total || 0,
-      state: order.state || 'draft'
+    const purchases = purchaseData.result || [];
+
+    // Transform and sync purchase data
+    const transformedPurchases = purchases.map((purchase: Purchase) => ({
+      id: purchase.name || purchase.id.toString(),
+      name: purchase.name,
+      partner_name: Array.isArray(purchase.partner_id) ? purchase.partner_id[1] : 'Unknown Supplier',
+      date_order: purchase.date_order ? purchase.date_order.split(' ')[0] : null,
+      amount_total: purchase.amount_total || 0,
+      state: purchase.state || 'draft',
+      received_qty: 0, // This would need to be calculated from purchase lines
+      pending_qty: 0,  // This would need to be calculated from purchase lines
+      expected_date: null
     }));
+
+    // Upsert purchases to Supabase
+    const { error: purchaseError } = await supabase
+      .from('purchases')
+      .upsert(transformedPurchases, { onConflict: 'id' });
+
+    if (purchaseError) {
+      throw new Error(`Failed to sync purchases: ${purchaseError.message}`);
+    }
 
     return new Response(JSON.stringify({ 
       success: true, 
-      data: transformedOrders,
-      count: transformedOrders.length
+      data: transformedPurchases,
+      count: transformedPurchases.length,
+      message: `Successfully synced ${transformedPurchases.length} purchase orders`
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });

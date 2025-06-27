@@ -1,10 +1,11 @@
+
 import React, { useState, useEffect } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ReportDialog } from '@/components/reports/ReportDialog';
 import { SalesReportContent } from '@/components/reports/SalesReportContent';
-import { InventoryReportContent } from '@/components/reports/InventoryReportContent';
+import { AdvancedInventoryReport } from '@/components/reports/AdvancedInventoryReport';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { FileText, BarChart3, Package, Download, RefreshCw, ArrowLeft } from 'lucide-react';
@@ -33,6 +34,9 @@ interface PurchaseData {
   date_order: string;
   amount_total: number;
   state: string;
+  received_qty?: number;
+  pending_qty?: number;
+  expected_date?: string;
 }
 
 const Reports: React.FC = () => {
@@ -53,8 +57,12 @@ const Reports: React.FC = () => {
         .select('*')
         .order('date_order', { ascending: false });
 
-      if (!localError && localData && localData.length > 0) {
-        console.log('Using local invoice data:', localData.length, 'records');
+      if (localError) {
+        throw new Error(`Failed to fetch sales data: ${localError.message}`);
+      }
+
+      if (localData && localData.length > 0) {
+        console.log('Sales data found:', localData.length, 'records');
         
         const transformedData: SalesData[] = localData.map(invoice => ({
           id: invoice.id,
@@ -75,8 +83,9 @@ const Reports: React.FC = () => {
         }));
         
         setSalesData(transformedData);
+        console.log('Sales data processed successfully');
       } else {
-        console.log('No local data found, syncing from Odoo...');
+        console.log('No local sales data found, syncing from Odoo...');
         await syncFromOdoo();
       }
       
@@ -102,12 +111,14 @@ const Reports: React.FC = () => {
       }
 
       if (data.success) {
-        setSalesData(data.data || []);
-        console.log('Invoice data synced:', data.count, 'records');
+        console.log('Invoice data synced successfully:', data.syncedToSupabase, 'new records');
         toast({
           title: "Data Synced",
-          description: data.message || `${data.synced_to_supabase || data.count} invoices synced successfully`,
+          description: data.message || `${data.syncedToSupabase} invoices synced successfully`,
         });
+        
+        // Refetch data after sync
+        await fetchSalesData();
       } else {
         throw new Error(data.error || 'Failed to sync invoice data');
       }
@@ -123,17 +134,30 @@ const Reports: React.FC = () => {
 
   const fetchPurchaseData = async () => {
     try {
-      const { data, error } = await supabase.functions.invoke('odoo-purchases');
-      
+      const { data, error } = await supabase
+        .from('purchases')
+        .select('*')
+        .order('date_order', { ascending: false });
+
       if (error) {
         throw new Error(`Failed to fetch purchase data: ${error.message}`);
       }
 
-      if (data.success) {
-        setPurchaseData(data.data);
-        console.log('Purchase data loaded:', data.data.length, 'records');
-      } else {
-        throw new Error(data.error || 'Failed to fetch purchase data');
+      if (data) {
+        const transformedData: PurchaseData[] = data.map(purchase => ({
+          id: purchase.id,
+          name: purchase.name || '',
+          partner_name: purchase.partner_name || '',
+          date_order: purchase.date_order || '',
+          amount_total: purchase.amount_total || 0,
+          state: purchase.state || '',
+          received_qty: purchase.received_qty || 0,
+          pending_qty: purchase.pending_qty || 0,
+          expected_date: purchase.expected_date
+        }));
+        
+        setPurchaseData(transformedData);
+        console.log('Purchase data loaded:', transformedData.length, 'records');
       }
     } catch (error) {
       console.error('Purchase data fetch failed:', error);
@@ -242,30 +266,30 @@ const Reports: React.FC = () => {
           </CardContent>
         </Card>
 
-        {/* Inventory Report */}
+        {/* Advanced Inventory Report */}
         <Card className="cursor-pointer hover:shadow-lg transition-shadow" onClick={() => openDialog('inventory')}>
           <CardHeader>
             <CardTitle className="flex items-center space-x-2">
               <Package className="h-6 w-6 text-green-600" />
-              <span>Inventory Report</span>
+              <span>Advanced Inventory Report</span>
             </CardTitle>
             <CardDescription>
-              Stock levels, inventory movements, and product category analysis
+              Pivot-style inventory analysis with supplier tracking, purchase planning, and demand forecasting
             </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
               <div className="flex justify-between">
                 <span className="text-sm text-muted-foreground">Categories:</span>
-                <span className="font-semibold">5</span>
+                <span className="font-semibold">Multiple</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Total Products:</span>
-                <span className="font-semibold">245</span>
+                <span className="text-sm text-muted-foreground">Planning Mode:</span>
+                <span className="font-semibold text-blue-600">Advanced</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Low Stock Items:</span>
-                <span className="font-semibold text-red-600">12</span>
+                <span className="text-sm text-muted-foreground">Supplier Integration:</span>
+                <span className="font-semibold text-green-600">Active</span>
               </div>
             </div>
             <Button className="w-full mt-4" onClick={(e) => { e.stopPropagation(); openDialog('inventory'); }}>
@@ -325,11 +349,11 @@ const Reports: React.FC = () => {
       <ReportDialog
         isOpen={activeDialog === 'inventory'}
         onClose={closeDialog}
-        title="Product Inventory Report"
+        title="Advanced Inventory Planning Report"
         onDownloadPdf={handleDownloadPdf}
         downloadButtonText="Download Inventory PDF"
       >
-        <InventoryReportContent inventoryData={[]} purchaseData={purchaseData} />
+        <AdvancedInventoryReport />
       </ReportDialog>
 
       <ReportDialog
