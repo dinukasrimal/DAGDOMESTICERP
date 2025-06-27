@@ -76,7 +76,7 @@ export const AdvancedInventoryReport: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (inventoryData.length > 0) {
+    if (inventoryData.length > 0 || salesData.length > 0) {
       analyzeCategories();
     }
   }, [inventoryData, salesData, selectedMonths, purchaseHolds]);
@@ -84,6 +84,8 @@ export const AdvancedInventoryReport: React.FC = () => {
   const loadData = async () => {
     setIsLoading(true);
     try {
+      console.log('Loading inventory and sales data...');
+      
       const [inventoryRes, purchaseRes, purchaseHoldsRes, salesRes] = await Promise.all([
         supabase.from('inventory').select('*'),
         supabase.from('purchases').select('*').order('date_order', { ascending: false }),
@@ -91,21 +93,118 @@ export const AdvancedInventoryReport: React.FC = () => {
         supabase.from('invoices').select('*').order('date_order', { ascending: false })
       ]);
 
-      if (inventoryRes.error) throw inventoryRes.error;
-      if (purchaseRes.error) throw purchaseRes.error;
-      if (purchaseHoldsRes.error) throw purchaseHoldsRes.error;
-      if (salesRes.error) throw salesRes.error;
+      console.log('Data loaded:', {
+        inventory: inventoryRes.data?.length || 0,
+        purchases: purchaseRes.data?.length || 0,
+        holds: purchaseHoldsRes.data?.length || 0,
+        sales: salesRes.data?.length || 0
+      });
 
-      setInventoryData(inventoryRes.data || []);
-      setPurchaseData(purchaseRes.data || []);
+      if (inventoryRes.error) {
+        console.error('Inventory error:', inventoryRes.error);
+        throw inventoryRes.error;
+      }
+      if (purchaseRes.error) {
+        console.error('Purchase error:', purchaseRes.error);
+        throw purchaseRes.error;
+      }
+      if (purchaseHoldsRes.error) {
+        console.error('Purchase holds error:', purchaseHoldsRes.error);
+        throw purchaseHoldsRes.error;
+      }
+      if (salesRes.error) {
+        console.error('Sales error:', salesRes.error);
+        throw salesRes.error;
+      }
+
+      // Transform the data to ensure proper types
+      const transformedInventory = (inventoryRes.data || []).map(item => ({
+        id: item.id,
+        product_name: item.product_name || 'Unknown Product',
+        product_category: item.product_category || 'Uncategorized',
+        quantity_on_hand: Number(item.quantity_on_hand) || 0,
+        quantity_available: Number(item.quantity_available) || 0,
+        incoming_qty: Number(item.incoming_qty) || 0,
+        outgoing_qty: Number(item.outgoing_qty) || 0,
+        virtual_available: Number(item.virtual_available) || 0,
+        reorder_min: Number(item.reorder_min) || 0,
+        reorder_max: Number(item.reorder_max) || 0,
+        cost: Number(item.cost) || 0,
+        location: item.location || 'WH/Stock'
+      }));
+
+      const transformedPurchases = (purchaseRes.data || []).map(item => ({
+        id: item.id,
+        name: item.name || '',
+        partner_name: item.partner_name || '',
+        date_order: item.date_order || '',
+        amount_total: Number(item.amount_total) || 0,
+        state: item.state || '',
+        received_qty: Number(item.received_qty) || 0,
+        pending_qty: Number(item.pending_qty) || 0,
+        expected_date: item.expected_date || ''
+      }));
+
+      setInventoryData(transformedInventory);
+      setPurchaseData(transformedPurchases);
       setPurchaseHolds(purchaseHoldsRes.data || []);
       setSalesData(salesRes.data || []);
+
+      // If we have no inventory data, create some sample data to show structure
+      if (transformedInventory.length === 0) {
+        console.log('No inventory data found, creating sample data structure');
+        const sampleData = [
+          {
+            id: 'sample-1',
+            product_name: 'Sample Product A',
+            product_category: 'Category 1',
+            quantity_on_hand: 100,
+            quantity_available: 80,
+            incoming_qty: 50,
+            outgoing_qty: 20,
+            virtual_available: 130,
+            reorder_min: 30,
+            reorder_max: 200,
+            cost: 15.50,
+            location: 'WH/Stock'
+          },
+          {
+            id: 'sample-2',
+            product_name: 'Sample Product B',
+            product_category: 'Category 1',
+            quantity_on_hand: 75,
+            quantity_available: 60,
+            incoming_qty: 25,
+            outgoing_qty: 15,
+            virtual_available: 85,
+            reorder_min: 20,
+            reorder_max: 150,
+            cost: 12.00,
+            location: 'WH/Stock'
+          },
+          {
+            id: 'sample-3',
+            product_name: 'Sample Product C',
+            product_category: 'Category 2',
+            quantity_on_hand: 50,
+            quantity_available: 40,
+            incoming_qty: 0,
+            outgoing_qty: 10,
+            virtual_available: 40,
+            reorder_min: 25,
+            reorder_max: 100,
+            cost: 8.75,
+            location: 'WH/Stock'
+          }
+        ];
+        setInventoryData(sampleData);
+      }
 
     } catch (error) {
       console.error('Error loading data:', error);
       toast({
         title: "Error",
-        description: "Failed to load inventory data",
+        description: "Failed to load inventory data: " + (error as Error).message,
         variant: "destructive",
       });
     } finally {
@@ -115,12 +214,12 @@ export const AdvancedInventoryReport: React.FC = () => {
 
   const calculateSalesForecast = (productName: string, months: number): number => {
     const currentDate = new Date();
-    const futureDate = new Date();
-    futureDate.setMonth(currentDate.getMonth() + months);
+    const pastDate = new Date();
+    pastDate.setMonth(currentDate.getMonth() - months);
 
     const relevantSales = salesData.filter(invoice => {
       const invoiceDate = new Date(invoice.date_order);
-      return invoiceDate >= currentDate && invoiceDate <= futureDate;
+      return invoiceDate >= pastDate && invoiceDate <= currentDate;
     });
 
     let totalQty = 0;
@@ -134,10 +233,16 @@ export const AdvancedInventoryReport: React.FC = () => {
       }
     });
 
-    return totalQty;
+    // Project forward based on historical data
+    return Math.round(totalQty * (12 / months));
   };
 
   const analyzeCategories = () => {
+    console.log('Analyzing categories with data:', {
+      inventoryItems: inventoryData.length,
+      salesItems: salesData.length
+    });
+
     const categoryMap: { [key: string]: InventoryData[] } = {};
     
     inventoryData.forEach(item => {
@@ -175,6 +280,7 @@ export const AdvancedInventoryReport: React.FC = () => {
       };
     });
 
+    console.log('Category analysis completed:', analysis.length, 'categories');
     setCategoryAnalysis(analysis.sort((a, b) => b.needsPlanning - a.needsPlanning));
   };
 
@@ -286,6 +392,34 @@ export const AdvancedInventoryReport: React.FC = () => {
         </div>
       </div>
 
+      {/* Data Summary */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-2xl font-bold">{inventoryData.length}</div>
+            <div className="text-sm text-muted-foreground">Products</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-2xl font-bold">{categoryAnalysis.length}</div>
+            <div className="text-sm text-muted-foreground">Categories</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-2xl font-bold">{purchaseData.length}</div>
+            <div className="text-sm text-muted-foreground">Purchase Orders</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-2xl font-bold">{salesData.length}</div>
+            <div className="text-sm text-muted-foreground">Sales Records</div>
+          </CardContent>
+        </Card>
+      </div>
+
       {/* Supplier Purchase Orders Table */}
       <Card>
         <CardHeader>
@@ -305,7 +439,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                 <tr className="bg-slate-700 text-white">
                   <th className="border p-2 text-left">PO Number</th>
                   <th className="border p-2 text-left">Supplier</th>
-                  <th className="border p-2 text-right">Total Qty</th>
+                  <th className="border p-2 text-right">Total Amount</th>
                   <th className="border p-2 text-right">Received</th>
                   <th className="border p-2 text-right">Pending</th>
                   <th className="border p-2 text-center">Expected Date</th>
@@ -323,7 +457,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                     >
                       <td className="border p-2">{purchase.name}</td>
                       <td className="border p-2">{purchase.partner_name}</td>
-                      <td className="border p-2 text-right">{purchase.amount_total}</td>
+                      <td className="border p-2 text-right">{purchase.amount_total.toLocaleString()}</td>
                       <td className="border p-2 text-right">{purchase.received_qty || 0}</td>
                       <td className="border p-2 text-right">{purchase.pending_qty || 0}</td>
                       <td className="border p-2 text-center">{purchase.expected_date || 'TBD'}</td>
@@ -473,6 +607,13 @@ export const AdvancedInventoryReport: React.FC = () => {
                   ))}
               </tbody>
             </table>
+            {getNextMonthAnalysis().filter(cat => cat.stockWithoutIncoming < cat.nextMonthSale).length === 0 && (
+              <tr>
+                <td colSpan={5} className="border p-4 text-center text-muted-foreground">
+                  No urgent requirements for next month
+                </td>
+              </tr>
+            )}
           </div>
         </CardContent>
       </Card>
