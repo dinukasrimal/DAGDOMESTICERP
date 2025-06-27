@@ -40,11 +40,19 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     new Date(item.date_order).getFullYear().toString()
   ))].sort((a, b) => b.localeCompare(a));
 
-  // Helper function to get quantity from invoice
+  // Helper function to get quantity from invoice - FIXED to properly handle order_lines
   const getInvoiceQuantity = (invoice: SalesData): number => {
     if (invoice.order_lines && Array.isArray(invoice.order_lines) && invoice.order_lines.length > 0) {
-      return invoice.order_lines.reduce((sum, line) => sum + (line.qty_delivered || 0), 0);
+      const total = invoice.order_lines.reduce((sum, line) => {
+        // Make sure we're getting the quantity properly
+        const qty = Number(line.qty_delivered) || 0;
+        console.log(`Invoice ${invoice.name}: Line qty_delivered = ${line.qty_delivered}, parsed = ${qty}`);
+        return sum + qty;
+      }, 0);
+      console.log(`Invoice ${invoice.name}: Total quantity = ${total}`);
+      return total;
     }
+    console.log(`Invoice ${invoice.name}: No order lines, defaulting to 1`);
     return 1; // Default to 1 if no order lines
   };
 
@@ -61,14 +69,19 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     return true;
   });
 
+  console.log(`Filtered data: ${filteredData.length} invoices for year ${selectedYear}, month ${selectedMonth}`);
+
   // Calculate total quantity and value
   const totalQuantity = filteredData.reduce((sum, item) => {
-    return sum + getInvoiceQuantity(item);
+    const qty = getInvoiceQuantity(item);
+    return sum + qty;
   }, 0);
 
   const totalValue = filteredData.reduce((sum, item) => sum + item.amount_total, 0);
 
-  // Previous year comparison - fix the calculation
+  console.log(`Totals: Quantity = ${totalQuantity}, Value = ${totalValue}`);
+
+  // Previous year comparison - FIXED calculation
   const previousYear = (parseInt(selectedYear) - 1).toString();
   const previousYearData = salesData.filter(item => {
     const orderDate = new Date(item.date_order);
@@ -82,11 +95,15 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     return true;
   });
 
+  console.log(`Previous year data: ${previousYearData.length} invoices for year ${previousYear}`);
+
   const previousYearQuantity = previousYearData.reduce((sum, item) => {
     return sum + getInvoiceQuantity(item);
   }, 0);
 
   const previousYearValue = previousYearData.reduce((sum, item) => sum + item.amount_total, 0);
+
+  console.log(`Previous year totals: Quantity = ${previousYearQuantity}, Value = ${previousYearValue}`);
 
   const quantityGrowth = previousYearQuantity > 0 
     ? ((totalQuantity - previousYearQuantity) / previousYearQuantity * 100).toFixed(1)
@@ -127,7 +144,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     .sort((a, b) => b.current - a.current)
     .slice(0, 10);
 
-  // Monthly data aggregation - fix the monthly calculation
+  // Monthly data aggregation - FIXED
   const monthlyData = filteredData.reduce((acc, item) => {
     const date = new Date(item.date_order);
     const monthKey = date.toLocaleDateString('en-US', { month: 'short' });
@@ -393,12 +410,14 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                   <th className="border p-2 text-left">Customer</th>
                   <th className="border p-2 text-right">Quantity</th>
                   <th className="border p-2 text-right">Value (LKR)</th>
+                  <th className="border p-2 text-right">Order Lines</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredData.slice(0, 20).map((item, index) => {
                   const date = new Date(item.date_order);
                   const quantity = getInvoiceQuantity(item);
+                  const orderLinesCount = item.order_lines ? item.order_lines.length : 0;
                   
                   return (
                     <tr key={index} className="hover:bg-gray-50">
@@ -407,6 +426,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                       <td className="border p-2">{item.partner_name}</td>
                       <td className="border p-2 text-right">{quantity}</td>
                       <td className="border p-2 text-right">LKR {item.amount_total.toLocaleString()}</td>
+                      <td className="border p-2 text-right">{orderLinesCount}</td>
                     </tr>
                   );
                 })}
@@ -414,6 +434,9 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                   <td className="border p-2" colSpan={3}>Total</td>
                   <td className="border p-2 text-right">{totalQuantity.toLocaleString()}</td>
                   <td className="border p-2 text-right">LKR {totalValue.toLocaleString()}</td>
+                  <td className="border p-2 text-right">
+                    {filteredData.reduce((sum, item) => sum + (item.order_lines ? item.order_lines.length : 0), 0)}
+                  </td>
                 </tr>
               </tbody>
             </table>

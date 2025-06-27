@@ -24,6 +24,8 @@ interface PurchaseLine {
   product_qty: number;
   qty_received: number;
   price_unit: number;
+  price_subtotal: number;
+  name: string;
 }
 
 serve(async (req) => {
@@ -49,7 +51,7 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    console.log('Fetching purchase data from Odoo...');
+    console.log('Fetching all purchase data from Odoo with pagination...');
 
     // Authenticate with Odoo
     const authResponse = await fetch(`${odooUrl}/jsonrpc`, {
@@ -74,73 +76,214 @@ serve(async (req) => {
       throw new Error('Authentication failed');
     }
 
-    // Fetch purchase orders
-    const purchaseResponse = await fetch(`${odooUrl}/jsonrpc`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'call',
-        params: {
-          service: 'object',
-          method: 'execute_kw',
-          args: [
-            odooDatabase,
-            uid,
-            odooPassword,
-            'purchase.order',
-            'search_read',
-            [
-              [['state', 'in', ['purchase', 'done']]]
-            ],
-            {
-              fields: ['name', 'partner_id', 'date_order', 'amount_total', 'state', 'order_line'],
-              order: 'date_order desc',
-              limit: 50
-            }
-          ]
-        },
-        id: Math.floor(Math.random() * 1000000)
-      }),
-    });
+    // Fetch purchase orders with pagination to avoid CPU limits
+    let allPurchases: Purchase[] = [];
+    let offset = 0;
+    const limit = 100; // Process in batches of 100
+    let hasMore = true;
 
-    const purchaseData = await purchaseResponse.json();
-    
-    console.log('Purchase data received:', purchaseData);
+    while (hasMore) {
+      console.log(`Fetching purchases batch: offset ${offset}, limit ${limit}`);
+      
+      const purchaseResponse = await fetch(`${odooUrl}/jsonrpc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'call',
+          params: {
+            service: 'object',
+            method: 'execute_kw',
+            args: [
+              odooDatabase,
+              uid,
+              odooPassword,
+              'purchase.order',
+              'search_read',
+              [
+                [['state', 'in', ['purchase', 'done']]]
+              ],
+              {
+                fields: ['name', 'partner_id', 'date_order', 'amount_total', 'state', 'order_line'],
+                order: 'date_order desc',
+                limit: limit,
+                offset: offset
+              }
+            ]
+          },
+          id: Math.floor(Math.random() * 1000000)
+        }),
+      });
 
-    if (purchaseData.error) {
-      throw new Error(`Failed to fetch purchase data: ${purchaseData.error.message}`);
+      const purchaseData = await purchaseResponse.json();
+      
+      if (purchaseData.error) {
+        throw new Error(`Failed to fetch purchase data: ${purchaseData.error.message}`);
+      }
+
+      const batchPurchases = purchaseData.result || [];
+      console.log(`Fetched ${batchPurchases.length} purchases in this batch`);
+      
+      if (batchPurchases.length === 0) {
+        hasMore = false;
+      } else {
+        allPurchases = allPurchases.concat(batchPurchases);
+        offset += limit;
+        
+        // Add small delay to avoid overwhelming the CPU
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      // Safety check to prevent infinite loops
+      if (offset > 10000) {
+        console.log('Reached maximum offset limit, stopping fetch');
+        break;
+      }
     }
 
-    const purchases = purchaseData.result || [];
+    console.log(`Total purchases fetched: ${allPurchases.length}`);
 
-    // Transform and sync purchase data
-    const transformedPurchases = purchases.map((purchase: Purchase) => ({
-      id: purchase.name || purchase.id.toString(),
-      name: purchase.name,
-      partner_name: Array.isArray(purchase.partner_id) ? purchase.partner_id[1] : 'Unknown Supplier',
-      date_order: purchase.date_order ? purchase.date_order.split(' ')[0] : null,
-      amount_total: purchase.amount_total || 0,
-      state: purchase.state || 'draft',
-      received_qty: 0, // This would need to be calculated from purchase lines
-      pending_qty: 0,  // This would need to be calculated from purchase lines
-      expected_date: null
-    }));
+    // Fetch purchase lines for all purchases (in batches)
+    const purchaseIds = allPurchases.flatMap(p => p.order_line || []);
+    console.log(`Fetching purchase lines for ${purchaseIds.length} line items`);
 
-    // Upsert purchases to Supabase
-    const { error: purchaseError } = await supabase
-      .from('purchases')
-      .upsert(transformedPurchases, { onConflict: 'id' });
+    let allPurchaseLines: PurchaseLine[] = [];
+    
+    // Process purchase lines in batches to avoid CPU limits
+    for (let i = 0; i < purchaseIds.length; i += 200) {
+      const batchIds = purchaseIds.slice(i, i + 200);
+      
+      if (batchIds.length > 0) {
+        const linesResponse = await fetch(`${odooUrl}/jsonrpc`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'call',
+            params: {
+              service: 'object',
+              method: 'execute_kw',
+              args: [
+                odooDatabase,
+                uid,
+                odooPassword,
+                'purchase.order.line',
+                'read',
+                [batchIds],
+                {
+                  fields: ['id', 'product_id', 'product_qty', 'qty_received', 'price_unit', 'price_subtotal', 'name', 'order_id']
+                }
+              ]
+            },
+            id: Math.floor(Math.random() * 1000000)
+          }),
+        });
 
-    if (purchaseError) {
-      throw new Error(`Failed to sync purchases: ${purchaseError.message}`);
+        const linesData = await linesResponse.json();
+        if (!linesData.error && linesData.result) {
+          allPurchaseLines = allPurchaseLines.concat(linesData.result);
+        }
+        
+        // Small delay between batches
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
+
+    console.log(`Fetched ${allPurchaseLines.length} purchase lines`);
+
+    // Transform and sync purchase data with lines
+    const transformedPurchases = allPurchases.map((purchase: Purchase) => {
+      const purchaseLines = allPurchaseLines.filter(line => 
+        purchase.order_line && purchase.order_line.includes(line.id)
+      );
+
+      const receivedQty = purchaseLines.reduce((sum, line) => sum + (line.qty_received || 0), 0);
+      const pendingQty = purchaseLines.reduce((sum, line) => 
+        sum + Math.max(0, (line.product_qty || 0) - (line.qty_received || 0)), 0
+      );
+
+      return {
+        id: purchase.name || purchase.id.toString(),
+        name: purchase.name,
+        partner_name: Array.isArray(purchase.partner_id) ? purchase.partner_id[1] : 'Unknown Supplier',
+        date_order: purchase.date_order ? purchase.date_order.split(' ')[0] : null,
+        amount_total: purchase.amount_total || 0,
+        state: purchase.state || 'draft',
+        received_qty: receivedQty,
+        pending_qty: pendingQty,
+        expected_date: null,
+        order_lines: purchaseLines.map(line => ({
+          id: line.id,
+          product_name: Array.isArray(line.product_id) ? line.product_id[1] : line.name || 'Unknown Product',
+          product_qty: line.product_qty || 0,
+          qty_received: line.qty_received || 0,
+          price_unit: line.price_unit || 0,
+          price_subtotal: line.price_subtotal || 0
+        }))
+      };
+    });
+
+    // Upsert purchases to Supabase in batches
+    console.log('Syncing purchases to Supabase...');
+    
+    for (let i = 0; i < transformedPurchases.length; i += 50) {
+      const batch = transformedPurchases.slice(i, i + 50);
+      
+      const { error: purchaseError } = await supabase
+        .from('purchases')
+        .upsert(batch.map(p => ({
+          id: p.id,
+          name: p.name,
+          partner_name: p.partner_name,
+          date_order: p.date_order,
+          amount_total: p.amount_total,
+          state: p.state,
+          received_qty: p.received_qty,
+          pending_qty: p.pending_qty,
+          expected_date: p.expected_date,
+          order_lines: p.order_lines
+        })), { onConflict: 'id' });
+
+      if (purchaseError) {
+        console.error(`Failed to sync batch ${i}: ${purchaseError.message}`);
+      }
+      
+      // Small delay between batches
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    // Also sync purchase lines to the purchase_lines table
+    console.log('Syncing purchase lines...');
+    const allLinesForSync = transformedPurchases.flatMap(purchase => 
+      purchase.order_lines.map(line => ({
+        id: line.id.toString(),
+        purchase_id: purchase.id,
+        product_name: line.product_name,
+        qty_ordered: line.product_qty,
+        qty_received: line.qty_received,
+        price_unit: line.price_unit
+      }))
+    );
+
+    for (let i = 0; i < allLinesForSync.length; i += 100) {
+      const batch = allLinesForSync.slice(i, i + 100);
+      
+      const { error: linesError } = await supabase
+        .from('purchase_lines')
+        .upsert(batch, { onConflict: 'id' });
+
+      if (linesError) {
+        console.error(`Failed to sync purchase lines batch ${i}: ${linesError.message}`);
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
 
     return new Response(JSON.stringify({ 
       success: true, 
       data: transformedPurchases,
       count: transformedPurchases.length,
-      message: `Successfully synced ${transformedPurchases.length} purchase orders`
+      message: `Successfully synced ${transformedPurchases.length} purchase orders with ${allPurchaseLines.length} line items`
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });

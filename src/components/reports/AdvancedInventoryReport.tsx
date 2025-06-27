@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -14,7 +13,8 @@ import {
   Clock, 
   ShoppingCart,
   Truck,
-  Calendar
+  Calendar,
+  RotateCcw
 } from 'lucide-react';
 
 interface InventoryData {
@@ -42,6 +42,14 @@ interface PurchaseData {
   received_qty: number;
   pending_qty: number;
   expected_date: string;
+  order_lines?: Array<{
+    id: number;
+    product_name: string;
+    product_qty: number;
+    qty_received: number;
+    price_unit: number;
+    price_subtotal: number;
+  }>;
 }
 
 interface PurchaseHold {
@@ -59,6 +67,10 @@ interface CategoryAnalysis {
   expanded: boolean;
 }
 
+interface ExpandedPurchases {
+  [key: string]: boolean;
+}
+
 export const AdvancedInventoryReport: React.FC = () => {
   const { toast } = useToast();
   const [selectedMonths, setSelectedMonths] = useState('3');
@@ -69,6 +81,7 @@ export const AdvancedInventoryReport: React.FC = () => {
   const [categoryAnalysis, setCategoryAnalysis] = useState<CategoryAnalysis[]>([]);
   const [filteredPurchases, setFilteredPurchases] = useState<PurchaseData[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('');
+  const [expandedPurchases, setExpandedPurchases] = useState<ExpandedPurchases>({});
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
@@ -142,7 +155,8 @@ export const AdvancedInventoryReport: React.FC = () => {
         state: item.state || '',
         received_qty: Number(item.received_qty) || 0,
         pending_qty: Number(item.pending_qty) || 0,
-        expected_date: item.expected_date || ''
+        expected_date: item.expected_date || '',
+        order_lines: Array.isArray(item.order_lines) ? item.order_lines : []
       }));
 
       setInventoryData(transformedInventory);
@@ -212,14 +226,35 @@ export const AdvancedInventoryReport: React.FC = () => {
     }
   };
 
+  // Fixed sales forecast calculation - get previous year data for proper comparison
   const calculateSalesForecast = (productName: string, months: number): number => {
     const currentDate = new Date();
-    const pastDate = new Date();
-    pastDate.setMonth(currentDate.getMonth() - months);
+    const currentYear = currentDate.getFullYear();
+    const currentMonth = currentDate.getMonth(); // 0-based
+    
+    // For planning, we want to look at last year's data for the same period
+    // Example: if current is 2025/June and planning for 3 months, 
+    // get 2024 July, August, September
+    const previousYear = currentYear - 1;
+    const startMonth = (currentMonth + 1) % 12; // Next month in previous year
+    
+    console.log(`Calculating forecast for ${productName}, months: ${months}, looking at year ${previousYear} starting from month ${startMonth + 1}`);
 
     const relevantSales = salesData.filter(invoice => {
       const invoiceDate = new Date(invoice.date_order);
-      return invoiceDate >= pastDate && invoiceDate <= currentDate;
+      const invoiceYear = invoiceDate.getFullYear();
+      const invoiceMonth = invoiceDate.getMonth();
+      
+      if (invoiceYear !== previousYear) return false;
+      
+      // Check if invoice month is within our target range
+      for (let i = 0; i < months; i++) {
+        const targetMonth = (startMonth + i) % 12;
+        if (invoiceMonth === targetMonth) {
+          return true;
+        }
+      }
+      return false;
     });
 
     let totalQty = 0;
@@ -233,8 +268,8 @@ export const AdvancedInventoryReport: React.FC = () => {
       }
     });
 
-    // Project forward based on historical data
-    return Math.round(totalQty * (12 / months));
+    console.log(`Found ${relevantSales.length} relevant invoices for ${productName}, total qty: ${totalQty}`);
+    return totalQty;
   };
 
   const analyzeCategories = () => {
@@ -289,10 +324,12 @@ export const AdvancedInventoryReport: React.FC = () => {
     
     let totalIncoming = 0;
     purchaseData.forEach(purchase => {
-      if (!heldPurchaseIds.has(purchase.id) && purchase.pending_qty > 0) {
-        // This is simplified - in real implementation, you'd check purchase lines
-        // for products matching the productName
-        totalIncoming += purchase.pending_qty || 0;
+      if (!heldPurchaseIds.has(purchase.id) && purchase.order_lines) {
+        purchase.order_lines.forEach(line => {
+          if (line.product_name.toLowerCase().includes(productName.toLowerCase())) {
+            totalIncoming += Math.max(0, line.product_qty - line.qty_received);
+          }
+        });
       }
     });
     
@@ -305,34 +342,61 @@ export const AdvancedInventoryReport: React.FC = () => {
     ));
   };
 
+  const togglePurchaseExpansion = (purchaseId: string) => {
+    setExpandedPurchases(prev => ({
+      ...prev,
+      [purchaseId]: !prev[purchaseId]
+    }));
+  };
+
   const handlePurchaseHold = async (purchaseId: string) => {
     try {
-      const heldUntil = new Date();
-      heldUntil.setMonth(heldUntil.getMonth() + 3);
+      const isCurrentlyHeld = purchaseHolds.some(h => h.purchase_id === purchaseId);
       
-      const { error } = await supabase
-        .from('purchase_holds')
-        .upsert({
-          purchase_id: purchaseId,
-          held_until: heldUntil.toISOString().split('T')[0]
+      if (isCurrentlyHeld) {
+        // Remove the hold
+        const { error } = await supabase
+          .from('purchase_holds')
+          .delete()
+          .eq('purchase_id', purchaseId);
+
+        if (error) throw error;
+
+        setPurchaseHolds(prev => prev.filter(h => h.purchase_id !== purchaseId));
+
+        toast({
+          title: "Hold Removed",
+          description: "Purchase order is now active and will be considered in planning",
         });
+      } else {
+        // Add a hold
+        const heldUntil = new Date();
+        heldUntil.setMonth(heldUntil.getMonth() + 3);
+        
+        const { error } = await supabase
+          .from('purchase_holds')
+          .upsert({
+            purchase_id: purchaseId,
+            held_until: heldUntil.toISOString().split('T')[0]
+          });
 
-      if (error) throw error;
+        if (error) throw error;
 
-      setPurchaseHolds(prev => [
-        ...prev.filter(h => h.purchase_id !== purchaseId),
-        { purchase_id: purchaseId, held_until: heldUntil.toISOString().split('T')[0] }
-      ]);
+        setPurchaseHolds(prev => [
+          ...prev.filter(h => h.purchase_id !== purchaseId),
+          { purchase_id: purchaseId, held_until: heldUntil.toISOString().split('T')[0] }
+        ]);
 
-      toast({
-        title: "Purchase Held",
-        description: "Purchase order will not be considered in planning for 3 months",
-      });
+        toast({
+          title: "Purchase Held",
+          description: "Purchase order will not be considered in planning for 3 months",
+        });
+      }
     } catch (error) {
-      console.error('Error holding purchase:', error);
+      console.error('Error toggling purchase hold:', error);
       toast({
         title: "Error",
-        description: "Failed to hold purchase order",
+        description: "Failed to update purchase order status",
         variant: "destructive",
       });
     }
@@ -340,8 +404,16 @@ export const AdvancedInventoryReport: React.FC = () => {
 
   const filterPurchasesByCategory = (category: string) => {
     setSelectedCategory(category);
-    // This would filter purchases based on category - simplified for demo
-    setFilteredPurchases(purchaseData.slice(0, 10));
+    // Filter purchases that have products in the selected category
+    const categoryPurchases = purchaseData.filter(purchase => 
+      purchase.order_lines && purchase.order_lines.some(line => 
+        inventoryData.some(inv => 
+          inv.product_category === category && 
+          inv.product_name.toLowerCase().includes(line.product_name.toLowerCase())
+        )
+      )
+    );
+    setFilteredPurchases(categoryPurchases);
   };
 
   const getNextMonthAnalysis = () => {
@@ -420,7 +492,7 @@ export const AdvancedInventoryReport: React.FC = () => {
         </Card>
       </div>
 
-      {/* Supplier Purchase Orders Table */}
+      {/* Supplier Purchase Orders Table with Pivot Style */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center space-x-2">
@@ -429,7 +501,7 @@ export const AdvancedInventoryReport: React.FC = () => {
             {selectedCategory && <Badge variant="outline">{selectedCategory}</Badge>}
           </CardTitle>
           <CardDescription>
-            Click and hold any PO to exclude it from planning calculations for 3 months
+            Click on PO to expand and see products. Hold/unhold orders to exclude/include them from planning calculations.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -444,31 +516,82 @@ export const AdvancedInventoryReport: React.FC = () => {
                   <th className="border p-2 text-right">Pending</th>
                   <th className="border p-2 text-center">Expected Date</th>
                   <th className="border p-2 text-center">Status</th>
+                  <th className="border p-2 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {(filteredPurchases.length > 0 ? filteredPurchases : purchaseData.slice(0, 10)).map((purchase) => {
+                {(filteredPurchases.length > 0 ? filteredPurchases : purchaseData.slice(0, 20)).map((purchase) => {
                   const isHeld = purchaseHolds.some(h => h.purchase_id === purchase.id);
+                  const isExpanded = expandedPurchases[purchase.id];
+                  const hasLines = purchase.order_lines && purchase.order_lines.length > 0;
+                  
                   return (
-                    <tr 
-                      key={purchase.id} 
-                      className={`hover:bg-gray-50 cursor-pointer ${isHeld ? 'bg-red-50' : ''}`}
-                      onMouseDown={() => handlePurchaseHold(purchase.id)}
-                    >
-                      <td className="border p-2">{purchase.name}</td>
-                      <td className="border p-2">{purchase.partner_name}</td>
-                      <td className="border p-2 text-right">{purchase.amount_total.toLocaleString()}</td>
-                      <td className="border p-2 text-right">{purchase.received_qty || 0}</td>
-                      <td className="border p-2 text-right">{purchase.pending_qty || 0}</td>
-                      <td className="border p-2 text-center">{purchase.expected_date || 'TBD'}</td>
-                      <td className="border p-2 text-center">
-                        {isHeld ? (
-                          <Badge variant="destructive">Held</Badge>
-                        ) : (
-                          <Badge variant="outline">Active</Badge>
-                        )}
-                      </td>
-                    </tr>
+                    <React.Fragment key={purchase.id}>
+                      <tr className={`hover:bg-gray-50 ${isHeld ? 'bg-red-50' : ''}`}>
+                        <td className="border p-2">
+                          <div className="flex items-center space-x-2">
+                            {hasLines && (
+                              <button
+                                onClick={() => togglePurchaseExpansion(purchase.id)}
+                                className="p-1 hover:bg-gray-200 rounded"
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown className="h-4 w-4" />
+                                ) : (
+                                  <ChevronRight className="h-4 w-4" />
+                                )}
+                              </button>
+                            )}
+                            <span>{purchase.name}</span>
+                          </div>
+                        </td>
+                        <td className="border p-2">{purchase.partner_name}</td>
+                        <td className="border p-2 text-right">{purchase.amount_total.toLocaleString()}</td>
+                        <td className="border p-2 text-right">{purchase.received_qty || 0}</td>
+                        <td className="border p-2 text-right">{purchase.pending_qty || 0}</td>
+                        <td className="border p-2 text-center">{purchase.expected_date || 'TBD'}</td>
+                        <td className="border p-2 text-center">
+                          {isHeld ? (
+                            <Badge variant="destructive">Held</Badge>
+                          ) : (
+                            <Badge variant="outline">Active</Badge>
+                          )}
+                        </td>
+                        <td className="border p-2 text-center">
+                          <Button
+                            size="sm"
+                            variant={isHeld ? "default" : "destructive"}
+                            onClick={() => handlePurchaseHold(purchase.id)}
+                            className="flex items-center space-x-1"
+                          >
+                            {isHeld ? (
+                              <>
+                                <RotateCcw className="h-3 w-3" />
+                                <span>Activate</span>
+                              </>
+                            ) : (
+                              <span>Hold</span>
+                            )}
+                          </Button>
+                        </td>
+                      </tr>
+                      {isExpanded && hasLines && purchase.order_lines!.map((line, lineIndex) => (
+                        <tr key={`${purchase.id}-line-${lineIndex}`} className="bg-gray-50">
+                          <td className="border p-2 pl-8 text-sm">└ {line.product_name}</td>
+                          <td className="border p-2 text-sm">-</td>
+                          <td className="border p-2 text-right text-sm">{line.price_subtotal.toLocaleString()}</td>
+                          <td className="border p-2 text-right text-sm">{line.qty_received}</td>
+                          <td className="border p-2 text-right text-sm">{Math.max(0, line.product_qty - line.qty_received)}</td>
+                          <td className="border p-2 text-center text-sm">-</td>
+                          <td className="border p-2 text-center text-sm">
+                            <Badge variant="secondary" className="text-xs">
+                              {line.product_qty} ordered
+                            </Badge>
+                          </td>
+                          <td className="border p-2 text-center text-sm">-</td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
