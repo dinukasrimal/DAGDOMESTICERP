@@ -77,6 +77,7 @@ export type Database = {
           location: string | null
           outgoing_qty: number | null
           product_category: string | null
+          product_id: number | null
           product_name: string | null
           quantity_available: number | null
           quantity_on_hand: number | null
@@ -91,6 +92,7 @@ export type Database = {
           location?: string | null
           outgoing_qty?: number | null
           product_category?: string | null
+          product_id?: number | null
           product_name?: string | null
           quantity_available?: number | null
           quantity_on_hand?: number | null
@@ -105,6 +107,7 @@ export type Database = {
           location?: string | null
           outgoing_qty?: number | null
           product_category?: string | null
+          product_id?: number | null
           product_name?: string | null
           quantity_available?: number | null
           quantity_on_hand?: number | null
@@ -112,7 +115,15 @@ export type Database = {
           reorder_min?: number | null
           virtual_available?: number | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "fk_inventory_product"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       invoices: {
         Row: {
@@ -235,6 +246,45 @@ export type Database = {
           id?: string
           mo_count?: number
           name?: string
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      products: {
+        Row: {
+          active: boolean | null
+          category_id: number | null
+          created_at: string | null
+          default_code: string | null
+          id: number
+          name: string
+          product_category: string | null
+          type: string | null
+          uom: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          active?: boolean | null
+          category_id?: number | null
+          created_at?: string | null
+          default_code?: string | null
+          id: number
+          name: string
+          product_category?: string | null
+          type?: string | null
+          uom?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          active?: boolean | null
+          category_id?: number | null
+          created_at?: string | null
+          default_code?: string | null
+          id?: number
+          name?: string
+          product_category?: string | null
+          type?: string | null
+          uom?: string | null
           updated_at?: string | null
         }
         Relationships: []
