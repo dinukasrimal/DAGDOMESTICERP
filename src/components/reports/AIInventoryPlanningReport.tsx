@@ -321,6 +321,7 @@ export const AIInventoryPlanningReport: React.FC = () => {
                     <TableHead>Product Name</TableHead>
                     <TableHead>Current Stock</TableHead>
                     <TableHead>Monthly Sales</TableHead>
+                    <TableHead>Stock/Sales Ratio</TableHead>
                     <TableHead>Priority Ratio</TableHead>
                     <TableHead>Urgency</TableHead>
                     <TableHead>Suppliers</TableHead>
@@ -335,6 +336,11 @@ export const AIInventoryPlanningReport: React.FC = () => {
                       </TableCell>
                       <TableCell>{analysis.currentStock}</TableCell>
                       <TableCell>{analysis.monthlySales}</TableCell>
+                      <TableCell>
+                        <span className={`font-semibold ${analysis.monthlySales > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
+                          {analysis.monthlySales > 0 ? (analysis.currentStock / analysis.monthlySales).toFixed(2) : 'N/A'}
+                        </span>
+                      </TableCell>
                       <TableCell>
                         <span className={`font-semibold ${analysis.priorityRatio < 1 ? 'text-red-600' : analysis.priorityRatio < 2 ? 'text-yellow-600' : 'text-green-600'}`}>
                           {analysis.priorityRatio}
