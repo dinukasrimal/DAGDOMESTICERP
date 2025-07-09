@@ -44,7 +44,7 @@ interface PurchaseData {
 }
 
 interface AIAnalysisResult {
-  category: string;
+  productName: string;
   currentStock: number;
   monthlySales: number;
   priorityRatio: number;
@@ -162,40 +162,21 @@ export const AIInventoryPlanningReport: React.FC = () => {
     setIsGenerating(true);
     
     try {
-      // Group inventory by product category
-      const categoryMap = new Map<string, InventoryData[]>();
-      
-      inventoryData.forEach(item => {
-        const category = item.product_category || 'uncategorized';
-        if (!categoryMap.has(category)) {
-          categoryMap.set(category, []);
-        }
-        categoryMap.get(category)!.push(item);
-      });
-
+      // Analyze each product individually
       const analysisResults: AIAnalysisResult[] = [];
 
-      for (const [category, products] of categoryMap.entries()) {
-        const totalStock = products.reduce((sum, p) => sum + p.quantity_available, 0);
-        
-        // Get sales data for products in this category
-        const categorySales = salesData.filter(s => {
-          // Find inventory item with same product name to get its category
-          const inventoryItem = inventoryData.find(inv => inv.product_name === s.product_name);
-          return inventoryItem?.product_category === category;
-        });
-        const avgMonthlySales = categorySales.reduce((sum, s) => sum + s.avg_monthly_sales, 0);
+      inventoryData.forEach(item => {
+        // Get sales data for this specific product
+        const productSales = salesData.find(s => s.product_name === item.product_name);
+        const avgMonthlySales = productSales?.avg_monthly_sales || 0;
+        const currentStock = item.quantity_available;
         
         // Calculate priority ratio: stock/sales (lower = higher priority)
-        const priorityRatio = avgMonthlySales > 0 ? totalStock / avgMonthlySales : 999;
+        const priorityRatio = avgMonthlySales > 0 ? currentStock / avgMonthlySales : 999;
         
-        // Find relevant purchase orders for this category
+        // Find relevant purchase orders for this product
         const relevantPOs = purchaseData.filter(po => 
-          po.order_lines?.some(line => {
-            // Find inventory item with same product name to get its category
-            const inventoryItem = inventoryData.find(inv => inv.product_name === line.product_name);
-            return inventoryItem?.product_category === category;
-          })
+          po.order_lines?.some(line => line.product_name === item.product_name)
         );
 
         const supplierInfo = relevantPOs.map(po => ({
@@ -223,16 +204,19 @@ export const AIInventoryPlanningReport: React.FC = () => {
           recommendation = `Stock levels adequate for ${Math.round(priorityRatio)} months.`;
         }
 
-        analysisResults.push({
-          category,
-          currentStock: totalStock,
-          monthlySales: Math.round(avgMonthlySales),
-          priorityRatio: Math.round(priorityRatio * 100) / 100,
-          urgencyLevel,
-          supplierInfo,
-          recommendation
-        });
-      }
+        // Only include products with sales data or low stock
+        if (avgMonthlySales > 0 || currentStock < 50) {
+          analysisResults.push({
+            productName: item.product_name,
+            currentStock,
+            monthlySales: Math.round(avgMonthlySales),
+            priorityRatio: Math.round(priorityRatio * 100) / 100,
+            urgencyLevel,
+            supplierInfo,
+            recommendation
+          });
+        }
+      });
 
       // Sort by priority ratio (lowest first = highest priority)
       analysisResults.sort((a, b) => a.priorityRatio - b.priorityRatio);
@@ -328,7 +312,7 @@ export const AIInventoryPlanningReport: React.FC = () => {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Category</TableHead>
+                    <TableHead>Product Name</TableHead>
                     <TableHead>Current Stock</TableHead>
                     <TableHead>Monthly Sales</TableHead>
                     <TableHead>Priority Ratio</TableHead>
@@ -341,7 +325,7 @@ export const AIInventoryPlanningReport: React.FC = () => {
                   {aiAnalysis.map((analysis, index) => (
                     <TableRow key={index}>
                       <TableCell className="font-medium">
-                        {analysis.category}
+                        {analysis.productName}
                       </TableCell>
                       <TableCell>{analysis.currentStock}</TableCell>
                       <TableCell>{analysis.monthlySales}</TableCell>
