@@ -47,7 +47,7 @@ interface AIAnalysisResult {
   category: string;
   currentStock: number;
   monthlySales: number;
-  shortfall: number;
+  priorityRatio: number;
   urgencyLevel: 'low' | 'medium' | 'high' | 'critical';
   supplierInfo: {
     supplier: string;
@@ -192,7 +192,8 @@ export const AIInventoryPlanningReport: React.FC = () => {
         );
         const avgMonthlySales = categorySales.reduce((sum, s) => sum + s.avg_monthly_sales, 0);
         
-        const shortfall = Math.max(0, avgMonthlySales - totalStock);
+        // Calculate priority ratio: stock/sales (lower = higher priority)
+        const priorityRatio = avgMonthlySales > 0 ? totalStock / avgMonthlySales : 999;
         
         // Find relevant purchase orders
         const relevantPOs = purchaseData.filter(po => 
@@ -211,40 +212,34 @@ export const AIInventoryPlanningReport: React.FC = () => {
         let urgencyLevel: 'low' | 'medium' | 'high' | 'critical' = 'low';
         let recommendation = '';
 
-        if (shortfall > 0) {
-          const shortfallRatio = shortfall / Math.max(avgMonthlySales, 1);
-          
-          if (shortfallRatio > 0.8) {
-            urgencyLevel = 'critical';
-            recommendation = `URGENT: Contact suppliers immediately. Stock will run out in ${Math.floor(totalStock / Math.max(avgMonthlySales, 1) * 30)} days.`;
-          } else if (shortfallRatio > 0.5) {
-            urgencyLevel = 'high';
-            recommendation = `High priority: Expedite production. Consider rush orders.`;
-          } else if (shortfallRatio > 0.2) {
-            urgencyLevel = 'medium';
-            recommendation = `Monitor closely. Plan additional orders within 2 weeks.`;
-          } else {
-            urgencyLevel = 'low';
-            recommendation = `Minor shortfall. Normal ordering cycle should suffice.`;
-          }
+        // Determine urgency based on priority ratio
+        if (priorityRatio < 0.5) {
+          urgencyLevel = 'critical';
+          recommendation = `URGENT: Only ${Math.round(priorityRatio * 30)} days of stock remaining. Contact suppliers immediately.`;
+        } else if (priorityRatio < 1) {
+          urgencyLevel = 'high';
+          recommendation = `High priority: Stock will run out within a month. Expedite production.`;
+        } else if (priorityRatio < 2) {
+          urgencyLevel = 'medium';
+          recommendation = `Monitor closely. Plan additional orders within 2 weeks.`;
         } else {
-          recommendation = `Stock levels adequate for next month.`;
+          urgencyLevel = 'low';
+          recommendation = `Stock levels adequate for ${Math.round(priorityRatio)} months.`;
         }
 
         analysisResults.push({
           category,
           currentStock: totalStock,
           monthlySales: Math.round(avgMonthlySales),
-          shortfall: Math.round(shortfall),
+          priorityRatio: Math.round(priorityRatio * 100) / 100,
           urgencyLevel,
           supplierInfo,
           recommendation
         });
       }
 
-      // Sort by urgency level
-      const urgencyOrder = { critical: 4, high: 3, medium: 2, low: 1 };
-      analysisResults.sort((a, b) => urgencyOrder[b.urgencyLevel] - urgencyOrder[a.urgencyLevel]);
+      // Sort by priority ratio (lowest first = highest priority)
+      analysisResults.sort((a, b) => a.priorityRatio - b.priorityRatio);
 
       setAiAnalysis(analysisResults);
       
@@ -340,7 +335,7 @@ export const AIInventoryPlanningReport: React.FC = () => {
                     <TableHead>Category</TableHead>
                     <TableHead>Current Stock</TableHead>
                     <TableHead>Monthly Sales</TableHead>
-                    <TableHead>Shortfall</TableHead>
+                    <TableHead>Priority Ratio</TableHead>
                     <TableHead>Urgency</TableHead>
                     <TableHead>Suppliers</TableHead>
                     <TableHead>Recommendation</TableHead>
@@ -355,13 +350,9 @@ export const AIInventoryPlanningReport: React.FC = () => {
                       <TableCell>{analysis.currentStock}</TableCell>
                       <TableCell>{analysis.monthlySales}</TableCell>
                       <TableCell>
-                        {analysis.shortfall > 0 ? (
-                          <span className="text-red-600 font-semibold">
-                            -{analysis.shortfall}
-                          </span>
-                        ) : (
-                          <span className="text-green-600">✓</span>
-                        )}
+                        <span className={`font-semibold ${analysis.priorityRatio < 1 ? 'text-red-600' : analysis.priorityRatio < 2 ? 'text-yellow-600' : 'text-green-600'}`}>
+                          {analysis.priorityRatio}
+                        </span>
                       </TableCell>
                       <TableCell>
                         <Badge className={`${getUrgencyColor(analysis.urgencyLevel)} flex items-center space-x-1`}>
