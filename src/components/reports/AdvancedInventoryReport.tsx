@@ -3,6 +3,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { 
@@ -18,7 +20,6 @@ import {
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { downloadElementAsPdf } from '@/lib/pdfUtils';
-import { Popover } from '@/components/ui/popover';
 
 interface InventoryData {
   id: string;
@@ -167,7 +168,15 @@ export const AdvancedInventoryReport: React.FC = () => {
     return [];
   });
   const [showHideDropdown, setShowHideDropdown] = useState(false);
-  const [selectedPlanningCategory, setSelectedPlanningCategory] = useState<string>('all');
+  
+  const defaultExcludedCategories = [
+    'apex', 'boxer junior', 'cozifit', 'finished good', 'other', 
+    'tween huger', 'raw materials', 'raw materials / deliveries', 
+    'odel', 'other suppliers', 'other suppliers / lee vee'
+  ];
+  
+  const [nextMonthCategoryFilter, setNextMonthCategoryFilter] = useState<string[]>([]);
+  const [threeMonthCategoryFilter, setThreeMonthCategoryFilter] = useState<string[]>([]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -184,6 +193,23 @@ export const AdvancedInventoryReport: React.FC = () => {
       analyzeCategories();
     }
   }, [inventoryData, salesData, selectedMonths, purchaseHolds]);
+
+  // Initialize category filters when category analysis changes
+  useEffect(() => {
+    if (categoryAnalysis.length > 0) {
+      const allCategories = categoryAnalysis.map(cat => cat.category);
+      const selectedCategories = allCategories.filter(cat => 
+        !defaultExcludedCategories.includes(cat.toLowerCase())
+      );
+      
+      if (nextMonthCategoryFilter.length === 0) {
+        setNextMonthCategoryFilter(selectedCategories);
+      }
+      if (threeMonthCategoryFilter.length === 0) {
+        setThreeMonthCategoryFilter(selectedCategories);
+      }
+    }
+  }, [categoryAnalysis]);
 
   const syncAndLoadData = async () => {
     setIsSyncing(true);
@@ -987,22 +1013,65 @@ export const AdvancedInventoryReport: React.FC = () => {
           </CardTitle>
           <div className="flex items-center space-x-4 mt-4">
             <div className="flex items-center space-x-2">
-              <label htmlFor="multi-month-category-filter" className="text-sm font-medium">
+              <label className="text-sm font-medium">
                 Filter by Category:
               </label>
-              <Select value={selectedPlanningCategory} onValueChange={setSelectedPlanningCategory}>
-                <SelectTrigger className="w-48">
-                  <SelectValue placeholder="Select category" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Categories</SelectItem>
-                  {Array.from(new Set(categoryAnalysis.map(cat => cat.category))).sort().map(category => (
-                    <SelectItem key={category} value={category}>
-                      {category}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="w-48 justify-start">
+                    {threeMonthCategoryFilter.length === 0 
+                      ? "No categories selected" 
+                      : threeMonthCategoryFilter.length === categoryAnalysis.length
+                      ? "All categories"
+                      : `${threeMonthCategoryFilter.length} categories selected`
+                    }
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-64 p-3">
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                    <div className="flex items-center space-x-2 pb-2 border-b">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const allCategories = categoryAnalysis.map(cat => cat.category);
+                          setThreeMonthCategoryFilter(allCategories);
+                        }}
+                      >
+                        Select All
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setThreeMonthCategoryFilter([])}
+                      >
+                        Clear All
+                      </Button>
+                    </div>
+                    {Array.from(new Set(categoryAnalysis.map(cat => cat.category))).sort().map(category => (
+                      <div key={category} className="flex items-center space-x-2">
+                        <Checkbox
+                          id={`three-month-${category}`}
+                          checked={threeMonthCategoryFilter.includes(category)}
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              setThreeMonthCategoryFilter(prev => [...prev, category]);
+                            } else {
+                              setThreeMonthCategoryFilter(prev => prev.filter(c => c !== category));
+                            }
+                          }}
+                        />
+                        <label
+                          htmlFor={`three-month-${category}`}
+                          className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                        >
+                          {category}
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
           </div>
         </CardHeader>
@@ -1027,7 +1096,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                   .filter(category =>
                     (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
                     !hiddenCategories.includes(category.category) &&
-                    (selectedPlanningCategory === 'all' || category.category === selectedPlanningCategory)
+                    (threeMonthCategoryFilter.length === 0 || threeMonthCategoryFilter.includes(category.category))
                   )
                   .map((category, index) => (
                     <React.Fragment key={category.category}>
@@ -1231,22 +1300,65 @@ export const AdvancedInventoryReport: React.FC = () => {
           </CardDescription>
           <div className="flex items-center space-x-4 mt-4">
             <div className="flex items-center space-x-2">
-              <label htmlFor="planning-category-filter" className="text-sm font-medium">
+              <label className="text-sm font-medium">
                 Filter by Category:
               </label>
-              <Select value={selectedPlanningCategory} onValueChange={setSelectedPlanningCategory}>
-                <SelectTrigger className="w-48">
-                  <SelectValue placeholder="Select category" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Categories</SelectItem>
-                  {Array.from(new Set(categoryAnalysis.map(cat => cat.category))).sort().map(category => (
-                    <SelectItem key={category} value={category}>
-                      {category}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="w-48 justify-start">
+                    {nextMonthCategoryFilter.length === 0 
+                      ? "No categories selected" 
+                      : nextMonthCategoryFilter.length === categoryAnalysis.length
+                      ? "All categories"
+                      : `${nextMonthCategoryFilter.length} categories selected`
+                    }
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-64 p-3">
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                    <div className="flex items-center space-x-2 pb-2 border-b">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const allCategories = categoryAnalysis.map(cat => cat.category);
+                          setNextMonthCategoryFilter(allCategories);
+                        }}
+                      >
+                        Select All
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setNextMonthCategoryFilter([])}
+                      >
+                        Clear All
+                      </Button>
+                    </div>
+                    {Array.from(new Set(categoryAnalysis.map(cat => cat.category))).sort().map(category => (
+                      <div key={category} className="flex items-center space-x-2">
+                        <Checkbox
+                          id={`next-month-${category}`}
+                          checked={nextMonthCategoryFilter.includes(category)}
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              setNextMonthCategoryFilter(prev => [...prev, category]);
+                            } else {
+                              setNextMonthCategoryFilter(prev => prev.filter(c => c !== category));
+                            }
+                          }}
+                        />
+                        <label
+                          htmlFor={`next-month-${category}`}
+                          className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                        >
+                          {category}
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
           </div>
         </CardHeader>
@@ -1271,7 +1383,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                   .filter(category =>
                     (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
                     !hiddenCategories.includes(category.category) &&
-                    (selectedPlanningCategory === 'all' || category.category === selectedPlanningCategory)
+                    (nextMonthCategoryFilter.length === 0 || nextMonthCategoryFilter.includes(category.category))
                   )
                   .map((category, index) => (
                     <React.Fragment key={category.category}>
