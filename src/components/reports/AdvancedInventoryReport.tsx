@@ -1370,6 +1370,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                   <th className="border p-2 text-left">Category</th>
                   <th className="border p-2 text-right">Sales Quantity (Invoiced)</th>
                   <th className="border p-2 text-right">Current Stock</th>
+                  <th className="border p-2 text-right">Stock/Sales Ratio</th>
                   <th className="border p-2 text-right">Incoming</th>
                   <th className="border p-2 text-right">Stock + Incoming</th>
                   <th className="border p-2 text-right">Needs Urgent</th>
@@ -1395,6 +1396,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                         </td>
                         <td className="border p-2 text-right">-</td>
                         <td className="border p-2 text-right">{category.totalStock}</td>
+                        <td className="border p-2 text-right">-</td>
                         <td className="border p-2 text-right">{category.totalIncoming}</td>
                         <td className="border p-2 text-right">{category.totalStock + category.totalIncoming}</td>
                         <td className="border p-2 text-right">
@@ -1498,6 +1500,11 @@ export const AdvancedInventoryReport: React.FC = () => {
                               <td className="border p-2 text-right text-sm">{salesQty}</td>
                               <td className="border p-2 text-right text-sm">{product.quantity_on_hand}</td>
                               <td className="border p-2 text-right text-sm">
+                                <span className={`font-semibold ${salesQty > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
+                                  {salesQty > 0 ? (product.quantity_on_hand / salesQty).toFixed(2) : 'N/A'}
+                                </span>
+                              </td>
+                              <td className="border p-2 text-right text-sm">
                                 {availableIncoming}
                                 <Button
                                   size="sm"
@@ -1529,7 +1536,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                             </tr>
                             {isIncomingExpanded && (
                               <tr className="bg-blue-50">
-                                <td colSpan={9} className="border p-2 pl-12 text-xs">
+                                <td colSpan={10} className="border p-2 pl-12 text-xs">
                                   <div className="font-semibold mb-1">Incoming Breakdown for {product.product_name} (Supplier-wise):</div>
                                   {Object.entries(supplierIncomingMap)
                                     .filter(([_, lines]) => lines.length > 0)
