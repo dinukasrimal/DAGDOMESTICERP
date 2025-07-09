@@ -183,7 +183,7 @@ export const AdvancedInventoryReport: React.FC = () => {
   const [showHideDropdown, setShowHideDropdown] = useState(false);
   
   const defaultExcludedCategories = [
-    'apex', 'boxer junior', 'cozifit', 'finished good', 'other', 
+    'apex', 'cozifit', 'finished good', 'other', 
     'tween huger', 'raw materials', 'raw materials / deliveries', 
     'odel', 'other suppliers', 'other suppliers / lee vee',
     'cozi fit', 'other suppliers / fashion bug', 'semina junior', 'harmony fit'
