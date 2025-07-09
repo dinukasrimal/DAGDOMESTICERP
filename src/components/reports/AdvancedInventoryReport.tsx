@@ -17,7 +17,10 @@ import {
   Truck,
   Calendar,
   RotateCcw,
-  Brain
+  Brain,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { downloadElementAsPdf } from '@/lib/pdfUtils';
@@ -163,6 +166,10 @@ export const AdvancedInventoryReport: React.FC = () => {
   const [salesQtyPercent, setSalesQtyPercent] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
   const [categorySearch, setCategorySearch] = useState('');
+  const [sortColumn, setSortColumn] = useState<string>('');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [nextMonthSortColumn, setNextMonthSortColumn] = useState<string>('');
+  const [nextMonthSortDirection, setNextMonthSortDirection] = useState<'asc' | 'desc'>('asc');
   const [hiddenCategories, setHiddenCategories] = useState<string[]>(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('hiddenCategories');
@@ -574,6 +581,115 @@ export const AdvancedInventoryReport: React.FC = () => {
     }));
   };
 
+  // Sorting functions
+  const handleSort = (column: string) => {
+    if (sortColumn === column) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortColumn(column);
+      setSortDirection('asc');
+    }
+  };
+
+  const handleNextMonthSort = (column: string) => {
+    if (nextMonthSortColumn === column) {
+      setNextMonthSortDirection(nextMonthSortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setNextMonthSortColumn(column);
+      setNextMonthSortDirection('asc');
+    }
+  };
+
+  const getSortIcon = (column: string, currentColumn: string, direction: 'asc' | 'desc') => {
+    if (currentColumn !== column) {
+      return <ArrowUpDown className="h-4 w-4 text-gray-400" />;
+    }
+    return direction === 'asc' ? 
+      <ArrowUp className="h-4 w-4 text-white" /> : 
+      <ArrowDown className="h-4 w-4 text-white" />;
+  };
+
+  const sortCategoryAnalysis = (categories: CategoryAnalysis[]) => {
+    if (!sortColumn) return categories;
+    
+    return [...categories].sort((a, b) => {
+      let aValue: any, bValue: any;
+      
+      switch (sortColumn) {
+        case 'category':
+          aValue = a.category.toLowerCase();
+          bValue = b.category.toLowerCase();
+          break;
+        case 'totalStock':
+          aValue = a.totalStock;
+          bValue = b.totalStock;
+          break;
+        case 'totalIncoming':
+          aValue = a.totalIncoming;
+          bValue = b.totalIncoming;
+          break;
+        case 'needsPlanning':
+          aValue = a.needsPlanning;
+          bValue = b.needsPlanning;
+          break;
+        default:
+          return 0;
+      }
+      
+      if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
+      if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+  };
+
+  const sortNextMonthProducts = (products: any[]) => {
+    if (!nextMonthSortColumn) return products;
+    
+    return [...products].sort((a, b) => {
+      let aValue: any, bValue: any;
+      
+      switch (nextMonthSortColumn) {
+        case 'product':
+          aValue = a.product_name.toLowerCase();
+          bValue = b.product_name.toLowerCase();
+          break;
+        case 'category':
+          aValue = a.product_category.toLowerCase();
+          bValue = b.product_category.toLowerCase();
+          break;
+        case 'salesQty':
+          aValue = getSalesQtyForProduct(a, 1);
+          bValue = getSalesQtyForProduct(b, 1);
+          break;
+        case 'currentStock':
+          aValue = a.quantity_on_hand;
+          bValue = b.quantity_on_hand;
+          break;
+        case 'ratio':
+          const aSalesQty = getSalesQtyForProduct(a, 1);
+          const bSalesQty = getSalesQtyForProduct(b, 1);
+          aValue = aSalesQty > 0 ? a.quantity_on_hand / aSalesQty : 999;
+          bValue = bSalesQty > 0 ? b.quantity_on_hand / bSalesQty : 999;
+          break;
+        case 'incoming':
+          aValue = getPendingIncomingForProduct(a);
+          bValue = getPendingIncomingForProduct(b);
+          break;
+        case 'urgent':
+          const aUrgent = Math.max(0, getSalesQtyForProduct(a, 1) - a.quantity_on_hand);
+          const bUrgent = Math.max(0, getSalesQtyForProduct(b, 1) - b.quantity_on_hand);
+          aValue = aUrgent;
+          bValue = bUrgent;
+          break;
+        default:
+          return 0;
+      }
+      
+      if (aValue < bValue) return nextMonthSortDirection === 'asc' ? -1 : 1;
+      if (aValue > bValue) return nextMonthSortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+  };
   // Group purchases by supplier, only include POs with pending_qty > 0
   const supplierGroups = React.useMemo(() => {
     const groups: { [supplier: string]: PurchaseData[] } = {};
@@ -1079,18 +1195,66 @@ export const AdvancedInventoryReport: React.FC = () => {
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="bg-slate-700 text-white">
-                  <th className="border p-2 text-left">Product</th>
-                  <th className="border p-2 text-left">Category</th>
-                  <th className="border p-2 text-right">Sales Quantity (Invoiced)</th>
-                  <th className="border p-2 text-right">Current Stock</th>
-                  <th className="border p-2 text-right">Incoming</th>
+                  <th className="border p-2 text-left">
+                    <button 
+                      className="flex items-center space-x-1 hover:bg-slate-600 px-2 py-1 rounded transition-colors"
+                      onClick={() => handleSort('product')}
+                    >
+                      <span>Product</span>
+                      {getSortIcon('product', sortColumn, sortDirection)}
+                    </button>
+                  </th>
+                  <th className="border p-2 text-left">
+                    <button 
+                      className="flex items-center space-x-1 hover:bg-slate-600 px-2 py-1 rounded transition-colors"
+                      onClick={() => handleSort('category')}
+                    >
+                      <span>Category</span>
+                      {getSortIcon('category', sortColumn, sortDirection)}
+                    </button>
+                  </th>
+                  <th className="border p-2 text-right">
+                    <button 
+                      className="flex items-center space-x-1 hover:bg-slate-600 px-2 py-1 rounded transition-colors ml-auto"
+                      onClick={() => handleSort('salesQty')}
+                    >
+                      <span>Sales Quantity (Invoiced)</span>
+                      {getSortIcon('salesQty', sortColumn, sortDirection)}
+                    </button>
+                  </th>
+                  <th className="border p-2 text-right">
+                    <button 
+                      className="flex items-center space-x-1 hover:bg-slate-600 px-2 py-1 rounded transition-colors ml-auto"
+                      onClick={() => handleSort('totalStock')}
+                    >
+                      <span>Current Stock</span>
+                      {getSortIcon('totalStock', sortColumn, sortDirection)}
+                    </button>
+                  </th>
+                  <th className="border p-2 text-right">
+                    <button 
+                      className="flex items-center space-x-1 hover:bg-slate-600 px-2 py-1 rounded transition-colors ml-auto"
+                      onClick={() => handleSort('totalIncoming')}
+                    >
+                      <span>Incoming</span>
+                      {getSortIcon('totalIncoming', sortColumn, sortDirection)}
+                    </button>
+                  </th>
                   <th className="border p-2 text-right">Stock + Incoming</th>
-                  <th className="border p-2 text-right">Needs Planning</th>
+                  <th className="border p-2 text-right">
+                    <button 
+                      className="flex items-center space-x-1 hover:bg-slate-600 px-2 py-1 rounded transition-colors ml-auto"
+                      onClick={() => handleSort('needsPlanning')}
+                    >
+                      <span>Needs Planning</span>
+                      {getSortIcon('needsPlanning', sortColumn, sortDirection)}
+                    </button>
+                  </th>
                   <th className="border p-2 text-center">Action</th>
                 </tr>
               </thead>
               <tbody>
-                {categoryAnalysis
+                {sortCategoryAnalysis(categoryAnalysis)
                   .filter(category => category.products && category.products.length > 0)
                   .filter(category =>
                     (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
@@ -1366,14 +1530,70 @@ export const AdvancedInventoryReport: React.FC = () => {
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="bg-slate-700 text-white">
-                  <th className="border p-2 text-left">Product</th>
-                  <th className="border p-2 text-left">Category</th>
-                  <th className="border p-2 text-right">Sales Quantity (Invoiced)</th>
-                  <th className="border p-2 text-right">Current Stock</th>
-                  <th className="border p-2 text-right">Stock/Sales Ratio</th>
-                  <th className="border p-2 text-right">Incoming</th>
+                  <th className="border p-2 text-left">
+                    <button 
+                      className="flex items-center space-x-1 hover:bg-slate-600 px-2 py-1 rounded transition-colors"
+                      onClick={() => handleNextMonthSort('product')}
+                    >
+                      <span>Product</span>
+                      {getSortIcon('product', nextMonthSortColumn, nextMonthSortDirection)}
+                    </button>
+                  </th>
+                  <th className="border p-2 text-left">
+                    <button 
+                      className="flex items-center space-x-1 hover:bg-slate-600 px-2 py-1 rounded transition-colors"
+                      onClick={() => handleNextMonthSort('category')}
+                    >
+                      <span>Category</span>
+                      {getSortIcon('category', nextMonthSortColumn, nextMonthSortDirection)}
+                    </button>
+                  </th>
+                  <th className="border p-2 text-right">
+                    <button 
+                      className="flex items-center space-x-1 hover:bg-slate-600 px-2 py-1 rounded transition-colors ml-auto"
+                      onClick={() => handleNextMonthSort('salesQty')}
+                    >
+                      <span>Sales Quantity (Invoiced)</span>
+                      {getSortIcon('salesQty', nextMonthSortColumn, nextMonthSortDirection)}
+                    </button>
+                  </th>
+                  <th className="border p-2 text-right">
+                    <button 
+                      className="flex items-center space-x-1 hover:bg-slate-600 px-2 py-1 rounded transition-colors ml-auto"
+                      onClick={() => handleNextMonthSort('currentStock')}
+                    >
+                      <span>Current Stock</span>
+                      {getSortIcon('currentStock', nextMonthSortColumn, nextMonthSortDirection)}
+                    </button>
+                  </th>
+                  <th className="border p-2 text-right">
+                    <button 
+                      className="flex items-center space-x-1 hover:bg-slate-600 px-2 py-1 rounded transition-colors ml-auto"
+                      onClick={() => handleNextMonthSort('ratio')}
+                    >
+                      <span>Stock/Sales Ratio</span>
+                      {getSortIcon('ratio', nextMonthSortColumn, nextMonthSortDirection)}
+                    </button>
+                  </th>
+                  <th className="border p-2 text-right">
+                    <button 
+                      className="flex items-center space-x-1 hover:bg-slate-600 px-2 py-1 rounded transition-colors ml-auto"
+                      onClick={() => handleNextMonthSort('incoming')}
+                    >
+                      <span>Incoming</span>
+                      {getSortIcon('incoming', nextMonthSortColumn, nextMonthSortDirection)}
+                    </button>
+                  </th>
                   <th className="border p-2 text-right">Stock + Incoming</th>
-                  <th className="border p-2 text-right">Needs Urgent</th>
+                  <th className="border p-2 text-right">
+                    <button 
+                      className="flex items-center space-x-1 hover:bg-slate-600 px-2 py-1 rounded transition-colors ml-auto"
+                      onClick={() => handleNextMonthSort('urgent')}
+                    >
+                      <span>Needs Urgent</span>
+                      {getSortIcon('urgent', nextMonthSortColumn, nextMonthSortDirection)}
+                    </button>
+                  </th>
                   <th className="border p-2 text-center">Action</th>
                 </tr>
               </thead>
@@ -1441,10 +1661,12 @@ export const AdvancedInventoryReport: React.FC = () => {
                           )}
                         </td>
                       </tr>
-                      {category.expanded && sortProductsBySize(category.products.filter(product => {
-                        const salesQty = getSalesQtyForProduct(product, 1);
-                        return salesQty > 0 && product.quantity_on_hand < salesQty;
-                      })).map((product) => {
+                      {category.expanded && sortNextMonthProducts(
+                        sortProductsBySize(category.products.filter(product => {
+                          const salesQty = getSalesQtyForProduct(product, 1);
+                          return salesQty > 0 && product.quantity_on_hand < salesQty;
+                        }))
+                      ).map((product) => {
                         const salesQty = getSalesQtyForProduct(product, 1);
                         const availableIncoming = getPendingIncomingForProduct(product);
                         const stockWithIncoming = product.quantity_on_hand + availableIncoming;

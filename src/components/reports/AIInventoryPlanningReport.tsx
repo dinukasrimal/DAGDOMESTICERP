@@ -12,7 +12,10 @@ import {
   Package, 
   Phone,
   Calendar,
-  Loader2
+  Loader2,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 
 interface InventoryData {
@@ -71,6 +74,8 @@ export const AIInventoryPlanningReport: React.FC = () => {
   const [salesData, setSalesData] = useState<SalesData[]>([]);
   const [purchaseData, setPurchaseData] = useState<PurchaseData[]>([]);
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysisResult[]>([]);
+  const [sortColumn, setSortColumn] = useState<string>('');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
 
   const fetchInventoryData = async () => {
     try {
@@ -272,6 +277,67 @@ export const AIInventoryPlanningReport: React.FC = () => {
     }
   };
 
+  // Sorting functions
+  const handleSort = (column: string) => {
+    if (sortColumn === column) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortColumn(column);
+      setSortDirection('asc');
+    }
+  };
+
+  const getSortIcon = (column: string) => {
+    if (sortColumn !== column) {
+      return <ArrowUpDown className="h-4 w-4 text-gray-400" />;
+    }
+    return sortDirection === 'asc' ? 
+      <ArrowUp className="h-4 w-4 text-gray-600" /> : 
+      <ArrowDown className="h-4 w-4 text-gray-600" />;
+  };
+
+  const sortedAnalysis = useMemo(() => {
+    if (!sortColumn) return aiAnalysis;
+    
+    return [...aiAnalysis].sort((a, b) => {
+      let aValue: any, bValue: any;
+      
+      switch (sortColumn) {
+        case 'product':
+          aValue = a.productName.toLowerCase();
+          bValue = b.productName.toLowerCase();
+          break;
+        case 'currentStock':
+          aValue = a.currentStock;
+          bValue = b.currentStock;
+          break;
+        case 'monthlySales':
+          aValue = a.monthlySales;
+          bValue = b.monthlySales;
+          break;
+        case 'ratio':
+          aValue = a.monthlySales > 0 ? a.currentStock / a.monthlySales : 999;
+          bValue = b.monthlySales > 0 ? b.currentStock / b.monthlySales : 999;
+          break;
+        case 'priorityRatio':
+          aValue = a.priorityRatio;
+          bValue = b.priorityRatio;
+          break;
+        case 'urgency':
+          const urgencyOrder = { 'critical': 0, 'high': 1, 'medium': 2, 'low': 3 };
+          aValue = urgencyOrder[a.urgencyLevel];
+          bValue = urgencyOrder[b.urgencyLevel];
+          break;
+        default:
+          return 0;
+      }
+      
+      if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
+      if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [aiAnalysis, sortColumn, sortDirection]);
+
   return (
     <div className="space-y-6">
       <Card>
@@ -318,18 +384,66 @@ export const AIInventoryPlanningReport: React.FC = () => {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Product Name</TableHead>
-                    <TableHead>Current Stock</TableHead>
-                    <TableHead>Monthly Sales</TableHead>
-                    <TableHead>Stock/Sales Ratio</TableHead>
-                    <TableHead>Priority Ratio</TableHead>
-                    <TableHead>Urgency</TableHead>
+                    <TableHead>
+                      <button 
+                        className="flex items-center space-x-1 hover:bg-slate-100 px-2 py-1 rounded transition-colors"
+                        onClick={() => handleSort('product')}
+                      >
+                        <span>Product Name</span>
+                        {getSortIcon('product')}
+                      </button>
+                    </TableHead>
+                    <TableHead>
+                      <button 
+                        className="flex items-center space-x-1 hover:bg-slate-100 px-2 py-1 rounded transition-colors"
+                        onClick={() => handleSort('currentStock')}
+                      >
+                        <span>Current Stock</span>
+                        {getSortIcon('currentStock')}
+                      </button>
+                    </TableHead>
+                    <TableHead>
+                      <button 
+                        className="flex items-center space-x-1 hover:bg-slate-100 px-2 py-1 rounded transition-colors"
+                        onClick={() => handleSort('monthlySales')}
+                      >
+                        <span>Monthly Sales</span>
+                        {getSortIcon('monthlySales')}
+                      </button>
+                    </TableHead>
+                    <TableHead>
+                      <button 
+                        className="flex items-center space-x-1 hover:bg-slate-100 px-2 py-1 rounded transition-colors"
+                        onClick={() => handleSort('ratio')}
+                      >
+                        <span>Stock/Sales Ratio</span>
+                        {getSortIcon('ratio')}
+                      </button>
+                    </TableHead>
+                    <TableHead>
+                      <button 
+                        className="flex items-center space-x-1 hover:bg-slate-100 px-2 py-1 rounded transition-colors"
+                        onClick={() => handleSort('priorityRatio')}
+                      >
+                        <span>Priority Ratio</span>
+                        {getSortIcon('priorityRatio')}
+                      </button>
+                    </TableHead>
+                    <TableHead>
+                      <button 
+                        className="flex items-center space-x-1 hover:bg-slate-100 px-2 py-1 rounded transition-colors"
+                        onClick={() => handleSort('urgency')}
+                      >
+                        <span>Urgency</span>
+                        {getSortIcon('urgency')}
+                      </button>
+                    </TableHead>
                     <TableHead>Suppliers</TableHead>
                     <TableHead>Recommendation</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {aiAnalysis.map((analysis, index) => (
+                  {sortedAnalysis.map((analysis, index) => (
                     <TableRow key={index}>
                       <TableCell className="font-medium">
                         {analysis.productName}
