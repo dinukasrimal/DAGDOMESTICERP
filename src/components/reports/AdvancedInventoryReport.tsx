@@ -185,7 +185,8 @@ export const AdvancedInventoryReport: React.FC = () => {
   const defaultExcludedCategories = [
     'apex', 'boxer junior', 'cozifit', 'finished good', 'other', 
     'tween huger', 'raw materials', 'raw materials / deliveries', 
-    'odel', 'other suppliers', 'other suppliers / lee vee'
+    'odel', 'other suppliers', 'other suppliers / lee vee',
+    'cozi fit', 'other suppliers / fashion bug', 'semina junior', 'harmony fit'
   ];
   
   const [globalCategoryFilter, setGlobalCategoryFilter] = useState<string[]>([]);
