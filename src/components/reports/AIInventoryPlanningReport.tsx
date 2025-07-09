@@ -85,11 +85,13 @@ export const AIInventoryPlanningReport: React.FC = () => {
         id: item.id,
         product_name: item.product_name || '',
         product_category: item.product_category || '',
-        quantity_on_hand: item.quantity_on_hand || 0,
-        quantity_available: item.quantity_available || 0,
+        quantity_on_hand: Number(item.quantity_on_hand) || 0,
+        quantity_available: Number(item.quantity_available) || 0,
         location: item.location || ''
       })) || [];
       
+      console.log('AI Report - Inventory data loaded:', transformed.length, 'items');
+      console.log('Sample inventory item:', transformed[0]);
       setInventoryData(transformed);
     } catch (error) {
       console.error('Error fetching inventory:', error);
@@ -128,6 +130,8 @@ export const AIInventoryPlanningReport: React.FC = () => {
         avg_monthly_sales: data.totalQty / Math.max(data.months.size, 1)
       }));
       
+      console.log('AI Report - Sales data loaded:', salesDataArray.length, 'products');
+      console.log('Sample sales item:', salesDataArray[0]);
       setSalesData(salesDataArray);
     } catch (error) {
       console.error('Error fetching sales data:', error);
@@ -170,6 +174,8 @@ export const AIInventoryPlanningReport: React.FC = () => {
         const productSales = salesData.find(s => s.product_name === item.product_name);
         const avgMonthlySales = productSales?.avg_monthly_sales || 0;
         const currentStock = item.quantity_available;
+        
+        console.log(`Analyzing ${item.product_name}: stock=${currentStock}, sales=${avgMonthlySales}`);
         
         // Calculate priority ratio: stock/sales (lower = higher priority)
         const priorityRatio = avgMonthlySales > 0 ? currentStock / avgMonthlySales : 999;
