@@ -454,9 +454,9 @@ export const AdvancedInventoryReport: React.FC = () => {
     return totalIncoming;
   };
 
-  const toggleCategoryExpansion = (categoryIndex: number) => {
-    setCategoryAnalysis(prev => prev.map((cat, index) => 
-      index === categoryIndex ? { ...cat, expanded: !cat.expanded } : cat
+  const toggleCategoryExpansion = (categoryName: string) => {
+    setCategoryAnalysis(prev => prev.map((cat) => 
+      cat.category === categoryName ? { ...cat, expanded: !cat.expanded } : cat
     ));
   };
 
@@ -1033,7 +1033,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                     <React.Fragment key={category.category}>
                       <tr 
                         className="hover:bg-gray-50 cursor-pointer"
-                        onClick={() => toggleCategoryExpansion(index)}
+                        onClick={() => toggleCategoryExpansion(category.category)}
                       >
                         <td className="border p-2 font-medium" colSpan={2}>
                           {category.expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />} {category.category}
@@ -1277,7 +1277,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                     <React.Fragment key={category.category}>
                       <tr 
                         className="hover:bg-gray-50 cursor-pointer"
-                        onClick={() => toggleCategoryExpansion(index)}
+                        onClick={() => toggleCategoryExpansion(category.category)}
                       >
                         <td className="border p-2 font-medium" colSpan={2}>
                           {category.expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />} {category.category}
