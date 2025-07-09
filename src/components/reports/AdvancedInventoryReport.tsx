@@ -517,7 +517,7 @@ export const AdvancedInventoryReport: React.FC = () => {
   // Prepare data for Next Month Analysis Export
   const getNextMonthExportData = () => {
     const nextMonthAnalysis = getNextMonthAnalysis();
-    const filteredData = selectedCategoryNextMonth 
+    const filteredData = selectedCategoryNextMonth && selectedCategoryNextMonth !== 'all' 
       ? nextMonthAnalysis.filter(cat => cat.category === selectedCategoryNextMonth)
       : nextMonthAnalysis;
     
@@ -538,7 +538,7 @@ export const AdvancedInventoryReport: React.FC = () => {
 
   // Prepare data for 3 Month Analysis Export
   const get3MonthExportData = () => {
-    const filteredData = selectedCategory3Month 
+    const filteredData = selectedCategory3Month && selectedCategory3Month !== 'all' 
       ? categoryAnalysis.filter(cat => cat.category === selectedCategory3Month)
       : categoryAnalysis;
     
@@ -568,7 +568,7 @@ export const AdvancedInventoryReport: React.FC = () => {
   const getColorAnalysis = () => {
     const colorMap: { [color: string]: InventoryData[] } = {};
     
-    const filteredInventory = selectedCategoryColor 
+    const filteredInventory = selectedCategoryColor && selectedCategoryColor !== 'all' 
       ? inventoryData.filter(item => item.product_category === selectedCategoryColor)
       : inventoryData;
       
@@ -684,7 +684,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                   <SelectValue placeholder="Filter by category..." />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Categories</SelectItem>
+                  <SelectItem value="all">All Categories</SelectItem>
                   {Array.from(new Set(inventoryData.map(item => item.product_category))).map(category => (
                     <SelectItem key={category} value={category}>{category}</SelectItem>
                   ))}
@@ -720,7 +720,7 @@ export const AdvancedInventoryReport: React.FC = () => {
               </thead>
               <tbody>
                 {getNextMonthAnalysis()
-                  .filter(cat => !selectedCategoryNextMonth || cat.category === selectedCategoryNextMonth)
+                  .filter(cat => !selectedCategoryNextMonth || selectedCategoryNextMonth === 'all' || cat.category === selectedCategoryNextMonth)
                   .map((cat, index) => (
                     <tr key={index} className="hover:bg-gray-50">
                       <td className="border p-2 font-medium">{cat.category}</td>
@@ -766,7 +766,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                   <SelectValue placeholder="Filter by category..." />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Categories</SelectItem>
+                  <SelectItem value="all">All Categories</SelectItem>
                   {Array.from(new Set(inventoryData.map(item => item.product_category))).map(category => (
                     <SelectItem key={category} value={category}>{category}</SelectItem>
                   ))}
@@ -802,7 +802,7 @@ export const AdvancedInventoryReport: React.FC = () => {
               </thead>
               <tbody>
                 {categoryAnalysis
-                  .filter(cat => !selectedCategory3Month || cat.category === selectedCategory3Month)
+                  .filter(cat => !selectedCategory3Month || selectedCategory3Month === 'all' || cat.category === selectedCategory3Month)
                   .map((cat, index) => {
                     const salesQty = cat.products.reduce((sum, p) => sum + getSalesQtyForProduct(p, parseInt(selectedMonths)), 0);
                     const adjustedSalesQty = salesQty * (1 + salesQtyPercent / 100);
@@ -845,7 +845,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                   <SelectValue placeholder="Filter by category..." />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Categories</SelectItem>
+                  <SelectItem value="all">All Categories</SelectItem>
                   {Array.from(new Set(inventoryData.map(item => item.product_category))).map(category => (
                     <SelectItem key={category} value={category}>{category}</SelectItem>
                   ))}
