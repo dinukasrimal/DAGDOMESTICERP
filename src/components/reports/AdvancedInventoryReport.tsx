@@ -172,6 +172,7 @@ export const AdvancedInventoryReport: React.FC = () => {
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [nextMonthSortColumn, setNextMonthSortColumn] = useState<string>('');
   const [nextMonthSortDirection, setNextMonthSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [secondarySortColumn, setSecondarySortColumn] = useState<string>('salesQty');
   const [showCategorized, setShowCategorized] = useState<boolean>(true);
   const [hiddenCategories, setHiddenCategories] = useState<string[]>(() => {
     if (typeof window !== 'undefined') {
@@ -676,11 +677,30 @@ export const AdvancedInventoryReport: React.FC = () => {
           bValue = bSalesQty > 0 ? b.quantity_on_hand / bSalesQty : 999;
           
           // If ratios are equal and we're sorting by ratio in ascending order in products-only view,
-          // sort by highest sales quantity as secondary criteria
-          if (aValue === bValue && nextMonthSortDirection === 'asc' && !showCategorized) {
-            const aSecondarySalesQty = getSalesQtyForProduct(a, 1);
-            const bSecondarySalesQty = getSalesQtyForProduct(b, 1);
-            return bSecondarySalesQty - aSecondarySalesQty; // Higher sales qty first
+          // sort by secondary criteria
+          if (aValue === bValue && nextMonthSortDirection === 'asc' && !showCategorized && secondarySortColumn) {
+            let aSecondaryValue: any, bSecondaryValue: any;
+            
+            switch (secondarySortColumn) {
+              case 'salesQty':
+                aSecondaryValue = getSalesQtyForProduct(a, 1);
+                bSecondaryValue = getSalesQtyForProduct(b, 1);
+                return bSecondaryValue - aSecondaryValue; // Higher sales qty first
+              case 'currentStock':
+                aSecondaryValue = a.quantity_on_hand;
+                bSecondaryValue = b.quantity_on_hand;
+                return bSecondaryValue - aSecondaryValue; // Higher stock first
+              case 'incoming':
+                aSecondaryValue = getPendingIncomingForProduct(a);
+                bSecondaryValue = getPendingIncomingForProduct(b);
+                return bSecondaryValue - aSecondaryValue; // Higher incoming first
+              case 'product':
+                aSecondaryValue = a.product_name.toLowerCase();
+                bSecondaryValue = b.product_name.toLowerCase();
+                return aSecondaryValue < bSecondaryValue ? -1 : aSecondaryValue > bSecondaryValue ? 1 : 0; // Alphabetical
+              default:
+                return 0;
+            }
           }
           break;
         case 'incoming':
@@ -1556,8 +1576,25 @@ export const AdvancedInventoryReport: React.FC = () => {
                 <List className="h-4 w-4" />
                 <span>Products Only</span>
               </Button>
-            </div>
-          </div>
+             </div>
+             {!showCategorized && (
+               <div className="flex items-center space-x-2 text-sm">
+                 <span className="text-muted-foreground">Secondary sort:</span>
+                 <Select value={secondarySortColumn} onValueChange={setSecondarySortColumn}>
+                   <SelectTrigger className="w-40">
+                     <SelectValue />
+                   </SelectTrigger>
+                   <SelectContent>
+                     <SelectItem value="salesQty">Sales Qty</SelectItem>
+                     <SelectItem value="currentStock">Current Stock</SelectItem>
+                     <SelectItem value="incoming">Incoming</SelectItem>
+                     <SelectItem value="product">Product Name</SelectItem>
+                   </SelectContent>
+                 </Select>
+                 <span className="text-xs text-muted-foreground">(when ties in primary sort)</span>
+               </div>
+             )}
+           </div>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
