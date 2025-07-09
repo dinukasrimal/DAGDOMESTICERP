@@ -20,7 +20,9 @@ import {
   Brain,
   ArrowUpDown,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Grid3X3,
+  List
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { downloadElementAsPdf } from '@/lib/pdfUtils';
@@ -170,6 +172,7 @@ export const AdvancedInventoryReport: React.FC = () => {
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [nextMonthSortColumn, setNextMonthSortColumn] = useState<string>('');
   const [nextMonthSortDirection, setNextMonthSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [showCategorized, setShowCategorized] = useState<boolean>(true);
   const [hiddenCategories, setHiddenCategories] = useState<string[]>(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('hiddenCategories');
@@ -1461,12 +1464,13 @@ export const AdvancedInventoryReport: React.FC = () => {
           <CardDescription>
             Product-level planning for next month (using previous year's next month sales quantity)
           </CardDescription>
-          <div className="flex items-center space-x-4 mt-4">
-            <div className="flex items-center space-x-2">
-              <label className="text-sm font-medium">
-                Filter by Category:
-              </label>
-              <Popover>
+          <div className="flex items-center justify-between mt-4">
+            <div className="flex items-center space-x-4">
+               <div className="flex items-center space-x-2">
+                 <label className="text-sm font-medium">
+                   Filter by Category:
+                 </label>
+                 <Popover>
                 <PopoverTrigger asChild>
                   <Button variant="outline" className="w-48 justify-start">
                     {globalCategoryFilter.length === 0 
@@ -1521,7 +1525,28 @@ export const AdvancedInventoryReport: React.FC = () => {
                     ))}
                   </div>
                 </PopoverContent>
-              </Popover>
+                 </Popover>
+               </div>
+             </div>
+            <div className="flex items-center space-x-2">
+              <Button
+                variant={showCategorized ? "default" : "outline"}
+                size="sm"
+                onClick={() => setShowCategorized(true)}
+                className="flex items-center space-x-1"
+              >
+                <Grid3X3 className="h-4 w-4" />
+                <span>Categorized</span>
+              </Button>
+              <Button
+                variant={!showCategorized ? "default" : "outline"}
+                size="sm"
+                onClick={() => setShowCategorized(false)}
+                className="flex items-center space-x-1"
+              >
+                <List className="h-4 w-4" />
+                <span>Products Only</span>
+              </Button>
             </div>
           </div>
         </CardHeader>
@@ -1598,14 +1623,16 @@ export const AdvancedInventoryReport: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {categoryAnalysis
-                  .filter(category => category.products && category.products.length > 0)
-                  .filter(category =>
-                    (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
-                    !hiddenCategories.includes(category.category) &&
-                    (globalCategoryFilter.length === 0 || globalCategoryFilter.includes(category.category))
-                  )
-                  .map((category, index) => (
+                {showCategorized ? (
+                  // Categorized view - show categories with expandable products
+                  categoryAnalysis
+                    .filter(category => category.products && category.products.length > 0)
+                    .filter(category =>
+                      (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
+                      !hiddenCategories.includes(category.category) &&
+                      (globalCategoryFilter.length === 0 || globalCategoryFilter.includes(category.category))
+                    )
+                    .map((category, index) => (
                     <React.Fragment key={category.category}>
                       <tr 
                         className="hover:bg-gray-50 cursor-pointer"
@@ -1798,7 +1825,63 @@ export const AdvancedInventoryReport: React.FC = () => {
                         );
                       })}
                     </React.Fragment>
-                  ))}
+                  ))
+                ) : (
+                  // Uncategorized view - show all products directly
+                  sortNextMonthProducts(
+                    categoryAnalysis
+                      .filter(category => category.products && category.products.length > 0)
+                      .filter(category =>
+                        (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
+                        !hiddenCategories.includes(category.category) &&
+                        (globalCategoryFilter.length === 0 || globalCategoryFilter.includes(category.category))
+                      )
+                      .flatMap(category => 
+                        category.products.filter(product => {
+                          const salesQty = getSalesQtyForProduct(product, 1);
+                          return salesQty > 0 && product.quantity_on_hand < salesQty;
+                        })
+                      )
+                  ).map((product) => {
+                    const salesQty = getSalesQtyForProduct(product, 1);
+                    const availableIncoming = getPendingIncomingForProduct(product);
+                    const stockWithIncoming = product.quantity_on_hand + availableIncoming;
+                    const urgentQty = Math.max(0, salesQty - product.quantity_on_hand);
+
+                    return (
+                      <tr key={product.id} className="bg-gray-50">
+                        <td className="border p-2 text-sm">{product.product_name}</td>
+                        <td className="border p-2 text-sm">{product.product_category}</td>
+                        <td className="border p-2 text-right text-sm">{salesQty}</td>
+                        <td className="border p-2 text-right text-sm">{product.quantity_on_hand}</td>
+                        <td className="border p-2 text-right text-sm">
+                          <span className={`font-semibold ${salesQty > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
+                            {salesQty > 0 ? (product.quantity_on_hand / salesQty).toFixed(2) : 'N/A'}
+                          </span>
+                        </td>
+                        <td className="border p-2 text-right text-sm">{availableIncoming}</td>
+                        <td className="border p-2 text-right text-sm">{stockWithIncoming}</td>
+                        <td className="border p-2 text-right text-sm">
+                          <span className={urgentQty > 0 ? 'text-red-600 font-bold' : ''}>
+                            {urgentQty > 0 ? urgentQty : 'OK'}
+                          </span>
+                        </td>
+                        <td className="border p-2 text-center text-sm">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={e => {
+                              e.stopPropagation();
+                              setViewCategoryDialog({ open: true, category: product.product_category });
+                            }}
+                          >
+                            View Product
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>
