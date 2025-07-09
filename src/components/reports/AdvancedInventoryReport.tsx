@@ -16,10 +16,12 @@ import {
   ShoppingCart,
   Truck,
   Calendar,
-  RotateCcw
+  RotateCcw,
+  Brain
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { downloadElementAsPdf } from '@/lib/pdfUtils';
+import { AIInventoryPlanningReport } from './AIInventoryPlanningReport';
 
 interface InventoryData {
   id: string;
@@ -156,6 +158,7 @@ export const AdvancedInventoryReport: React.FC = () => {
   const [expandedIncoming, setExpandedIncoming] = useState<{ [productId: string]: boolean }>({});
   const [searchPO, setSearchPO] = useState('');
   const [viewCategoryDialog, setViewCategoryDialog] = useState<{ open: boolean, category: string | null }>({ open: false, category: null });
+  const [showAIReport, setShowAIReport] = useState(false);
   const [showUrgentPdfDialog, setShowUrgentPdfDialog] = useState(false);
   const [salesQtyPercent, setSalesQtyPercent] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -1768,6 +1771,22 @@ export const AdvancedInventoryReport: React.FC = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* AI Planning Report Tab */}
+      <div className="space-y-6">
+        <div className="flex items-center justify-between mb-6">
+          <Button 
+            onClick={() => setShowAIReport(!showAIReport)}
+            variant={showAIReport ? "default" : "outline"}
+            className="flex items-center space-x-2"
+          >
+            <Brain className="h-4 w-4" />
+            <span>{showAIReport ? 'Hide' : 'Show'} AI Planning Analysis</span>
+          </Button>
+        </div>
+        
+        {showAIReport && <AIInventoryPlanningReport />}
+      </div>
     </div>
   );
 };
