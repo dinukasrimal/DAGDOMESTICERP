@@ -674,6 +674,14 @@ export const AdvancedInventoryReport: React.FC = () => {
           const bSalesQty = getSalesQtyForProduct(b, 1);
           aValue = aSalesQty > 0 ? a.quantity_on_hand / aSalesQty : 999;
           bValue = bSalesQty > 0 ? b.quantity_on_hand / bSalesQty : 999;
+          
+          // If ratios are equal and we're sorting by ratio in ascending order in products-only view,
+          // sort by highest sales quantity as secondary criteria
+          if (aValue === bValue && nextMonthSortDirection === 'asc' && !showCategorized) {
+            const aSecondarySalesQty = getSalesQtyForProduct(a, 1);
+            const bSecondarySalesQty = getSalesQtyForProduct(b, 1);
+            return bSecondarySalesQty - aSecondarySalesQty; // Higher sales qty first
+          }
           break;
         case 'incoming':
           aValue = getPendingIncomingForProduct(a);
