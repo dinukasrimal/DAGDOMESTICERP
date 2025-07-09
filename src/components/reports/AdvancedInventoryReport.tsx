@@ -693,6 +693,24 @@ export const AdvancedInventoryReport: React.FC = () => {
       return 0;
     });
   };
+
+  // Calculate average stock/sales ratio for a category
+  const calculateCategoryAverageRatio = (category: CategoryAnalysis): number => {
+    const productsWithSales = category.products.filter(product => {
+      const salesQty = getSalesQtyForProduct(product, 1);
+      return salesQty > 0;
+    });
+    
+    if (productsWithSales.length === 0) return 0;
+    
+    const totalRatio = productsWithSales.reduce((sum, product) => {
+      const salesQty = getSalesQtyForProduct(product, 1);
+      const ratio = product.quantity_on_hand / salesQty;
+      return sum + ratio;
+    }, 0);
+    
+    return totalRatio / productsWithSales.length;
+  };
   // Group purchases by supplier, only include POs with pending_qty > 0
   const supplierGroups = React.useMemo(() => {
     const groups: { [supplier: string]: PurchaseData[] } = {};
@@ -1641,7 +1659,16 @@ export const AdvancedInventoryReport: React.FC = () => {
                         <td className="border p-2 font-medium" colSpan={2}>
                           {category.expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />} {category.category}
                         </td>
-                        <td className="border p-2 text-right">-</td>
+                        <td className="border p-2 text-right">
+                          {(() => {
+                            const avgRatio = calculateCategoryAverageRatio(category);
+                            return (
+                              <span className={`font-semibold ${avgRatio > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
+                                {avgRatio > 0 ? avgRatio.toFixed(2) : 'N/A'}
+                              </span>
+                            );
+                          })()}
+                        </td>
                         <td className="border p-2 text-right">{category.totalStock}</td>
                         <td className="border p-2 text-right">-</td>
                         <td className="border p-2 text-right">{category.totalIncoming}</td>
