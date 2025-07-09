@@ -175,8 +175,7 @@ export const AdvancedInventoryReport: React.FC = () => {
     'odel', 'other suppliers', 'other suppliers / lee vee'
   ];
   
-  const [nextMonthCategoryFilter, setNextMonthCategoryFilter] = useState<string[]>([]);
-  const [threeMonthCategoryFilter, setThreeMonthCategoryFilter] = useState<string[]>([]);
+  const [globalCategoryFilter, setGlobalCategoryFilter] = useState<string[]>([]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -194,7 +193,7 @@ export const AdvancedInventoryReport: React.FC = () => {
     }
   }, [inventoryData, salesData, selectedMonths, purchaseHolds]);
 
-  // Initialize category filters when category analysis changes
+  // Initialize global category filter when category analysis changes
   useEffect(() => {
     if (categoryAnalysis.length > 0) {
       const allCategories = categoryAnalysis.map(cat => cat.category);
@@ -202,11 +201,8 @@ export const AdvancedInventoryReport: React.FC = () => {
         !defaultExcludedCategories.includes(cat.toLowerCase())
       );
       
-      if (nextMonthCategoryFilter.length === 0) {
-        setNextMonthCategoryFilter(selectedCategories);
-      }
-      if (threeMonthCategoryFilter.length === 0) {
-        setThreeMonthCategoryFilter(selectedCategories);
+      if (globalCategoryFilter.length === 0) {
+        setGlobalCategoryFilter(selectedCategories);
       }
     }
   }, [categoryAnalysis]);
@@ -1019,11 +1015,11 @@ export const AdvancedInventoryReport: React.FC = () => {
               <Popover>
                 <PopoverTrigger asChild>
                   <Button variant="outline" className="w-48 justify-start">
-                    {threeMonthCategoryFilter.length === 0 
+                    {globalCategoryFilter.length === 0 
                       ? "No categories selected" 
-                      : threeMonthCategoryFilter.length === categoryAnalysis.length
+                      : globalCategoryFilter.length === categoryAnalysis.length
                       ? "All categories"
-                      : `${threeMonthCategoryFilter.length} categories selected`
+                      : `${globalCategoryFilter.length} categories selected`
                     }
                   </Button>
                 </PopoverTrigger>
@@ -1035,7 +1031,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                         size="sm"
                         onClick={() => {
                           const allCategories = categoryAnalysis.map(cat => cat.category);
-                          setThreeMonthCategoryFilter(allCategories);
+                          setGlobalCategoryFilter(allCategories);
                         }}
                       >
                         Select All
@@ -1043,7 +1039,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => setThreeMonthCategoryFilter([])}
+                        onClick={() => setGlobalCategoryFilter([])}
                       >
                         Clear All
                       </Button>
@@ -1052,12 +1048,12 @@ export const AdvancedInventoryReport: React.FC = () => {
                       <div key={category} className="flex items-center space-x-2">
                         <Checkbox
                           id={`three-month-${category}`}
-                          checked={threeMonthCategoryFilter.includes(category)}
+                          checked={globalCategoryFilter.includes(category)}
                           onCheckedChange={(checked) => {
                             if (checked) {
-                              setThreeMonthCategoryFilter(prev => [...prev, category]);
+                              setGlobalCategoryFilter(prev => [...prev, category]);
                             } else {
-                              setThreeMonthCategoryFilter(prev => prev.filter(c => c !== category));
+                              setGlobalCategoryFilter(prev => prev.filter(c => c !== category));
                             }
                           }}
                         />
@@ -1096,7 +1092,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                   .filter(category =>
                     (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
                     !hiddenCategories.includes(category.category) &&
-                    (threeMonthCategoryFilter.length === 0 || threeMonthCategoryFilter.includes(category.category))
+                    (globalCategoryFilter.length === 0 || globalCategoryFilter.includes(category.category))
                   )
                   .map((category, index) => (
                     <React.Fragment key={category.category}>
@@ -1306,11 +1302,11 @@ export const AdvancedInventoryReport: React.FC = () => {
               <Popover>
                 <PopoverTrigger asChild>
                   <Button variant="outline" className="w-48 justify-start">
-                    {nextMonthCategoryFilter.length === 0 
+                    {globalCategoryFilter.length === 0 
                       ? "No categories selected" 
-                      : nextMonthCategoryFilter.length === categoryAnalysis.length
+                      : globalCategoryFilter.length === categoryAnalysis.length
                       ? "All categories"
-                      : `${nextMonthCategoryFilter.length} categories selected`
+                      : `${globalCategoryFilter.length} categories selected`
                     }
                   </Button>
                 </PopoverTrigger>
@@ -1322,7 +1318,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                         size="sm"
                         onClick={() => {
                           const allCategories = categoryAnalysis.map(cat => cat.category);
-                          setNextMonthCategoryFilter(allCategories);
+                          setGlobalCategoryFilter(allCategories);
                         }}
                       >
                         Select All
@@ -1330,7 +1326,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => setNextMonthCategoryFilter([])}
+                        onClick={() => setGlobalCategoryFilter([])}
                       >
                         Clear All
                       </Button>
@@ -1339,12 +1335,12 @@ export const AdvancedInventoryReport: React.FC = () => {
                       <div key={category} className="flex items-center space-x-2">
                         <Checkbox
                           id={`next-month-${category}`}
-                          checked={nextMonthCategoryFilter.includes(category)}
+                          checked={globalCategoryFilter.includes(category)}
                           onCheckedChange={(checked) => {
                             if (checked) {
-                              setNextMonthCategoryFilter(prev => [...prev, category]);
+                              setGlobalCategoryFilter(prev => [...prev, category]);
                             } else {
-                              setNextMonthCategoryFilter(prev => prev.filter(c => c !== category));
+                              setGlobalCategoryFilter(prev => prev.filter(c => c !== category));
                             }
                           }}
                         />
@@ -1383,7 +1379,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                   .filter(category =>
                     (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
                     !hiddenCategories.includes(category.category) &&
-                    (nextMonthCategoryFilter.length === 0 || nextMonthCategoryFilter.includes(category.category))
+                    (globalCategoryFilter.length === 0 || globalCategoryFilter.includes(category.category))
                   )
                   .map((category, index) => (
                     <React.Fragment key={category.category}>
