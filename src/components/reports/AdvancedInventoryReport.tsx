@@ -1849,36 +1849,135 @@ export const AdvancedInventoryReport: React.FC = () => {
                     const urgentQty = Math.max(0, salesQty - product.quantity_on_hand);
 
                     return (
-                      <tr key={product.id} className="bg-gray-50">
-                        <td className="border p-2 text-sm">{product.product_name}</td>
-                        <td className="border p-2 text-sm">{product.product_category}</td>
-                        <td className="border p-2 text-right text-sm">{salesQty}</td>
-                        <td className="border p-2 text-right text-sm">{product.quantity_on_hand}</td>
-                        <td className="border p-2 text-right text-sm">
-                          <span className={`font-semibold ${salesQty > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
-                            {salesQty > 0 ? (product.quantity_on_hand / salesQty).toFixed(2) : 'N/A'}
-                          </span>
-                        </td>
-                        <td className="border p-2 text-right text-sm">{availableIncoming}</td>
-                        <td className="border p-2 text-right text-sm">{stockWithIncoming}</td>
-                        <td className="border p-2 text-right text-sm">
-                          <span className={urgentQty > 0 ? 'text-red-600 font-bold' : ''}>
-                            {urgentQty > 0 ? urgentQty : 'OK'}
-                          </span>
-                        </td>
-                        <td className="border p-2 text-center text-sm">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={e => {
-                              e.stopPropagation();
-                              setViewCategoryDialog({ open: true, category: product.product_category });
-                            }}
-                          >
-                            View Product
-                          </Button>
-                        </td>
-                      </tr>
+                      <React.Fragment key={product.id}>
+                        <tr className="bg-gray-50">
+                          <td className="border p-2 text-sm">{product.product_name}</td>
+                          <td className="border p-2 text-sm">{product.product_category}</td>
+                          <td className="border p-2 text-right text-sm">{salesQty}</td>
+                          <td className="border p-2 text-right text-sm">{product.quantity_on_hand}</td>
+                          <td className="border p-2 text-right text-sm">
+                            <span className={`font-semibold ${salesQty > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
+                              {salesQty > 0 ? (product.quantity_on_hand / salesQty).toFixed(2) : 'N/A'}
+                            </span>
+                          </td>
+                          <td className="border p-2 text-right text-sm">
+                            {availableIncoming}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="ml-2"
+                              onClick={() => setExpandedIncoming(prev => ({ ...prev, [product.id]: !prev[product.id] }))}
+                            >
+                              {expandedIncoming[product.id] ? 'Hide' : 'View'}
+                            </Button>
+                          </td>
+                          <td className="border p-2 text-right text-sm">{stockWithIncoming}</td>
+                          <td className="border p-2 text-right text-sm">
+                            <span className={urgentQty > 0 ? 'text-red-600 font-bold' : ''}>
+                              {urgentQty > 0 ? urgentQty : 'OK'}
+                            </span>
+                          </td>
+                          <td className="border p-2 text-center text-sm">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={e => {
+                                e.stopPropagation();
+                                setViewCategoryDialog({ open: true, category: product.product_category });
+                              }}
+                            >
+                              View Product
+                            </Button>
+                          </td>
+                        </tr>
+                        {/* Add incoming details expansion for products-only view */}
+                        {expandedIncoming[product.id] && (
+                          <tr className="bg-blue-50">
+                            <td colSpan={9} className="border p-2 pl-4 text-xs">
+                              <div className="font-semibold mb-1">Incoming Breakdown for {product.product_name} (Supplier-wise):</div>
+                              {(() => {
+                                // Find all purchase order lines (not on hold) for this product
+                                const heldPurchaseIds = new Set(purchaseHolds.map(h => h.purchase_id));
+                                const supplierIncomingMap: { [supplier: string]: any[] } = {};
+                                purchaseData.forEach(po => {
+                                  if (!heldPurchaseIds.has(po.id) && po.order_lines) {
+                                    po.order_lines.forEach(line => {
+                                      // Normalize product_id for robust matching
+                                      const anyLine = line as any;
+                                      let lineProductId = undefined;
+                                      if (Array.isArray(anyLine.product_id)) {
+                                        lineProductId = anyLine.product_id[0];
+                                      } else if (typeof anyLine.product_id === 'string' || typeof anyLine.product_id === 'number') {
+                                        lineProductId = anyLine.product_id;
+                                      }
+                                      let match = false;
+                                      if (product.product_id && lineProductId && String(lineProductId) === String(product.product_id)) {
+                                        match = true;
+                                      } else if (
+                                        (!product.product_id || !lineProductId) &&
+                                        line.product_name &&
+                                        product.product_name &&
+                                        line.product_name.toLowerCase().includes(product.product_name.toLowerCase())
+                                      ) {
+                                        match = true;
+                                      }
+                                      if (match) {
+                                        const pending = Math.max(0, anyLine.product_qty - anyLine.qty_received);
+                                        if (pending > 0) {
+                                          const supplier = po.partner_name || 'Unknown Supplier';
+                                          if (!supplierIncomingMap[supplier]) supplierIncomingMap[supplier] = [];
+                                          supplierIncomingMap[supplier].push({
+                                            poNumber: po.name,
+                                            supplier,
+                                            ordered: anyLine.product_qty,
+                                            received: anyLine.qty_received,
+                                            pending
+                                          });
+                                        }
+                                      }
+                                    });
+                                  }
+                                });
+                                return (
+                                  <>
+                                    {Object.entries(supplierIncomingMap)
+                                      .filter(([_, lines]) => lines.length > 0)
+                                      .map(([supplier, lines]) => (
+                                        <div key={supplier} className="mb-2">
+                                          <div className="font-semibold">Supplier: {supplier}</div>
+                                          <table className="w-full text-xs mb-1">
+                                            <thead>
+                                              <tr>
+                                                <th className="border p-1 text-left">PO Number</th>
+                                                <th className="border p-1 text-right">Ordered Qty</th>
+                                                <th className="border p-1 text-right">Received</th>
+                                                <th className="border p-1 text-right">Pending</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {lines.map((line, idx) => (
+                                                <tr key={idx}>
+                                                  <td className="border p-1">{line.poNumber}</td>
+                                                  <td className="border p-1 text-right">{line.ordered}</td>
+                                                  <td className="border p-1 text-right">{line.received}</td>
+                                                  <td className="border p-1 text-right">{line.pending}</td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      ))}
+                                    {Object.values(supplierIncomingMap).flat().length === 0 && (
+                                      <div>No incoming purchase orders (not on hold) for this product.</div>
+                                    )}
+                                    <div className="text-muted-foreground">* Only purchase orders not on hold are included in this calculation.</div>
+                                  </>
+                                );
+                              })()}
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     );
                   })
                 )}
