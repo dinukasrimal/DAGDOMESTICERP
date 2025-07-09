@@ -167,6 +167,7 @@ export const AdvancedInventoryReport: React.FC = () => {
     return [];
   });
   const [showHideDropdown, setShowHideDropdown] = useState(false);
+  const [selectedPlanningCategory, setSelectedPlanningCategory] = useState<string>('all');
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -984,6 +985,26 @@ export const AdvancedInventoryReport: React.FC = () => {
             <Calendar className="h-5 w-5" />
             <span>{selectedMonths} Month Planning Analysis</span>
           </CardTitle>
+          <div className="flex items-center space-x-4 mt-4">
+            <div className="flex items-center space-x-2">
+              <label htmlFor="multi-month-category-filter" className="text-sm font-medium">
+                Filter by Category:
+              </label>
+              <Select value={selectedPlanningCategory} onValueChange={setSelectedPlanningCategory}>
+                <SelectTrigger className="w-48">
+                  <SelectValue placeholder="Select category" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Categories</SelectItem>
+                  {Array.from(new Set(categoryAnalysis.map(cat => cat.category))).sort().map(category => (
+                    <SelectItem key={category} value={category}>
+                      {category}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
@@ -1005,7 +1026,8 @@ export const AdvancedInventoryReport: React.FC = () => {
                   .filter(category => category.products && category.products.length > 0)
                   .filter(category =>
                     (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
-                    !hiddenCategories.includes(category.category)
+                    !hiddenCategories.includes(category.category) &&
+                    (selectedPlanningCategory === 'all' || category.category === selectedPlanningCategory)
                   )
                   .map((category, index) => (
                     <React.Fragment key={category.category}>
@@ -1207,6 +1229,26 @@ export const AdvancedInventoryReport: React.FC = () => {
           <CardDescription>
             Product-level planning for next month (using previous year's next month sales quantity)
           </CardDescription>
+          <div className="flex items-center space-x-4 mt-4">
+            <div className="flex items-center space-x-2">
+              <label htmlFor="planning-category-filter" className="text-sm font-medium">
+                Filter by Category:
+              </label>
+              <Select value={selectedPlanningCategory} onValueChange={setSelectedPlanningCategory}>
+                <SelectTrigger className="w-48">
+                  <SelectValue placeholder="Select category" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Categories</SelectItem>
+                  {Array.from(new Set(categoryAnalysis.map(cat => cat.category))).sort().map(category => (
+                    <SelectItem key={category} value={category}>
+                      {category}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
@@ -1228,7 +1270,8 @@ export const AdvancedInventoryReport: React.FC = () => {
                   .filter(category => category.products && category.products.length > 0)
                   .filter(category =>
                     (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
-                    !hiddenCategories.includes(category.category)
+                    !hiddenCategories.includes(category.category) &&
+                    (selectedPlanningCategory === 'all' || category.category === selectedPlanningCategory)
                   )
                   .map((category, index) => (
                     <React.Fragment key={category.category}>
