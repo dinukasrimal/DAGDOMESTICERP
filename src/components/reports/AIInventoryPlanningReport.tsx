@@ -157,24 +157,16 @@ export const AIInventoryPlanningReport: React.FC = () => {
     }
   };
 
-  const generateCategories = (productName: string): string => {
-    // Extract category from product name (e.g., "boxer-black l" -> "boxer-black")
-    const parts = productName.toLowerCase().split(/[\s-]/);
-    if (parts.length >= 2) {
-      return `${parts[0]}-${parts[1]}`;
-    }
-    return parts[0] || 'uncategorized';
-  };
 
   const generateAIAnalysis = async () => {
     setIsGenerating(true);
     
     try {
-      // Group inventory by generated categories
+      // Group inventory by product category
       const categoryMap = new Map<string, InventoryData[]>();
       
       inventoryData.forEach(item => {
-        const category = generateCategories(item.product_name);
+        const category = item.product_category || 'uncategorized';
         if (!categoryMap.has(category)) {
           categoryMap.set(category, []);
         }
@@ -186,20 +178,24 @@ export const AIInventoryPlanningReport: React.FC = () => {
       for (const [category, products] of categoryMap.entries()) {
         const totalStock = products.reduce((sum, p) => sum + p.quantity_available, 0);
         
-        // Calculate average monthly sales for this category
-        const categorySales = salesData.filter(s => 
-          generateCategories(s.product_name) === category
-        );
+        // Get sales data for products in this category
+        const categorySales = salesData.filter(s => {
+          // Find inventory item with same product name to get its category
+          const inventoryItem = inventoryData.find(inv => inv.product_name === s.product_name);
+          return inventoryItem?.product_category === category;
+        });
         const avgMonthlySales = categorySales.reduce((sum, s) => sum + s.avg_monthly_sales, 0);
         
         // Calculate priority ratio: stock/sales (lower = higher priority)
         const priorityRatio = avgMonthlySales > 0 ? totalStock / avgMonthlySales : 999;
         
-        // Find relevant purchase orders
+        // Find relevant purchase orders for this category
         const relevantPOs = purchaseData.filter(po => 
-          po.order_lines?.some(line => 
-            generateCategories(line.product_name) === category
-          )
+          po.order_lines?.some(line => {
+            // Find inventory item with same product name to get its category
+            const inventoryItem = inventoryData.find(inv => inv.product_name === line.product_name);
+            return inventoryItem?.product_category === category;
+          })
         );
 
         const supplierInfo = relevantPOs.map(po => ({
