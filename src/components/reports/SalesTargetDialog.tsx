@@ -376,6 +376,27 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
                 <Label className="text-sm font-medium">
                   Target Data for {selectedYear} (Selected Months)
                 </Label>
+              </div>
+
+              {/* Total Summary */}
+              <div className="bg-muted/50 p-3 rounded-lg">
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span className="font-medium">Total Target Qty: </span>
+                    <span className="text-primary font-semibold">
+                      {targetData.reduce((sum, item) => sum + item.quantity, 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="font-medium">Total Base Value: </span>
+                    <span className="text-primary font-semibold">
+                      LKR {targetData.reduce((sum, item) => sum + item.value, 0).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Input
                     type="number"
