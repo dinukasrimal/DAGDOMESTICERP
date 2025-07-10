@@ -332,7 +332,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   };
 
   const handleValueChange = (index: number, value: string) => {
-    const newValue = parseFloat(value) || 0;
+    const newValue = Math.round(parseFloat(value) || 0);
     setTargetData(prev => prev.map((item, i) => {
       if (i === index) {
         return { ...item, value: newValue };

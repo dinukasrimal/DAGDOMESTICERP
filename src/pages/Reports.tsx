@@ -6,6 +6,7 @@ import { ReportDialog } from '@/components/reports/ReportDialog';
 import { SalesReportContent } from '@/components/reports/SalesReportContent';
 import { AdvancedInventoryReport } from '@/components/reports/AdvancedInventoryReport';
 import { SalesTargetDialog } from '@/components/reports/SalesTargetDialog';
+import { SavedTargetsManager } from '@/components/reports/SavedTargetsManager';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { FileText, BarChart3, Package, Download, RefreshCw, ArrowLeft, Target } from 'lucide-react';
@@ -315,111 +316,124 @@ const Reports: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {/* Sales Analytics Report */}
-        <Card className="cursor-pointer hover:shadow-lg transition-shadow" onClick={() => openDialog('sales')}>
-          <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <BarChart3 className="h-6 w-6 text-blue-600" />
-              <span>Sales Analytics Report</span>
-            </CardTitle>
-            <CardDescription>
-              Comprehensive sales analysis with quantity trends, customer insights, and year-over-year comparisons
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Total Invoices:</span>
-                <span className="font-semibold">{salesData.length}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Total Value:</span>
-                <span className="font-semibold">
-                  LKR {salesData.reduce((sum, item) => sum + item.amount_total, 0).toLocaleString()}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Active Customers:</span>
-                <span className="font-semibold">
-                  {new Set(salesData.map(item => item.partner_name)).size}
-                </span>
-              </div>
-            </div>
-            <Button className="w-full mt-4" onClick={(e) => { e.stopPropagation(); openDialog('sales'); }}>
-              View Report
-            </Button>
-          </CardContent>
-        </Card>
+      <Tabs defaultValue="reports" className="w-full">
+        <TabsList className="grid w-full grid-cols-2">
+          <TabsTrigger value="reports">Analytics Reports</TabsTrigger>
+          <TabsTrigger value="targets">Saved Targets</TabsTrigger>
+        </TabsList>
+        
+        <TabsContent value="reports" className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {/* Sales Analytics Report */}
+            <Card className="cursor-pointer hover:shadow-lg transition-shadow" onClick={() => openDialog('sales')}>
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <BarChart3 className="h-6 w-6 text-blue-600" />
+                  <span>Sales Analytics Report</span>
+                </CardTitle>
+                <CardDescription>
+                  Comprehensive sales analysis with quantity trends, customer insights, and year-over-year comparisons
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-sm text-muted-foreground">Total Invoices:</span>
+                    <span className="font-semibold">{salesData.length}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-muted-foreground">Total Value:</span>
+                    <span className="font-semibold">
+                      LKR {salesData.reduce((sum, item) => sum + item.amount_total, 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-muted-foreground">Active Customers:</span>
+                    <span className="font-semibold">
+                      {new Set(salesData.map(item => item.partner_name)).size}
+                    </span>
+                  </div>
+                </div>
+                <Button className="w-full mt-4" onClick={(e) => { e.stopPropagation(); openDialog('sales'); }}>
+                  View Report
+                </Button>
+              </CardContent>
+            </Card>
 
-        {/* Advanced Inventory Report */}
-        <Card className="cursor-pointer hover:shadow-lg transition-shadow" onClick={() => openDialog('inventory')}>
-          <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <Package className="h-6 w-6 text-green-600" />
-              <span>Advanced Inventory Report</span>
-            </CardTitle>
-            <CardDescription>
-              Pivot-style inventory analysis with supplier tracking, purchase planning, and demand forecasting
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Categories:</span>
-                <span className="font-semibold">Multiple</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Planning Mode:</span>
-                <span className="font-semibold text-blue-600">Advanced</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Supplier Integration:</span>
-                <span className="font-semibold text-green-600">Active</span>
-              </div>
-            </div>
-            <Button className="w-full mt-4" onClick={(e) => { e.stopPropagation(); openDialog('inventory'); }}>
-              View Report
-            </Button>
-          </CardContent>
-        </Card>
+            {/* Advanced Inventory Report */}
+            <Card className="cursor-pointer hover:shadow-lg transition-shadow" onClick={() => openDialog('inventory')}>
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <Package className="h-6 w-6 text-green-600" />
+                  <span>Advanced Inventory Report</span>
+                </CardTitle>
+                <CardDescription>
+                  Pivot-style inventory analysis with supplier tracking, purchase planning, and demand forecasting
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-sm text-muted-foreground">Categories:</span>
+                    <span className="font-semibold">Multiple</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-muted-foreground">Planning Mode:</span>
+                    <span className="font-semibold text-blue-600">Advanced</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-muted-foreground">Supplier Integration:</span>
+                    <span className="font-semibold text-green-600">Active</span>
+                  </div>
+                </div>
+                <Button className="w-full mt-4" onClick={(e) => { e.stopPropagation(); openDialog('inventory'); }}>
+                  View Report
+                </Button>
+              </CardContent>
+            </Card>
 
-        {/* Purchase Analytics Report */}
-        <Card className="cursor-pointer hover:shadow-lg transition-shadow" onClick={() => openDialog('purchase')}>
-          <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <FileText className="h-6 w-6 text-purple-600" />
-              <span>Purchase Analytics</span>
-            </CardTitle>
-            <CardDescription>
-              Purchase order analysis, supplier performance, and procurement insights
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Total POs:</span>
-                <span className="font-semibold">{purchaseData.length}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Total Value:</span>
-                <span className="font-semibold">
-                  LKR {purchaseData.reduce((sum, item) => sum + item.amount_total, 0).toLocaleString()}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Suppliers:</span>
-                <span className="font-semibold">
-                  {new Set(purchaseData.map(item => item.partner_name)).size}
-                </span>
-              </div>
-            </div>
-            <Button className="w-full mt-4" onClick={(e) => { e.stopPropagation(); openDialog('purchase'); }}>
-              View Report
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
+            {/* Purchase Analytics Report */}
+            <Card className="cursor-pointer hover:shadow-lg transition-shadow" onClick={() => openDialog('purchase')}>
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <FileText className="h-6 w-6 text-purple-600" />
+                  <span>Purchase Analytics</span>
+                </CardTitle>
+                <CardDescription>
+                  Purchase order analysis, supplier performance, and procurement insights
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-sm text-muted-foreground">Total POs:</span>
+                    <span className="font-semibold">{purchaseData.length}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-muted-foreground">Total Value:</span>
+                    <span className="font-semibold">
+                      LKR {purchaseData.reduce((sum, item) => sum + item.amount_total, 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-muted-foreground">Suppliers:</span>
+                    <span className="font-semibold">
+                      {new Set(purchaseData.map(item => item.partner_name)).size}
+                    </span>
+                  </div>
+                </div>
+                <Button className="w-full mt-4" onClick={(e) => { e.stopPropagation(); openDialog('purchase'); }}>
+                  View Report
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+        
+        <TabsContent value="targets" className="space-y-6">
+          <SavedTargetsManager />
+        </TabsContent>
+      </Tabs>
 
       {/* Report Dialogs */}
       <ReportDialog
