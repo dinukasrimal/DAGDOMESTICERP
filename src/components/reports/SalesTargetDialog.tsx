@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
-import { X, Target, TrendingUp, Trash2, Lock } from 'lucide-react';
+import { X, Target, TrendingUp } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 interface SalesData {
@@ -43,13 +43,6 @@ interface TargetItem {
   value: number;
 }
 
-interface SavedTarget {
-  customer: string;
-  year: string;
-  month: string;
-  data: TargetItem[];
-}
-
 const months: MonthData[] = [
   { value: '01', label: 'January' },
   { value: '02', label: 'February' },
@@ -71,12 +64,14 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   salesData,
 }) => {
   const { toast } = useToast();
+  const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<string>('');
   const [selectedYear, setSelectedYear] = useState<string>('');
-  const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
+  const [historicalData, setHistoricalData] = useState<TargetItem[]>([]);
   const [targetData, setTargetData] = useState<TargetItem[]>([]);
   const [percentageIncrease, setPercentageIncrease] = useState<string>('');
-  const [savedTargets, setSavedTargets] = useState<SavedTarget[]>([]);
+  const [showYearSelection, setShowYearSelection] = useState(false);
+  const [showTargetData, setShowTargetData] = useState(false);
 
   // Get unique customers
   const customers = Array.from(new Set(salesData.map(item => item.partner_name))).filter(Boolean);
@@ -85,25 +80,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   const currentYear = new Date().getFullYear();
   const years = [currentYear - 3, currentYear - 2, currentYear - 1].map(year => year.toString());
 
-  // Calculate totals
-  const totals = useMemo(() => {
-    const totalQuantity = targetData.reduce((sum, item) => sum + item.quantity, 0);
-    const totalValue = targetData.reduce((sum, item) => sum + item.value, 0);
-    return { totalQuantity, totalValue };
-  }, [targetData]);
-
-  // Check if a month is locked (has saved targets)
-  const isMonthLocked = (monthValue: string) => {
-    return savedTargets.some(target => 
-      target.customer === selectedCustomer && 
-      target.year === selectedYear && 
-      target.month === monthValue
-    );
-  };
-
   const handleMonthToggle = (monthValue: string) => {
-    if (isMonthLocked(monthValue)) return; // Don't toggle locked months
-    
     setSelectedMonths(prev => 
       prev.includes(monthValue) 
         ? prev.filter(m => m !== monthValue)
@@ -115,22 +92,66 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
     setSelectedMonths(prev => prev.filter(m => m !== monthValue));
   };
 
-  const deleteMonthTarget = (monthValue: string) => {
-    setSavedTargets(prev => prev.filter(target => 
-      !(target.customer === selectedCustomer && 
-        target.year === selectedYear && 
-        target.month === monthValue)
-    ));
-    toast({
-      title: "Target Deleted",
-      description: `Target for ${months.find(m => m.value === monthValue)?.label} has been deleted`,
-    });
+  const removeCustomer = () => {
+    setSelectedCustomer('');
+    setShowYearSelection(false);
+    setShowTargetData(false);
   };
 
-  const getTargetData = () => {
-    if (!selectedCustomer || !selectedYear || selectedMonths.length === 0) return;
+  const getHistoricalData = () => {
+    if (!selectedCustomer || selectedMonths.length === 0) return;
 
-    // Filter historical data for selected year, customer, and months
+    // Filter sales data for selected customer and months from last 3 years
+    const filteredData = salesData.filter(item => {
+      if (item.partner_name !== selectedCustomer) return false;
+      if (!item.date_order) return false;
+      
+      const orderDate = new Date(item.date_order);
+      const orderMonth = String(orderDate.getMonth() + 1).padStart(2, '0');
+      const orderYear = orderDate.getFullYear();
+      
+      return selectedMonths.includes(orderMonth) && years.includes(orderYear.toString());
+    });
+
+    // Group by year and product
+    const yearlyData: { [year: string]: { [product: string]: TargetItem } } = {};
+    
+    filteredData.forEach(item => {
+      const orderDate = new Date(item.date_order!);
+      const year = orderDate.getFullYear().toString();
+      
+      if (!yearlyData[year]) yearlyData[year] = {};
+      
+      if (item.order_lines) {
+        item.order_lines.forEach(line => {
+          const key = `${line.product_name}_${line.product_category}`;
+          if (!yearlyData[year][key]) {
+            yearlyData[year][key] = {
+              product_name: line.product_name,
+              product_category: line.product_category,
+              quantity: 0,
+              value: 0,
+            };
+          }
+          yearlyData[year][key].quantity += line.qty_delivered;
+          yearlyData[year][key].value += line.price_subtotal;
+        });
+      }
+    });
+
+    // Flatten the yearly data into a single array
+    const allHistoricalData: TargetItem[] = [];
+    Object.values(yearlyData).forEach(yearData => {
+      allHistoricalData.push(...Object.values(yearData));
+    });
+    setHistoricalData(allHistoricalData);
+    setShowYearSelection(true);
+  };
+
+  const handleYearSelection = (year: string) => {
+    setSelectedYear(year);
+    
+    // Filter historical data for selected year
     const yearData = salesData.filter(item => {
       if (item.partner_name !== selectedCustomer) return false;
       if (!item.date_order) return false;
@@ -139,7 +160,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
       const orderMonth = String(orderDate.getMonth() + 1).padStart(2, '0');
       const orderYear = orderDate.getFullYear().toString();
       
-      return selectedMonths.includes(orderMonth) && orderYear === selectedYear;
+      return selectedMonths.includes(orderMonth) && orderYear === year;
     });
 
     // Process year data
@@ -169,6 +190,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
     }));
 
     setTargetData(processedData);
+    setShowTargetData(true);
   };
 
   const handleQuantityChange = (index: number, value: string) => {
@@ -194,7 +216,6 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
       quantity: Math.ceil(item.quantity * (1 + percentage / 100))
     })));
 
-    setPercentageIncrease(''); // Clear the input
     toast({
       title: "Targets Updated",
       description: `Applied ${percentage}% increase to all quantities`,
@@ -202,52 +223,30 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   };
 
   const handleSaveTargets = () => {
-    // Save targets for each selected month
-    const newTargets: SavedTarget[] = selectedMonths.map(month => ({
-      customer: selectedCustomer,
-      year: selectedYear,
-      month,
-      data: [...targetData]
-    }));
-
-    setSavedTargets(prev => [
-      ...prev.filter(target => 
-        !(target.customer === selectedCustomer && 
-          target.year === selectedYear && 
-          selectedMonths.includes(target.month))
-      ),
-      ...newTargets
-    ]);
-
-    setSelectedMonths([]);
-    setTargetData([]);
-    
+    // Here you would typically save to database
     toast({
       title: "Targets Saved",
       description: `Sales targets saved for ${selectedCustomer} for selected months`,
     });
+    onClose();
   };
 
   const handleClose = () => {
     // Reset all state
+    setSelectedMonths([]);
     setSelectedCustomer('');
     setSelectedYear('');
-    setSelectedMonths([]);
+    setHistoricalData([]);
     setTargetData([]);
     setPercentageIncrease('');
-    setSavedTargets([]);
+    setShowYearSelection(false);
+    setShowTargetData(false);
     onClose();
   };
 
-  // Reset data when customer or year changes
-  useEffect(() => {
-    setSelectedMonths([]);
-    setTargetData([]);
-  }, [selectedCustomer, selectedYear]);
-
   return (
     <Dialog open={isOpen} onOpenChange={handleClose}>
-      <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Target className="h-6 w-6" />
@@ -256,14 +255,47 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
         </DialogHeader>
 
         <div className="space-y-6">
-          {/* Customer Selection - At Top */}
+          {/* Month Selection */}
+          <div className="space-y-3">
+            <Label className="text-sm font-medium">Select Target Months</Label>
+            <div className="grid grid-cols-3 gap-2">
+              {months.map(month => (
+                <div key={month.value} className="flex items-center space-x-2">
+                  <Checkbox
+                    id={month.value}
+                    checked={selectedMonths.includes(month.value)}
+                    onCheckedChange={() => handleMonthToggle(month.value)}
+                  />
+                  <Label htmlFor={month.value} className="text-sm">{month.label}</Label>
+                </div>
+              ))}
+            </div>
+            {selectedMonths.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-2">
+                {selectedMonths.map(monthValue => {
+                  const month = months.find(m => m.value === monthValue);
+                  return (
+                    <Badge key={monthValue} variant="secondary" className="flex items-center gap-1">
+                      {month?.label}
+                      <X 
+                        className="h-3 w-3 cursor-pointer" 
+                        onClick={() => removeMonth(monthValue)}
+                      />
+                    </Badge>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Customer Selection */}
           <div className="space-y-3">
             <Label className="text-sm font-medium">Select Customer</Label>
             <Select value={selectedCustomer} onValueChange={setSelectedCustomer}>
-              <SelectTrigger className="bg-background">
+              <SelectTrigger>
                 <SelectValue placeholder="Choose customer..." />
               </SelectTrigger>
-              <SelectContent className="bg-background border z-50">
+              <SelectContent>
                 {customers.map(customer => (
                   <SelectItem key={customer} value={customer}>
                     {customer}
@@ -272,18 +304,25 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
               </SelectContent>
             </Select>
             {selectedCustomer && (
-              <Badge variant="default" className="flex items-center gap-1 w-fit">
+              <Badge variant="secondary" className="flex items-center gap-1 w-fit">
                 {selectedCustomer}
                 <X 
                   className="h-3 w-3 cursor-pointer" 
-                  onClick={() => setSelectedCustomer('')}
+                  onClick={removeCustomer}
                 />
               </Badge>
             )}
           </div>
 
-          {/* Year Selection - Before Months */}
-          {selectedCustomer && (
+          {/* Get Historical Data Button */}
+          {selectedMonths.length > 0 && selectedCustomer && (
+            <Button onClick={getHistoricalData} className="w-full">
+              Get Historical Sales Data (Last 3 Years)
+            </Button>
+          )}
+
+          {/* Year Selection */}
+          {showYearSelection && (
             <div className="space-y-3">
               <Label className="text-sm font-medium">Select Base Year for Targets</Label>
               <div className="grid grid-cols-3 gap-2">
@@ -291,7 +330,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
                   <Button
                     key={year}
                     variant={selectedYear === year ? "default" : "outline"}
-                    onClick={() => setSelectedYear(year)}
+                    onClick={() => handleYearSelection(year)}
                     className="w-full"
                   >
                     {year}
@@ -301,90 +340,12 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
             </div>
           )}
 
-          {/* Month Selection - After Year */}
-          {selectedCustomer && selectedYear && (
-            <div className="space-y-3">
-              <Label className="text-sm font-medium">Select Target Months</Label>
-              <div className="grid grid-cols-3 gap-2">
-                {months.map(month => {
-                  const locked = isMonthLocked(month.value);
-                  return (
-                    <div key={month.value} className="flex items-center justify-between space-x-2 p-2 border rounded">
-                      <div className="flex items-center space-x-2">
-                        <Checkbox
-                          id={month.value}
-                          checked={selectedMonths.includes(month.value)}
-                          onCheckedChange={() => handleMonthToggle(month.value)}
-                          disabled={locked}
-                        />
-                        <Label htmlFor={month.value} className={`text-sm ${locked ? 'text-muted-foreground' : ''}`}>
-                          {month.label}
-                        </Label>
-                      </div>
-                      {locked && (
-                        <div className="flex items-center gap-1">
-                          <Lock className="h-3 w-3 text-muted-foreground" />
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => deleteMonthTarget(month.value)}
-                            className="h-6 w-6 p-0"
-                          >
-                            <Trash2 className="h-3 w-3 text-destructive" />
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              {selectedMonths.length > 0 && (
-                <div className="flex flex-wrap gap-2 mt-2">
-                  {selectedMonths.map(monthValue => {
-                    const month = months.find(m => m.value === monthValue);
-                    return (
-                      <Badge key={monthValue} variant="secondary" className="flex items-center gap-1">
-                        {month?.label}
-                        <X 
-                          className="h-3 w-3 cursor-pointer" 
-                          onClick={() => removeMonth(monthValue)}
-                        />
-                      </Badge>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Get Target Data Button */}
-          {selectedCustomer && selectedYear && selectedMonths.length > 0 && (
-            <Button onClick={getTargetData} className="w-full">
-              Get Target Data for {selectedYear}
-            </Button>
-          )}
-
           {/* Target Data Display and Editing */}
-          {targetData.length > 0 && (
+          {showTargetData && targetData.length > 0 && (
             <div className="space-y-4">
-              {/* Totals Display */}
-              <div className="bg-muted p-4 rounded-lg">
-                <h3 className="font-medium mb-2">Target Summary</h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <span className="text-sm text-muted-foreground">Total Target Quantity:</span>
-                    <div className="text-xl font-bold">{totals.totalQuantity.toLocaleString()}</div>
-                  </div>
-                  <div>
-                    <span className="text-sm text-muted-foreground">Total Base Value:</span>
-                    <div className="text-xl font-bold">LKR {totals.totalValue.toLocaleString()}</div>
-                  </div>
-                </div>
-              </div>
-
               <div className="flex items-center justify-between">
                 <Label className="text-sm font-medium">
-                  Target Data for {selectedYear} - {selectedMonths.map(m => months.find(month => month.value === m)?.label).join(', ')}
+                  Target Data for {selectedYear} (Selected Months)
                 </Label>
                 <div className="flex items-center gap-2">
                   <Input
@@ -440,9 +401,9 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
             </div>
           )}
 
-          {targetData.length === 0 && selectedCustomer && selectedYear && selectedMonths.length > 0 && (
+          {showTargetData && targetData.length === 0 && (
             <div className="text-center py-8 text-muted-foreground">
-              Click "Get Target Data" to load sales data for the selected period.
+              No sales data found for the selected customer, months, and year.
             </div>
           )}
         </div>
