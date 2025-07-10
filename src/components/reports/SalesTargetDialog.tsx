@@ -114,20 +114,43 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   const getCorrectCategory = (productName: string, fallbackCategory: string): string => {
     if (!products.length) return fallbackCategory;
     
-    // First try exact match
+    // Clean the product name by removing brackets and codes at the beginning
+    const cleanProductName = (name: string) => {
+      return name
+        .replace(/^\[.*?\]\s*/, '') // Remove [CODE] at the beginning
+        .replace(/^[A-Z0-9]+\s+/, '') // Remove uppercase codes at the beginning
+        .trim();
+    };
+    
+    const cleanedName = cleanProductName(productName);
+    
+    // First try exact match with original name
     let product = products.find(p => p.name === productName);
     
-    // If no exact match, try case-insensitive match
+    // Try exact match with cleaned name
+    if (!product) {
+      product = products.find(p => p.name === cleanedName);
+    }
+    
+    // Try case-insensitive match with original name
     if (!product) {
       product = products.find(p => p.name.toLowerCase() === productName.toLowerCase());
     }
     
-    // If no match, try partial match (contains)
+    // Try case-insensitive match with cleaned name
     if (!product) {
-      product = products.find(p => p.name.toLowerCase().includes(productName.toLowerCase()) || productName.toLowerCase().includes(p.name.toLowerCase()));
+      product = products.find(p => p.name.toLowerCase() === cleanedName.toLowerCase());
     }
     
-    console.log(`Product: "${productName}" | Found match: ${product ? `"${product.name}" -> "${product.sub_category || product.product_category}"` : 'None'} | Fallback: "${fallbackCategory}"`);
+    // Try partial match - check if cleaned product name contains any product name from table
+    if (!product) {
+      product = products.find(p => 
+        cleanedName.toLowerCase().includes(p.name.toLowerCase()) || 
+        p.name.toLowerCase().includes(cleanedName.toLowerCase())
+      );
+    }
+    
+    console.log(`Product: "${productName}" | Cleaned: "${cleanedName}" | Found match: ${product ? `"${product.name}" -> "${product.sub_category || product.product_category}"` : 'None'} | Fallback: "${fallbackCategory}"`);
     
     return product?.sub_category || product?.product_category || fallbackCategory;
   };
