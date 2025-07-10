@@ -90,7 +90,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
       try {
         const { data, error } = await supabase
           .from('products')
-          .select('name, sub_category')
+          .select('name, product_category, sub_category')
           .not('sub_category', 'is', null);
         
         if (error) {
@@ -127,9 +127,9 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
       product = products.find(p => p.name.toLowerCase().includes(productName.toLowerCase()) || productName.toLowerCase().includes(p.name.toLowerCase()));
     }
     
-    console.log(`Product: "${productName}" | Found match: ${product ? `"${product.name}" -> "${product.product_category}"` : 'None'} | Fallback: "${fallbackCategory}"`);
+    console.log(`Product: "${productName}" | Found match: ${product ? `"${product.name}" -> "${product.sub_category || product.product_category}"` : 'None'} | Fallback: "${fallbackCategory}"`);
     
-    return product?.product_category || fallbackCategory;
+    return product?.sub_category || product?.product_category || fallbackCategory;
   };
 
   const handleMonthToggle = (monthValue: string) => {

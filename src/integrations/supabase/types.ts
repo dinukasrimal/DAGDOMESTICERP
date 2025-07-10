@@ -264,6 +264,7 @@ export type Database = {
           id: number
           name: string
           product_category: string | null
+          sub_category: string | null
           type: string | null
           uom: string | null
           updated_at: string | null
@@ -276,6 +277,7 @@ export type Database = {
           id: number
           name: string
           product_category?: string | null
+          sub_category?: string | null
           type?: string | null
           uom?: string | null
           updated_at?: string | null
@@ -288,6 +290,7 @@ export type Database = {
           id?: number
           name?: string
           product_category?: string | null
+          sub_category?: string | null
           type?: string | null
           uom?: string | null
           updated_at?: string | null
