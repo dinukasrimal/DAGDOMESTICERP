@@ -5,9 +5,10 @@ import { Button } from '@/components/ui/button';
 import { ReportDialog } from '@/components/reports/ReportDialog';
 import { SalesReportContent } from '@/components/reports/SalesReportContent';
 import { AdvancedInventoryReport } from '@/components/reports/AdvancedInventoryReport';
+import { SalesTargetDialog } from '@/components/reports/SalesTargetDialog';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
-import { FileText, BarChart3, Package, Download, RefreshCw, ArrowLeft } from 'lucide-react';
+import { FileText, BarChart3, Package, Download, RefreshCw, ArrowLeft, Target } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { supabaseBatchFetch, SupabaseTable } from '@/lib/utils';
 
@@ -46,6 +47,7 @@ const Reports: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [salesData, setSalesData] = useState<SalesData[]>([]);
   const [purchaseData, setPurchaseData] = useState<PurchaseData[]>([]);
+  const [showTargetsDialog, setShowTargetsDialog] = useState(false);
 
   const fetchSalesData = async () => {
     setIsLoading(true);
@@ -293,14 +295,24 @@ const Reports: React.FC = () => {
             <h1 className="text-3xl font-bold">Odoo Reports & Analytics</h1>
           </div>
         </div>
-        <Button onClick={refreshData} disabled={isLoading} variant="outline">
-          {isLoading ? (
-            <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
-            <RefreshCw className="mr-2 h-4 w-4" />
-          )}
-          Refresh Data
-        </Button>
+        <div className="flex gap-2">
+          <Button 
+            onClick={() => setShowTargetsDialog(true)} 
+            variant="default"
+            className="flex items-center gap-2"
+          >
+            <Target className="h-4 w-4" />
+            Set Targets
+          </Button>
+          <Button onClick={refreshData} disabled={isLoading} variant="outline">
+            {isLoading ? (
+              <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-2 h-4 w-4" />
+            )}
+            Refresh Data
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -460,6 +472,13 @@ const Reports: React.FC = () => {
           </div>
         </div>
       </ReportDialog>
+
+      {/* Sales Target Dialog */}
+      <SalesTargetDialog
+        isOpen={showTargetsDialog}
+        onClose={() => setShowTargetsDialog(false)}
+        salesData={salesData}
+      />
     </div>
   );
 };
