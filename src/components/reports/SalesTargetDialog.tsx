@@ -64,6 +64,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   salesData,
 }) => {
   const { toast } = useToast();
+  const [selectedTargetYear, setSelectedTargetYear] = useState<string>('');
   const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<string>('');
   const [selectedYear, setSelectedYear] = useState<string>('');
@@ -76,8 +77,9 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   // Get unique customers
   const customers = Array.from(new Set(salesData.map(item => item.partner_name))).filter(Boolean);
 
-  // Get last 3 years
+  // Get target years (current and next 2 years) and historical years (last 3 years)
   const currentYear = new Date().getFullYear();
+  const targetYears = [currentYear, currentYear + 1, currentYear + 2].map(year => year.toString());
   const years = [currentYear - 3, currentYear - 2, currentYear - 1].map(year => year.toString());
 
   const handleMonthToggle = (monthValue: string) => {
@@ -233,6 +235,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
 
   const handleClose = () => {
     // Reset all state
+    setSelectedTargetYear('');
     setSelectedMonths([]);
     setSelectedCustomer('');
     setSelectedYear('');
@@ -255,7 +258,24 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
         </DialogHeader>
 
         <div className="space-y-6">
-          {/* Month Selection */}
+          {/* Target Year Selection */}
+          <div className="space-y-3">
+            <Label className="text-sm font-medium">Select Target Year</Label>
+            <Select value={selectedTargetYear} onValueChange={setSelectedTargetYear}>
+              <SelectTrigger>
+                <SelectValue placeholder="Choose target year..." />
+              </SelectTrigger>
+              <SelectContent>
+                {targetYears.map(year => (
+                  <SelectItem key={year} value={year}>
+                    {year}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Month Selection - Only enabled after target year is selected */}
           <div className="space-y-3">
             <Label className="text-sm font-medium">Select Target Months</Label>
             <div className="grid grid-cols-3 gap-2">
@@ -265,8 +285,14 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
                     id={month.value}
                     checked={selectedMonths.includes(month.value)}
                     onCheckedChange={() => handleMonthToggle(month.value)}
+                    disabled={!selectedTargetYear}
                   />
-                  <Label htmlFor={month.value} className="text-sm">{month.label}</Label>
+                  <Label 
+                    htmlFor={month.value} 
+                    className={`text-sm ${!selectedTargetYear ? 'text-muted-foreground' : ''}`}
+                  >
+                    {month.label}
+                  </Label>
                 </div>
               ))}
             </div>
@@ -285,6 +311,9 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
                   );
                 })}
               </div>
+            )}
+            {!selectedTargetYear && (
+              <p className="text-sm text-muted-foreground">Please select a target year first</p>
             )}
           </div>
 
@@ -315,7 +344,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
           </div>
 
           {/* Get Historical Data Button */}
-          {selectedMonths.length > 0 && selectedCustomer && (
+          {selectedTargetYear && selectedMonths.length > 0 && selectedCustomer && (
             <Button onClick={getHistoricalData} className="w-full">
               Get Historical Sales Data (Last 3 Years)
             </Button>
