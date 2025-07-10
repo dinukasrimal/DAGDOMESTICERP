@@ -67,11 +67,11 @@ export const SavedTargetsManager: React.FC = () => {
   useEffect(() => {
     let filtered = savedTargets;
     
-    if (selectedCustomer) {
+    if (selectedCustomer && selectedCustomer !== 'all') {
       filtered = filtered.filter(target => target.customer_name === selectedCustomer);
     }
     
-    if (selectedYear) {
+    if (selectedYear && selectedYear !== 'all') {
       filtered = filtered.filter(target => target.target_year === selectedYear);
     }
     
@@ -228,7 +228,7 @@ export const SavedTargetsManager: React.FC = () => {
               <SelectValue placeholder="All customers" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All customers</SelectItem>
+              <SelectItem value="all">All customers</SelectItem>
               {customers.map(customer => (
                 <SelectItem key={customer} value={customer}>
                   {customer}
@@ -245,7 +245,7 @@ export const SavedTargetsManager: React.FC = () => {
               <SelectValue placeholder="All years" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All years</SelectItem>
+              <SelectItem value="all">All years</SelectItem>
               {years.map(year => (
                 <SelectItem key={year} value={year}>
                   {year}
@@ -258,8 +258,8 @@ export const SavedTargetsManager: React.FC = () => {
         <div className="flex items-end">
           <Button 
             onClick={() => {
-              setSelectedCustomer('');
-              setSelectedYear('');
+              setSelectedCustomer('all');
+              setSelectedYear('all');
             }}
             variant="outline"
             className="w-full"
