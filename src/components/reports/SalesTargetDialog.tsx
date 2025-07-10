@@ -112,8 +112,23 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
 
   // Helper function to get correct product category from products table
   const getCorrectCategory = (productName: string, fallbackCategory: string): string => {
-    const product = products.find(p => p.name === productName);
-    console.log(`Looking for product: "${productName}", Found: ${product ? `"${product.name}" with category "${product.product_category}"` : 'Not found'}, Fallback: "${fallbackCategory}"`);
+    if (!products.length) return fallbackCategory;
+    
+    // First try exact match
+    let product = products.find(p => p.name === productName);
+    
+    // If no exact match, try case-insensitive match
+    if (!product) {
+      product = products.find(p => p.name.toLowerCase() === productName.toLowerCase());
+    }
+    
+    // If no match, try partial match (contains)
+    if (!product) {
+      product = products.find(p => p.name.toLowerCase().includes(productName.toLowerCase()) || productName.toLowerCase().includes(p.name.toLowerCase()));
+    }
+    
+    console.log(`Product: "${productName}" | Found match: ${product ? `"${product.name}" -> "${product.product_category}"` : 'None'} | Fallback: "${fallbackCategory}"`);
+    
     return product?.product_category || fallbackCategory;
   };
 
