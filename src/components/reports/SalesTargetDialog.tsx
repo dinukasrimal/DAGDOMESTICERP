@@ -310,8 +310,9 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
     const processedData = Object.values(categoryData).map(item => ({
       ...item,
       quantity: Math.ceil(item.quantity), // Round up to nearest whole number
+      value: Math.round(item.value), // Round base value to nearest whole number
       initial_quantity: Math.ceil(item.quantity), // Store original quantity
-      initial_value: item.value // Store original value
+      initial_value: Math.round(item.value) // Store original value rounded
     }));
 
     setTargetData(processedData);
