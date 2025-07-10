@@ -197,9 +197,15 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
 
   const handleQuantityChange = (index: number, value: string) => {
     const quantity = Math.ceil(parseFloat(value) || 0);
-    setTargetData(prev => prev.map((item, i) => 
-      i === index ? { ...item, quantity } : item
-    ));
+    setTargetData(prev => prev.map((item, i) => {
+      if (i === index) {
+        // Calculate unit price from original data and update value
+        const unitPrice = item.quantity > 0 ? item.value / item.quantity : 0;
+        const newValue = quantity * unitPrice;
+        return { ...item, quantity, value: newValue };
+      }
+      return item;
+    }));
   };
 
   const applyPercentageIncrease = () => {
