@@ -455,6 +455,57 @@ export type Database = {
         }
         Relationships: []
       }
+      sales_targets: {
+        Row: {
+          adjusted_total_qty: number
+          adjusted_total_value: number
+          base_year: string
+          created_at: string
+          created_by: string | null
+          customer_name: string
+          id: string
+          initial_total_qty: number
+          initial_total_value: number
+          percentage_increase: number
+          target_data: Json
+          target_months: string[]
+          target_year: string
+          updated_at: string
+        }
+        Insert: {
+          adjusted_total_qty?: number
+          adjusted_total_value?: number
+          base_year: string
+          created_at?: string
+          created_by?: string | null
+          customer_name: string
+          id?: string
+          initial_total_qty?: number
+          initial_total_value?: number
+          percentage_increase?: number
+          target_data: Json
+          target_months: string[]
+          target_year: string
+          updated_at?: string
+        }
+        Update: {
+          adjusted_total_qty?: number
+          adjusted_total_value?: number
+          base_year?: string
+          created_at?: string
+          created_by?: string | null
+          customer_name?: string
+          id?: string
+          initial_total_qty?: number
+          initial_total_value?: number
+          percentage_increase?: number
+          target_data?: Json
+          target_months?: string[]
+          target_year?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never

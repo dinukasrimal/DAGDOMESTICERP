@@ -76,6 +76,9 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   const [showYearSelection, setShowYearSelection] = useState(false);
   const [showTargetData, setShowTargetData] = useState(false);
   const [products, setProducts] = useState<Array<{ name: string; product_category: string; sub_category?: string }>>([]);
+  const [existingTargets, setExistingTargets] = useState<any[]>([]);
+  const [lockedMonths, setLockedMonths] = useState<string[]>([]);
+  const [editingTarget, setEditingTarget] = useState<any>(null);
 
   // Get unique customers
   const customers = Array.from(new Set(salesData.map(item => item.partner_name))).filter(Boolean);
@@ -85,7 +88,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   const targetYears = [currentYear, currentYear + 1, currentYear + 2].map(year => year.toString());
   const years = [currentYear - 3, currentYear - 2, currentYear - 1].map(year => year.toString());
 
-  // Fetch products data on component mount
+  // Fetch products data and check for existing targets on component mount
   useEffect(() => {
     const fetchProducts = async () => {
       try {
@@ -109,6 +112,44 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
       fetchProducts();
     }
   }, [isOpen]);
+
+  // Check for existing targets when customer and year are selected
+  useEffect(() => {
+    const checkExistingTargets = async () => {
+      if (!selectedCustomer || !selectedTargetYear) {
+        setLockedMonths([]);
+        setExistingTargets([]);
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('sales_targets')
+          .select('*')
+          .eq('customer_name', selectedCustomer)
+          .eq('target_year', selectedTargetYear);
+
+        if (error) {
+          console.error('Error fetching existing targets:', error);
+          return;
+        }
+
+        setExistingTargets(data || []);
+        
+        // Extract locked months from existing targets
+        const locked: string[] = [];
+        data?.forEach(target => {
+          locked.push(...target.target_months);
+        });
+        setLockedMonths([...new Set(locked)]); // Remove duplicates
+        
+      } catch (error) {
+        console.error('Error checking existing targets:', error);
+      }
+    };
+
+    checkExistingTargets();
+  }, [selectedCustomer, selectedTargetYear]);
 
   // Helper function to clean product names for matching
   const cleanProductName = (name: string): string => {
@@ -301,13 +342,88 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
     });
   };
 
-  const handleSaveTargets = () => {
-    // Here you would typically save to database
-    toast({
-      title: "Targets Saved",
-      description: `Sales targets saved for ${selectedCustomer} for selected months`,
-    });
-    onClose();
+  const handleSaveTargets = async () => {
+    if (!selectedCustomer || !selectedTargetYear || !selectedYear || targetData.length === 0) {
+      toast({
+        title: "Missing Information",
+        description: "Please complete all required fields before saving",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const initialTotalQty = targetData.reduce((sum, item) => sum + item.initial_quantity, 0);
+      const initialTotalValue = targetData.reduce((sum, item) => sum + item.initial_value, 0);
+      const adjustedTotalQty = targetData.reduce((sum, item) => sum + item.quantity, 0);
+      const adjustedTotalValue = targetData.reduce((sum, item) => sum + item.value, 0);
+      const percentageInc = initialTotalQty > 0 ? ((adjustedTotalQty - initialTotalQty) / initialTotalQty * 100) : 0;
+
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      const targetRecord = {
+        customer_name: selectedCustomer,
+        target_year: selectedTargetYear,
+        target_months: selectedMonths,
+        base_year: selectedYear,
+        target_data: targetData as any,
+        initial_total_qty: initialTotalQty,
+        initial_total_value: initialTotalValue,
+        adjusted_total_qty: adjustedTotalQty,
+        adjusted_total_value: adjustedTotalValue,
+        percentage_increase: percentageInc,
+        created_by: user?.id
+      };
+
+      const { error } = await supabase
+        .from('sales_targets')
+        .insert([targetRecord]);
+
+      if (error) {
+        if (error.code === '23505') { // Unique constraint violation
+          toast({
+            title: "Targets Already Exist",
+            description: "Targets for these months already exist. Please edit or delete existing targets first.",
+            variant: "destructive",
+          });
+        } else {
+          throw error;
+        }
+        return;
+      }
+
+      toast({
+        title: "Targets Saved",
+        description: `Sales targets saved successfully for ${selectedCustomer}`,
+      });
+      
+      // Refresh locked months after saving
+      const { data } = await supabase
+        .from('sales_targets')
+        .select('target_months')
+        .eq('customer_name', selectedCustomer)
+        .eq('target_year', selectedTargetYear);
+      
+      const locked: string[] = [];
+      data?.forEach(target => {
+        locked.push(...target.target_months);
+      });
+      setLockedMonths([...new Set(locked)]);
+      
+      // Reset form
+      setSelectedMonths([]);
+      setTargetData([]);
+      setShowTargetData(false);
+      setShowYearSelection(false);
+      
+    } catch (error) {
+      console.error('Error saving targets:', error);
+      toast({
+        title: "Save Failed",
+        description: "Failed to save targets. Please try again.",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleClose = () => {
@@ -352,73 +468,96 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
             </Select>
           </div>
 
-          {/* Month Selection - Only enabled after target year is selected */}
-          <div className="space-y-3">
-            <Label className="text-sm font-medium">Select Target Months</Label>
-            <div className="grid grid-cols-3 gap-2">
-              {months.map(month => (
-                <div key={month.value} className="flex items-center space-x-2">
-                  <Checkbox
-                    id={month.value}
-                    checked={selectedMonths.includes(month.value)}
-                    onCheckedChange={() => handleMonthToggle(month.value)}
-                    disabled={!selectedTargetYear}
+          {/* Customer Selection - Moved between year and months */}
+          {selectedTargetYear && (
+            <div className="space-y-3">
+              <Label className="text-sm font-medium">Select Customer</Label>
+              <Select value={selectedCustomer} onValueChange={setSelectedCustomer}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose customer..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {customers.map(customer => (
+                    <SelectItem key={customer} value={customer}>
+                      {customer}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedCustomer && (
+                <Badge variant="secondary" className="flex items-center gap-1 w-fit">
+                  {selectedCustomer}
+                  <X 
+                    className="h-3 w-3 cursor-pointer" 
+                    onClick={removeCustomer}
                   />
-                  <Label 
-                    htmlFor={month.value} 
-                    className={`text-sm ${!selectedTargetYear ? 'text-muted-foreground' : ''}`}
-                  >
-                    {month.label}
-                  </Label>
-                </div>
-              ))}
+                </Badge>
+              )}
             </div>
-            {selectedMonths.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-2">
-                {selectedMonths.map(monthValue => {
-                  const month = months.find(m => m.value === monthValue);
+          )}
+
+          {/* Month Selection - Only enabled after customer is selected */}
+          {selectedCustomer && (
+            <div className="space-y-3">
+              <Label className="text-sm font-medium">Select Target Months</Label>
+              <div className="grid grid-cols-3 gap-2">
+                {months.map(month => {
+                  const isLocked = lockedMonths.includes(month.value);
                   return (
-                    <Badge key={monthValue} variant="secondary" className="flex items-center gap-1">
-                      {month?.label}
-                      <X 
-                        className="h-3 w-3 cursor-pointer" 
-                        onClick={() => removeMonth(monthValue)}
+                    <div key={month.value} className="flex items-center space-x-2">
+                      <Checkbox
+                        id={month.value}
+                        checked={selectedMonths.includes(month.value)}
+                        onCheckedChange={() => handleMonthToggle(month.value)}
+                        disabled={isLocked}
                       />
-                    </Badge>
+                      <Label 
+                        htmlFor={month.value} 
+                        className={`text-sm ${isLocked ? 'text-red-500 line-through' : ''}`}
+                      >
+                        {month.label} {isLocked && '(Locked)'}
+                      </Label>
+                    </div>
                   );
                 })}
               </div>
-            )}
-            {!selectedTargetYear && (
-              <p className="text-sm text-muted-foreground">Please select a target year first</p>
-            )}
-          </div>
-
-          {/* Customer Selection */}
-          <div className="space-y-3">
-            <Label className="text-sm font-medium">Select Customer</Label>
-            <Select value={selectedCustomer} onValueChange={setSelectedCustomer}>
-              <SelectTrigger>
-                <SelectValue placeholder="Choose customer..." />
-              </SelectTrigger>
-              <SelectContent>
-                {customers.map(customer => (
-                  <SelectItem key={customer} value={customer}>
-                    {customer}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {selectedCustomer && (
-              <Badge variant="secondary" className="flex items-center gap-1 w-fit">
-                {selectedCustomer}
-                <X 
-                  className="h-3 w-3 cursor-pointer" 
-                  onClick={removeCustomer}
-                />
-              </Badge>
-            )}
-          </div>
+              {selectedMonths.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {selectedMonths.map(monthValue => {
+                    const month = months.find(m => m.value === monthValue);
+                    return (
+                      <Badge key={monthValue} variant="secondary" className="flex items-center gap-1">
+                        {month?.label}
+                        <X 
+                          className="h-3 w-3 cursor-pointer" 
+                          onClick={() => removeMonth(monthValue)}
+                        />
+                      </Badge>
+                    );
+                  })}
+                </div>
+              )}
+              
+              {/* Show existing targets warning */}
+              {lockedMonths.length > 0 && (
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                  <p className="text-sm text-yellow-800">
+                    Some months are locked because targets already exist for this customer and year. 
+                    You need to edit or delete existing targets to modify them.
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <Button 
+                      size="sm" 
+                      variant="outline"
+                      onClick={() => {/* TODO: Show existing targets for editing */}}
+                    >
+                      View/Edit Existing Targets
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Get Historical Data Button */}
           {selectedTargetYear && selectedMonths.length > 0 && selectedCustomer && (
