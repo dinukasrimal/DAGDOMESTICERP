@@ -90,8 +90,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
       try {
         const { data, error } = await supabase
           .from('products')
-          .select('name, product_category, sub_category')
-          .not('sub_category', 'is', null);
+          .select('name, product_category, sub_category');
         
         if (error) {
           console.error('Error fetching products:', error);
@@ -110,24 +109,41 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
     }
   }, [isOpen]);
 
+  // Helper function to clean product names for matching
+  const cleanProductName = (name: string): string => {
+    // Remove brackets and their contents, trim, and normalize spaces
+    return name.replace(/\[.*?\]/g, '').trim().replace(/\s+/g, ' ');
+  };
+
   // Helper function to get correct product category from products table
   const getCorrectCategory = (productName: string, fallbackCategory: string): string => {
     if (!products.length) return fallbackCategory;
     
-    // First try exact match
-    let product = products.find(p => p.name === productName);
+    const cleanedProductName = cleanProductName(productName);
     
-    // If no exact match, try case-insensitive match
+    // First try exact match with cleaned name
+    let product = products.find(p => cleanProductName(p.name) === cleanedProductName);
+    
+    // If no exact match, try case-insensitive match with cleaned names
     if (!product) {
-      product = products.find(p => p.name.toLowerCase() === productName.toLowerCase());
+      product = products.find(p => cleanProductName(p.name).toLowerCase() === cleanedProductName.toLowerCase());
     }
     
-    // If no match, try partial match (contains)
+    // If no match, try partial match (contains) with cleaned names
+    if (!product) {
+      product = products.find(p => {
+        const cleanedDbName = cleanProductName(p.name).toLowerCase();
+        const cleanedInputName = cleanedProductName.toLowerCase();
+        return cleanedDbName.includes(cleanedInputName) || cleanedInputName.includes(cleanedDbName);
+      });
+    }
+    
+    // If still no match, try original matching logic as fallback
     if (!product) {
       product = products.find(p => p.name.toLowerCase().includes(productName.toLowerCase()) || productName.toLowerCase().includes(p.name.toLowerCase()));
     }
     
-    console.log(`Product: "${productName}" | Found match: ${product ? `"${product.name}" -> "${product.sub_category || product.product_category}"` : 'None'} | Fallback: "${fallbackCategory}"`);
+    console.log(`Product: "${productName}" | Cleaned: "${cleanedProductName}" | Found match: ${product ? `"${product.name}" -> "${product.sub_category || product.product_category}"` : 'None'} | Fallback: "${fallbackCategory}"`);
     
     return product?.sub_category || product?.product_category || fallbackCategory;
   };
