@@ -79,6 +79,8 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   const [existingTargets, setExistingTargets] = useState<any[]>([]);
   const [lockedMonths, setLockedMonths] = useState<string[]>([]);
   const [editingTarget, setEditingTarget] = useState<any>(null);
+  const [newCategoryName, setNewCategoryName] = useState<string>('');
+  const [availableCategories, setAvailableCategories] = useState<string[]>([]);
 
   // Get unique customers
   const customers = Array.from(new Set(salesData.map(item => item.partner_name))).filter(Boolean);
@@ -88,7 +90,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   const targetYears = [currentYear, currentYear + 1, currentYear + 2].map(year => year.toString());
   const years = [currentYear - 3, currentYear - 2, currentYear - 1].map(year => year.toString());
 
-  // Fetch products data and check for existing targets on component mount
+  // Fetch products data and get available categories on component mount
   useEffect(() => {
     const fetchProducts = async () => {
       try {
@@ -103,6 +105,15 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
 
         console.log('Fetched products:', data);
         setProducts(data || []);
+        
+        // Extract unique categories for the dropdown
+        const categories = new Set<string>();
+        data?.forEach(product => {
+          if (product.sub_category) categories.add(product.sub_category);
+          if (product.product_category) categories.add(product.product_category);
+        });
+        setAvailableCategories(Array.from(categories).sort());
+        
       } catch (error) {
         console.error('Error fetching products:', error);
       }
@@ -318,6 +329,58 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
       }
       return item;
     }));
+  };
+
+  const handleValueChange = (index: number, value: string) => {
+    const newValue = parseFloat(value) || 0;
+    setTargetData(prev => prev.map((item, i) => {
+      if (i === index) {
+        return { ...item, value: newValue };
+      }
+      return item;
+    }));
+  };
+
+  const addNewCategory = () => {
+    if (!newCategoryName.trim()) {
+      toast({
+        title: "Category Required",
+        description: "Please select a category to add",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Check if category already exists
+    const existingCategory = targetData.find(item => item.product_category === newCategoryName);
+    if (existingCategory) {
+      toast({
+        title: "Category Exists",
+        description: "This category already exists in the target list",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const newItem: TargetItem = {
+      product_category: newCategoryName,
+      quantity: 0,
+      value: 0,
+      initial_quantity: 0,
+      initial_value: 0,
+    };
+
+    setTargetData(prev => [...prev, newItem]);
+    setNewCategoryName('');
+    
+    toast({
+      title: "Category Added",
+      description: `${newCategoryName} added to target list`,
+    });
+  };
+
+  const removeCategory = (index: number) => {
+    setTargetData(prev => prev.filter((_, i) => i !== index));
   };
 
   const applyPercentageIncrease = () => {
@@ -666,18 +729,45 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
                     Apply %
                   </Button>
                 </div>
+                
+                {/* Add New Category Section */}
+                <div className="flex items-center gap-2 pt-2">
+                  <Select value={newCategoryName} onValueChange={setNewCategoryName}>
+                    <SelectTrigger className="w-48">
+                      <SelectValue placeholder="Add new category..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableCategories
+                        .filter(cat => !targetData.some(item => item.product_category === cat))
+                        .map(category => (
+                          <SelectItem key={category} value={category}>
+                            {category}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                  <Button onClick={addNewCategory} size="sm" variant="outline">
+                    Add Category
+                  </Button>
+                </div>
               </div>
 
               <div className="border rounded-lg overflow-hidden">
-                <div className="bg-muted p-2 grid grid-cols-3 gap-4 font-medium text-sm">
+                <div className="bg-muted p-2 grid grid-cols-4 gap-4 font-medium text-sm">
                   <div>Category</div>
                   <div>Target Quantity</div>
                   <div>Base Value (LKR)</div>
+                  <div>Actions</div>
                 </div>
                 <div className="max-h-64 overflow-y-auto">
                   {targetData.map((item, index) => (
-                    <div key={index} className="p-2 grid grid-cols-3 gap-4 border-t text-sm">
-                      <div className="truncate font-medium">{item.product_category}</div>
+                    <div key={index} className="p-2 grid grid-cols-4 gap-4 border-t text-sm">
+                      <div className="truncate font-medium flex items-center">
+                        {item.product_category}
+                        {item.initial_quantity === 0 && (
+                          <Badge variant="outline" className="ml-2 text-xs">Manual</Badge>
+                        )}
+                      </div>
                       <div>
                         <Input
                           type="number"
@@ -688,11 +778,33 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
                           step="1"
                         />
                       </div>
-                      <div>LKR {item.value.toLocaleString()}</div>
+                      <div>
+                        <Input
+                          type="number"
+                          value={item.value}
+                          onChange={(e) => handleValueChange(index, e.target.value)}
+                          className="w-full"
+                          min="0"
+                          step="0.01"
+                        />
+                      </div>
+                      <div>
+                        {item.initial_quantity === 0 && (
+                          <Button
+                            onClick={() => removeCategory(index)}
+                            size="sm"
+                            variant="outline"
+                            className="h-8 w-8 p-0"
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
+
 
               <div className="flex gap-2 pt-4">
                 <Button onClick={handleSaveTargets} className="flex-1">
