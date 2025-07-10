@@ -98,6 +98,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
           return;
         }
 
+        console.log('Fetched products:', data);
         setProducts(data || []);
       } catch (error) {
         console.error('Error fetching products:', error);
@@ -112,6 +113,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   // Helper function to get correct product category from products table
   const getCorrectCategory = (productName: string, fallbackCategory: string): string => {
     const product = products.find(p => p.name === productName);
+    console.log(`Looking for product: "${productName}", Found: ${product ? `"${product.name}" with category "${product.product_category}"` : 'Not found'}, Fallback: "${fallbackCategory}"`);
     return product?.product_category || fallbackCategory;
   };
 
