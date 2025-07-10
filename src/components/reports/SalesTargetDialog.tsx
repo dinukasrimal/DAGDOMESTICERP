@@ -38,10 +38,11 @@ interface MonthData {
 }
 
 interface TargetItem {
-  product_name: string;
   product_category: string;
   quantity: number;
   value: number;
+  initial_quantity: number;
+  initial_value: number;
 }
 
 const months: MonthData[] = [
@@ -181,8 +182,8 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
       return selectedMonths.includes(orderMonth) && years.includes(orderYear.toString());
     });
 
-    // Group by year and product
-    const yearlyData: { [year: string]: { [product: string]: TargetItem } } = {};
+    // Group by year and category (not product)
+    const yearlyData: { [year: string]: { [category: string]: TargetItem } } = {};
     
     filteredData.forEach(item => {
       const orderDate = new Date(item.date_order!);
@@ -193,17 +194,17 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
       if (item.order_lines) {
         item.order_lines.forEach(line => {
           const correctCategory = getCorrectCategory(line.product_name, line.product_category);
-          const key = `${line.product_name}_${correctCategory}`;
-          if (!yearlyData[year][key]) {
-            yearlyData[year][key] = {
-              product_name: line.product_name,
+          if (!yearlyData[year][correctCategory]) {
+            yearlyData[year][correctCategory] = {
               product_category: correctCategory,
               quantity: 0,
               value: 0,
+              initial_quantity: 0,
+              initial_value: 0,
             };
           }
-          yearlyData[year][key].quantity += line.qty_delivered;
-          yearlyData[year][key].value += line.price_subtotal;
+          yearlyData[year][correctCategory].quantity += line.qty_delivered;
+          yearlyData[year][correctCategory].value += line.price_subtotal;
         });
       }
     });
@@ -232,31 +233,33 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
       return selectedMonths.includes(orderMonth) && orderYear === year;
     });
 
-    // Process year data
-    const productData: { [key: string]: TargetItem } = {};
+    // Process year data by category only
+    const categoryData: { [category: string]: TargetItem } = {};
     
     yearData.forEach(item => {
       if (item.order_lines) {
         item.order_lines.forEach(line => {
           const correctCategory = getCorrectCategory(line.product_name, line.product_category);
-          const key = `${line.product_name}_${correctCategory}`;
-          if (!productData[key]) {
-            productData[key] = {
-              product_name: line.product_name,
+          if (!categoryData[correctCategory]) {
+            categoryData[correctCategory] = {
               product_category: correctCategory,
               quantity: 0,
               value: 0,
+              initial_quantity: 0,
+              initial_value: 0,
             };
           }
-          productData[key].quantity += line.qty_delivered;
-          productData[key].value += line.price_subtotal;
+          categoryData[correctCategory].quantity += line.qty_delivered;
+          categoryData[correctCategory].value += line.price_subtotal;
         });
       }
     });
 
-    const processedData = Object.values(productData).map(item => ({
+    const processedData = Object.values(categoryData).map(item => ({
       ...item,
-      quantity: Math.ceil(item.quantity) // Round up to nearest whole number
+      quantity: Math.ceil(item.quantity), // Round up to nearest whole number
+      initial_quantity: Math.ceil(item.quantity), // Store original quantity
+      initial_value: item.value // Store original value
     }));
 
     setTargetData(processedData);
@@ -267,8 +270,8 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
     const quantity = Math.ceil(parseFloat(value) || 0);
     setTargetData(prev => prev.map((item, i) => {
       if (i === index) {
-        // Calculate unit price from original data and update value
-        const unitPrice = item.quantity > 0 ? item.value / item.quantity : 0;
+        // Calculate unit price from initial data and update value
+        const unitPrice = item.initial_quantity > 0 ? item.initial_value / item.initial_quantity : 0;
         const newValue = quantity * unitPrice;
         return { ...item, quantity, value: newValue };
       }
@@ -448,25 +451,57 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <Label className="text-sm font-medium">
-                  Target Data for {selectedYear} (Selected Months)
+                  Target Data for {selectedYear} (Selected Months) - By Category
                 </Label>
               </div>
 
-              {/* Total Summary */}
-              <div className="bg-muted/50 p-3 rounded-lg">
-                <div className="grid grid-cols-2 gap-4 text-sm">
+              {/* Initial vs Adjusted Summary */}
+              <div className="bg-muted/50 p-4 rounded-lg space-y-3">
+                <h4 className="font-medium text-sm">Summary</h4>
+                
+                {/* Initial Totals */}
+                <div className="grid grid-cols-2 gap-4 text-sm border-b pb-2">
                   <div>
-                    <span className="font-medium">Total Target Qty: </span>
+                    <span className="font-medium">Initial Total Qty: </span>
                     <span className="text-primary font-semibold">
+                      {targetData.reduce((sum, item) => sum + item.initial_quantity, 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="font-medium">Initial Total Value: </span>
+                    <span className="text-primary font-semibold">
+                      LKR {targetData.reduce((sum, item) => sum + item.initial_value, 0).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Adjusted Totals */}
+                <div className="grid grid-cols-2 gap-4 text-sm border-b pb-2">
+                  <div>
+                    <span className="font-medium">Adjusted Target Qty: </span>
+                    <span className="text-accent-foreground font-semibold">
                       {targetData.reduce((sum, item) => sum + item.quantity, 0).toLocaleString()}
                     </span>
                   </div>
                   <div>
-                    <span className="font-medium">Total Base Value: </span>
-                    <span className="text-primary font-semibold">
+                    <span className="font-medium">Adjusted Base Value: </span>
+                    <span className="text-accent-foreground font-semibold">
                       LKR {targetData.reduce((sum, item) => sum + item.value, 0).toLocaleString()}
                     </span>
                   </div>
+                </div>
+
+                {/* Percentage Increase */}
+                <div className="text-sm">
+                  <span className="font-medium">Percentage Increase: </span>
+                  <span className="text-green-600 font-semibold">
+                    {(() => {
+                      const initialQty = targetData.reduce((sum, item) => sum + item.initial_quantity, 0);
+                      const adjustedQty = targetData.reduce((sum, item) => sum + item.quantity, 0);
+                      const percentageIncrease = initialQty > 0 ? ((adjustedQty - initialQty) / initialQty * 100) : 0;
+                      return `${percentageIncrease.toFixed(1)}%`;
+                    })()}
+                  </span>
                 </div>
               </div>
 
@@ -487,17 +522,15 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
               </div>
 
               <div className="border rounded-lg overflow-hidden">
-                <div className="bg-muted p-2 grid grid-cols-4 gap-4 font-medium text-sm">
-                  <div>Product Name</div>
+                <div className="bg-muted p-2 grid grid-cols-3 gap-4 font-medium text-sm">
                   <div>Category</div>
                   <div>Target Quantity</div>
                   <div>Base Value (LKR)</div>
                 </div>
                 <div className="max-h-64 overflow-y-auto">
                   {targetData.map((item, index) => (
-                    <div key={index} className="p-2 grid grid-cols-4 gap-4 border-t text-sm">
-                      <div className="truncate">{item.product_name}</div>
-                      <div className="truncate">{item.product_category}</div>
+                    <div key={index} className="p-2 grid grid-cols-3 gap-4 border-t text-sm">
+                      <div className="truncate font-medium">{item.product_category}</div>
                       <div>
                         <Input
                           type="number"
