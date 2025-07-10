@@ -8,6 +8,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { X, Target, TrendingUp } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { supabase } from '@/integrations/supabase/client';
 
 interface SalesData {
   id: string;
@@ -73,6 +74,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   const [percentageIncrease, setPercentageIncrease] = useState<string>('');
   const [showYearSelection, setShowYearSelection] = useState(false);
   const [showTargetData, setShowTargetData] = useState(false);
+  const [products, setProducts] = useState<Array<{ name: string; product_category: string }>>([]);
 
   // Get unique customers
   const customers = Array.from(new Set(salesData.map(item => item.partner_name))).filter(Boolean);
@@ -81,6 +83,37 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   const currentYear = new Date().getFullYear();
   const targetYears = [currentYear, currentYear + 1, currentYear + 2].map(year => year.toString());
   const years = [currentYear - 3, currentYear - 2, currentYear - 1].map(year => year.toString());
+
+  // Fetch products data on component mount
+  useEffect(() => {
+    const fetchProducts = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('products')
+          .select('name, product_category')
+          .not('product_category', 'is', null);
+        
+        if (error) {
+          console.error('Error fetching products:', error);
+          return;
+        }
+
+        setProducts(data || []);
+      } catch (error) {
+        console.error('Error fetching products:', error);
+      }
+    };
+
+    if (isOpen) {
+      fetchProducts();
+    }
+  }, [isOpen]);
+
+  // Helper function to get correct product category from products table
+  const getCorrectCategory = (productName: string, fallbackCategory: string): string => {
+    const product = products.find(p => p.name === productName);
+    return product?.product_category || fallbackCategory;
+  };
 
   const handleMonthToggle = (monthValue: string) => {
     setSelectedMonths(prev => 
@@ -126,11 +159,12 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
       
       if (item.order_lines) {
         item.order_lines.forEach(line => {
-          const key = `${line.product_name}_${line.product_category}`;
+          const correctCategory = getCorrectCategory(line.product_name, line.product_category);
+          const key = `${line.product_name}_${correctCategory}`;
           if (!yearlyData[year][key]) {
             yearlyData[year][key] = {
               product_name: line.product_name,
-              product_category: line.product_category,
+              product_category: correctCategory,
               quantity: 0,
               value: 0,
             };
@@ -171,11 +205,12 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
     yearData.forEach(item => {
       if (item.order_lines) {
         item.order_lines.forEach(line => {
-          const key = `${line.product_name}_${line.product_category}`;
+          const correctCategory = getCorrectCategory(line.product_name, line.product_category);
+          const key = `${line.product_name}_${correctCategory}`;
           if (!productData[key]) {
             productData[key] = {
               product_name: line.product_name,
-              product_category: line.product_category,
+              product_category: correctCategory,
               quantity: 0,
               value: 0,
             };
