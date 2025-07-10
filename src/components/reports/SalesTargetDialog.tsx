@@ -74,7 +74,7 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
   const [percentageIncrease, setPercentageIncrease] = useState<string>('');
   const [showYearSelection, setShowYearSelection] = useState(false);
   const [showTargetData, setShowTargetData] = useState(false);
-  const [products, setProducts] = useState<Array<{ name: string; product_category: string }>>([]);
+  const [products, setProducts] = useState<Array<{ name: string; product_category: string; sub_category?: string }>>([]);
 
   // Get unique customers
   const customers = Array.from(new Set(salesData.map(item => item.partner_name))).filter(Boolean);
@@ -90,8 +90,8 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
       try {
         const { data, error } = await supabase
           .from('products')
-          .select('name, product_category')
-          .not('product_category', 'is', null);
+          .select('name, sub_category')
+          .not('sub_category', 'is', null);
         
         if (error) {
           console.error('Error fetching products:', error);
