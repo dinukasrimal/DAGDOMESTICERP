@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { TrendingUp, TrendingDown, Calendar, DollarSign, Package } from 'lucide-react';
+import { TrendingUp, TrendingDown, Calendar, DollarSign, Package, X } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 
 interface SalesData {
@@ -30,9 +30,9 @@ interface SalesReportContentProps {
 
 export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesData }) => {
   const [selectedYear, setSelectedYear] = useState('2025');
-  const [selectedMonth, setSelectedMonth] = useState('all');
+  const [selectedMonths, setSelectedMonths] = useState<string[]>(['all']);
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [selectedCustomer, setSelectedCustomer] = useState('all');
+  const [selectedCustomers, setSelectedCustomers] = useState<string[]>(['all']);
   const [showValues, setShowValues] = useState(false);
   const [extraCategories, setExtraCategories] = useState<string[]>([]);
   const [products, setProducts] = useState<any[]>([]);
@@ -82,8 +82,8 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     const year = orderDate.getFullYear().toString();
     const month = orderDate.getMonth() + 1;
     if (selectedYear !== 'all' && year !== selectedYear) return false;
-    if (selectedMonth !== 'all' && month.toString() !== selectedMonth) return false;
-    if (selectedCustomer !== 'all' && item.partner_name !== selectedCustomer) return false;
+    if (!selectedMonths.includes('all') && !selectedMonths.includes(month.toString())) return false;
+    if (!selectedCustomers.includes('all') && !selectedCustomers.includes(item.partner_name)) return false;
     if (selectedCategory !== 'all') {
       // Only include if at least one order line matches the selected category
       if (!item.order_lines || !item.order_lines.some(line => {
@@ -96,7 +96,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     return true;
   });
 
-  console.log(`Filtered data: ${filteredData.length} invoices for year ${selectedYear}, month ${selectedMonth}`);
+  console.log(`Filtered data: ${filteredData.length} invoices for year ${selectedYear}, months ${selectedMonths.join(', ')}`);
 
   // Calculate total quantity and value
   const totalQuantity = filteredData.reduce((sum, item) => {
@@ -116,8 +116,8 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     const month = orderDate.getMonth() + 1;
     
     if (year !== previousYear) return false;
-    if (selectedMonth !== 'all' && month.toString() !== selectedMonth) return false;
-    if (selectedCustomer !== 'all' && item.partner_name !== selectedCustomer) return false;
+    if (!selectedMonths.includes('all') && !selectedMonths.includes(month.toString())) return false;
+    if (!selectedCustomers.includes('all') && !selectedCustomers.includes(item.partner_name)) return false;
     
     return true;
   });
@@ -243,8 +243,8 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
       const orderDate = new Date(item.date_order);
       const year = orderDate.getFullYear().toString();
       const month = orderDate.getMonth() + 1;
-      if (selectedMonth === 'all') return;
-      if (month.toString() !== selectedMonth) return;
+      if (selectedMonths.includes('all')) return;
+      if (!selectedMonths.includes(month.toString())) return;
       item.order_lines.forEach(line => {
         let category = 'Uncategorized';
         if (line.product_name) {
@@ -269,7 +269,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   const productCategoryChartData = top10.map(cat => {
     const current = productCategoryMap[cat]?.current || 0;
     const previous = productCategoryMap[cat]?.previous || 0;
-    console.log(`[ProductCategoryChart] ${cat}: current=${current}, previous=${previous}, month=${selectedMonth}`);
+    console.log(`[ProductCategoryChart] ${cat}: current=${current}, previous=${previous}, months=${selectedMonths.join(', ')}`);
     return {
       category: cat,
       current,
@@ -302,33 +302,81 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
             </div>
             <div>
               <label className="text-sm font-medium mb-2 block">Month</label>
-              <Select value={selectedMonth} onValueChange={setSelectedMonth}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Multiple select..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Months</SelectItem>
-                  {Array.from({length: 12}, (_, i) => (
-                    <SelectItem key={i+1} value={(i+1).toString()}>
-                      {new Date(2000, i).toLocaleDateString('en-US', { month: 'long' })}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="space-y-2">
+                <Select value="" onValueChange={(value) => {
+                  if (value === 'all') {
+                    setSelectedMonths(['all']);
+                  } else {
+                    setSelectedMonths(prev => {
+                      const filtered = prev.filter(m => m !== 'all');
+                      return filtered.includes(value) ? filtered.filter(m => m !== value) : [...filtered, value];
+                    });
+                  }
+                }}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select months..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Months</SelectItem>
+                    {Array.from({length: 12}, (_, i) => (
+                      <SelectItem key={i+1} value={(i+1).toString()}>
+                        {new Date(2000, i).toLocaleDateString('en-US', { month: 'long' })}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedMonths.length > 0 && !selectedMonths.includes('all') && (
+                  <div className="flex flex-wrap gap-1">
+                    {selectedMonths.map(month => (
+                      <Badge key={month} variant="secondary" className="text-xs">
+                        {new Date(2000, parseInt(month) - 1).toLocaleDateString('en-US', { month: 'short' })}
+                        <X 
+                          className="h-3 w-3 ml-1 cursor-pointer" 
+                          onClick={() => setSelectedMonths(prev => prev.filter(m => m !== month))}
+                        />
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             <div>
               <label className="text-sm font-medium mb-2 block">Customer</label>
-              <Select value={selectedCustomer} onValueChange={setSelectedCustomer}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Multiple select..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Customers</SelectItem>
-                  {customers.map(customer => (
-                    <SelectItem key={customer} value={customer}>{customer}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="space-y-2">
+                <Select value="" onValueChange={(value) => {
+                  if (value === 'all') {
+                    setSelectedCustomers(['all']);
+                  } else {
+                    setSelectedCustomers(prev => {
+                      const filtered = prev.filter(c => c !== 'all');
+                      return filtered.includes(value) ? filtered.filter(c => c !== value) : [...filtered, value];
+                    });
+                  }
+                }}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select customers..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Customers</SelectItem>
+                    {customers.map(customer => (
+                      <SelectItem key={customer} value={customer}>{customer}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedCustomers.length > 0 && !selectedCustomers.includes('all') && (
+                  <div className="flex flex-wrap gap-1">
+                    {selectedCustomers.map(customer => (
+                      <Badge key={customer} variant="secondary" className="text-xs">
+                        {customer.length > 20 ? customer.substring(0, 20) + '...' : customer}
+                        <X 
+                          className="h-3 w-3 ml-1 cursor-pointer" 
+                          onClick={() => setSelectedCustomers(prev => prev.filter(c => c !== customer))}
+                        />
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             <div>
               <label className="text-sm font-medium mb-2 block">Display</label>
@@ -499,11 +547,11 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
         <Card>
           <CardHeader>
             <CardTitle>Top 10 Product Categories: Current vs Previous Year Sales</CardTitle>
-            <Badge variant="outline">{selectedYear} vs {previousYear} ({selectedMonth !== 'all' ? new Date(2000, Number(selectedMonth) - 1).toLocaleString('en-US', { month: 'long' }) : 'Select Month'})</Badge>
+            <Badge variant="outline">{selectedYear} vs {previousYear} ({!selectedMonths.includes('all') && selectedMonths.length === 1 ? new Date(2000, Number(selectedMonths[0]) - 1).toLocaleString('en-US', { month: 'long' }) : selectedMonths.includes('all') ? 'All Months' : 'Multiple Months'})</Badge>
           </CardHeader>
           <CardContent>
-            {selectedMonth === 'all' ? (
-              <div className="text-muted-foreground">Select a month to view product category comparison.</div>
+            {selectedMonths.includes('all') ? (
+              <div className="text-muted-foreground">Select specific months to view product category comparison.</div>
             ) : (
               <ChartContainer config={chartConfig} className="h-80">
                 <ResponsiveContainer width="100%" height="100%">
