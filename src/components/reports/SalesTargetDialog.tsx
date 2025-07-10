@@ -331,14 +331,22 @@ export const SalesTargetDialog: React.FC<SalesTargetDialogProps> = ({
       return;
     }
 
-    setTargetData(prev => prev.map(item => ({
-      ...item,
-      quantity: Math.ceil(item.quantity * (1 + percentage / 100))
-    })));
+    setTargetData(prev => prev.map(item => {
+      const newQuantity = Math.ceil(item.initial_quantity * (1 + percentage / 100));
+      // Calculate unit price from initial data and update value based on new quantity
+      const unitPrice = item.initial_quantity > 0 ? item.initial_value / item.initial_quantity : 0;
+      const newValue = newQuantity * unitPrice;
+      
+      return {
+        ...item,
+        quantity: newQuantity,
+        value: newValue
+      };
+    }));
 
     toast({
       title: "Targets Updated",
-      description: `Applied ${percentage}% increase to all quantities`,
+      description: `Applied ${percentage}% increase to quantities and recalculated values`,
     });
   };
 
