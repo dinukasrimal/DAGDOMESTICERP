@@ -7,7 +7,8 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { Edit, Trash2, Eye, Calendar, User, Target } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Edit, Trash2, Eye, Calendar, User, Target, TrendingUp, DollarSign } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -49,6 +50,7 @@ export const SavedTargetsManager: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<string>('');
   const [selectedYear, setSelectedYear] = useState<string>('');
+  const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
   const [viewingTarget, setViewingTarget] = useState<SavedTarget | null>(null);
   const [editingTarget, setEditingTarget] = useState<SavedTarget | null>(null);
   const [deletingTarget, setDeletingTarget] = useState<SavedTarget | null>(null);
@@ -75,8 +77,52 @@ export const SavedTargetsManager: React.FC = () => {
       filtered = filtered.filter(target => target.target_year === selectedYear);
     }
     
+    // Filter by selected months
+    if (selectedMonths.length > 0) {
+      filtered = filtered.filter(target => 
+        target.target_months.some(month => selectedMonths.includes(month))
+      );
+    }
+    
     setFilteredTargets(filtered);
-  }, [savedTargets, selectedCustomer, selectedYear]);
+  }, [savedTargets, selectedCustomer, selectedYear, selectedMonths]);
+
+  const handleMonthToggle = (monthValue: string) => {
+    setSelectedMonths(prev => 
+      prev.includes(monthValue) 
+        ? prev.filter(m => m !== monthValue)
+        : [...prev, monthValue]
+    );
+  };
+
+  const removeMonth = (monthValue: string) => {
+    setSelectedMonths(prev => prev.filter(m => m !== monthValue));
+  };
+
+  // Calculate dashboard totals for selected months
+  const getDashboardTotals = () => {
+    if (selectedMonths.length === 0) {
+      // If no months selected, use all filtered targets
+      const totalQty = filteredTargets.reduce((sum, target) => sum + target.adjusted_total_qty, 0);
+      const totalValue = filteredTargets.reduce((sum, target) => sum + target.adjusted_total_value, 0);
+      return { totalQty, totalValue };
+    }
+    
+    // Calculate proportional totals based on selected months
+    let totalQty = 0;
+    let totalValue = 0;
+    
+    filteredTargets.forEach(target => {
+      const matchingMonths = target.target_months.filter(month => selectedMonths.includes(month));
+      const proportion = matchingMonths.length / target.target_months.length;
+      totalQty += target.adjusted_total_qty * proportion;
+      totalValue += target.adjusted_total_value * proportion;
+    });
+    
+    return { totalQty: Math.round(totalQty), totalValue: Math.round(totalValue) };
+  };
+
+  const dashboardTotals = getDashboardTotals();
 
   const fetchSavedTargets = async () => {
     setLoading(true);
@@ -260,6 +306,7 @@ export const SavedTargetsManager: React.FC = () => {
             onClick={() => {
               setSelectedCustomer('all');
               setSelectedYear('all');
+              setSelectedMonths([]);
             }}
             variant="outline"
             className="w-full"
@@ -267,6 +314,100 @@ export const SavedTargetsManager: React.FC = () => {
             Clear Filters
           </Button>
         </div>
+      </div>
+
+      {/* Month Filter */}
+      <div className="space-y-3">
+        <Label className="text-sm font-medium">Filter by Months</Label>
+        <div className="grid grid-cols-3 gap-2">
+          {months.map(month => (
+            <div key={month.value} className="flex items-center space-x-2">
+              <Checkbox
+                id={month.value}
+                checked={selectedMonths.includes(month.value)}
+                onCheckedChange={() => handleMonthToggle(month.value)}
+              />
+              <Label 
+                htmlFor={month.value} 
+                className="text-sm"
+              >
+                {month.label}
+              </Label>
+            </div>
+          ))}
+        </div>
+        {selectedMonths.length > 0 && (
+          <div className="flex flex-wrap gap-2 mt-2">
+            {selectedMonths.map(monthValue => {
+              const month = months.find(m => m.value === monthValue);
+              return (
+                <Badge key={monthValue} variant="secondary" className="flex items-center gap-1">
+                  {month?.label}
+                  <button 
+                    onClick={() => removeMonth(monthValue)}
+                    className="ml-1 hover:bg-gray-200 rounded-full p-1"
+                  >
+                    ×
+                  </button>
+                </Badge>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Dashboard Summary */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <TrendingUp className="h-5 w-5 text-blue-600" />
+              Total Target Quantity
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-blue-600">
+              {dashboardTotals.totalQty.toLocaleString()}
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              {selectedMonths.length > 0 ? `For ${selectedMonths.length} selected month(s)` : 'All months'}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <DollarSign className="h-5 w-5 text-green-600" />
+              Total Target Value
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-green-600">
+              LKR {dashboardTotals.totalValue.toLocaleString()}
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              {selectedMonths.length > 0 ? `For ${selectedMonths.length} selected month(s)` : 'All months'}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Target className="h-5 w-5 text-purple-600" />
+              Active Targets
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-purple-600">
+              {filteredTargets.length}
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              Targets matching filters
+            </p>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Targets Grid */}

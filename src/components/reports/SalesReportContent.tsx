@@ -5,8 +5,9 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { TrendingUp, TrendingDown, Calendar, DollarSign, Package, X } from 'lucide-react';
+import { TrendingUp, TrendingDown, Calendar, DollarSign, Package, X, Target } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+import { getTargetsForAnalytics, calculateTargetVsActual, TargetData } from '@/services/targetService';
 
 interface SalesData {
   id: string;
@@ -36,6 +37,8 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   const [showValues, setShowValues] = useState(false);
   const [extraCategories, setExtraCategories] = useState<string[]>([]);
   const [products, setProducts] = useState<any[]>([]);
+  const [targetData, setTargetData] = useState<TargetData[]>([]);
+  const [showTargetComparison, setShowTargetComparison] = useState(false);
 
   // Get available years from data
   const availableYears = [...new Set(salesData.map(item => 
@@ -229,6 +232,23 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     fetchProducts();
   }, []);
 
+  // Fetch target data when filters change
+  useEffect(() => {
+    const fetchTargets = async () => {
+      const targets = await getTargetsForAnalytics(
+        selectedYear === 'all' ? undefined : selectedYear,
+        selectedMonths.includes('all') ? undefined : selectedMonths
+      );
+      setTargetData(targets);
+    };
+
+    if (selectedYear !== 'all' || !selectedMonths.includes('all')) {
+      fetchTargets();
+    } else {
+      setTargetData([]);
+    }
+  }, [selectedYear, selectedMonths]);
+
   // Build a map of product_id to product info for fast lookup
   const productMap: Record<string, any> = {};
   products.forEach(prod => {
@@ -402,8 +422,159 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
               </Select>
             </div>
           </div>
+          
+          {/* Target Comparison Toggle */}
+          {targetData.length > 0 && (
+            <div className="pt-4 border-t">
+              <Button 
+                onClick={() => setShowTargetComparison(!showTargetComparison)}
+                variant={showTargetComparison ? "default" : "outline"}
+                className="flex items-center gap-2"
+              >
+                <Target className="h-4 w-4" />
+                {showTargetComparison ? "Hide" : "Show"} Target Comparison
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      {/* Target vs Actual Comparison */}
+      {showTargetComparison && targetData.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Target className="h-5 w-5" />
+              Actual vs Target Performance
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {(() => {
+              const comparison = calculateTargetVsActual(
+                filteredData,
+                targetData,
+                selectedYear === 'all' ? undefined : selectedYear,
+                selectedMonths.includes('all') ? undefined : selectedMonths
+              );
+
+              if (comparison.length === 0) {
+                return (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <Target className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                    <p>No target data available for the selected filters.</p>
+                  </div>
+                );
+              }
+
+              const totalActualQty = comparison.reduce((sum, item) => sum + item.actualQty, 0);
+              const totalActualValue = comparison.reduce((sum, item) => sum + item.actualValue, 0);
+              const totalTargetQty = comparison.reduce((sum, item) => sum + item.targetQty, 0);
+              const totalTargetValue = comparison.reduce((sum, item) => sum + item.targetValue, 0);
+
+              return (
+                <div className="space-y-4">
+                  {/* Summary Cards */}
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <Card>
+                      <CardContent className="pt-6">
+                        <div className="text-2xl font-bold text-blue-600">
+                          {totalActualQty.toLocaleString()}
+                        </div>
+                        <p className="text-xs text-muted-foreground">Actual Quantity</p>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardContent className="pt-6">
+                        <div className="text-2xl font-bold text-green-600">
+                          {totalTargetQty.toLocaleString()}
+                        </div>
+                        <p className="text-xs text-muted-foreground">Target Quantity</p>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardContent className="pt-6">
+                        <div className="text-2xl font-bold text-blue-600">
+                          LKR {Math.round(totalActualValue).toLocaleString()}
+                        </div>
+                        <p className="text-xs text-muted-foreground">Actual Value</p>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardContent className="pt-6">
+                        <div className="text-2xl font-bold text-green-600">
+                          LKR {Math.round(totalTargetValue).toLocaleString()}
+                        </div>
+                        <p className="text-xs text-muted-foreground">Target Value</p>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  {/* Detailed Comparison Table */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse">
+                      <thead>
+                        <tr className="bg-slate-700 text-white">
+                          <th className="border p-2 text-left">Customer</th>
+                          <th className="border p-2 text-right">Actual Qty</th>
+                          <th className="border p-2 text-right">Target Qty</th>
+                          <th className="border p-2 text-right">Qty Variance</th>
+                          <th className="border p-2 text-right">Qty Achievement</th>
+                          <th className="border p-2 text-right">Actual Value</th>
+                          <th className="border p-2 text-right">Target Value</th>
+                          <th className="border p-2 text-right">Value Variance</th>
+                          <th className="border p-2 text-right">Value Achievement</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {comparison.map((item, index) => (
+                          <tr key={index} className="hover:bg-gray-50">
+                            <td className="border p-2 font-medium">{item.customer}</td>
+                            <td className="border p-2 text-right">{item.actualQty.toLocaleString()}</td>
+                            <td className="border p-2 text-right">{item.targetQty.toLocaleString()}</td>
+                            <td className={`border p-2 text-right ${item.qtyVariance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                              {item.qtyVariance >= 0 ? '+' : ''}{item.qtyVariance.toLocaleString()}
+                            </td>
+                            <td className={`border p-2 text-right font-medium ${item.qtyPercentage >= 100 ? 'text-green-600' : 'text-red-600'}`}>
+                              {item.qtyPercentage.toFixed(1)}%
+                            </td>
+                            <td className="border p-2 text-right">LKR {Math.round(item.actualValue).toLocaleString()}</td>
+                            <td className="border p-2 text-right">LKR {Math.round(item.targetValue).toLocaleString()}</td>
+                            <td className={`border p-2 text-right ${item.valueVariance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                              {item.valueVariance >= 0 ? '+' : ''}LKR {Math.round(item.valueVariance).toLocaleString()}
+                            </td>
+                            <td className={`border p-2 text-right font-medium ${item.valuePercentage >= 100 ? 'text-green-600' : 'text-red-600'}`}>
+                              {item.valuePercentage.toFixed(1)}%
+                            </td>
+                          </tr>
+                        ))}
+                        <tr className="bg-gray-100 font-bold">
+                          <td className="border p-2">Total</td>
+                          <td className="border p-2 text-right">{totalActualQty.toLocaleString()}</td>
+                          <td className="border p-2 text-right">{totalTargetQty.toLocaleString()}</td>
+                          <td className={`border p-2 text-right ${(totalActualQty - totalTargetQty) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {(totalActualQty - totalTargetQty) >= 0 ? '+' : ''}{(totalActualQty - totalTargetQty).toLocaleString()}
+                          </td>
+                          <td className={`border p-2 text-right ${totalTargetQty > 0 ? (totalActualQty / totalTargetQty * 100 >= 100 ? 'text-green-600' : 'text-red-600') : ''}`}>
+                            {totalTargetQty > 0 ? (totalActualQty / totalTargetQty * 100).toFixed(1) : '0.0'}%
+                          </td>
+                          <td className="border p-2 text-right">LKR {Math.round(totalActualValue).toLocaleString()}</td>
+                          <td className="border p-2 text-right">LKR {Math.round(totalTargetValue).toLocaleString()}</td>
+                          <td className={`border p-2 text-right ${(totalActualValue - totalTargetValue) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {(totalActualValue - totalTargetValue) >= 0 ? '+' : ''}LKR {Math.round(totalActualValue - totalTargetValue).toLocaleString()}
+                          </td>
+                          <td className={`border p-2 text-right ${totalTargetValue > 0 ? (totalActualValue / totalTargetValue * 100 >= 100 ? 'text-green-600' : 'text-red-600') : ''}`}>
+                            {totalTargetValue > 0 ? (totalActualValue / totalTargetValue * 100).toFixed(1) : '0.0'}%
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Summary Card */}
       <Card>
