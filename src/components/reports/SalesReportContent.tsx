@@ -39,6 +39,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   const [products, setProducts] = useState<any[]>([]);
   const [targetData, setTargetData] = useState<TargetData[]>([]);
   const [showTargetComparison, setShowTargetComparison] = useState(false);
+  const [targetMonths, setTargetMonths] = useState<string[]>(['all']);
 
   // Get available years from data
   const availableYears = [...new Set(salesData.map(item => 
@@ -237,17 +238,17 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     const fetchTargets = async () => {
       const targets = await getTargetsForAnalytics(
         selectedYear === 'all' ? undefined : selectedYear,
-        selectedMonths.includes('all') ? undefined : selectedMonths
+        targetMonths.includes('all') ? undefined : targetMonths
       );
       setTargetData(targets);
     };
 
-    if (selectedYear !== 'all' || !selectedMonths.includes('all')) {
+    if (selectedYear !== 'all' || !targetMonths.includes('all')) {
       fetchTargets();
     } else {
       setTargetData([]);
     }
-  }, [selectedYear, selectedMonths]);
+  }, [selectedYear, targetMonths]);
 
   // Build a map of product_id to product info for fast lookup
   const productMap: Record<string, any> = {};
@@ -305,7 +306,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
           <CardTitle>Filter:</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
             <div>
               <label className="text-sm font-medium mb-2 block">Year</label>
               <Select value={selectedYear} onValueChange={setSelectedYear}>
@@ -399,6 +400,46 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
               </div>
             </div>
             <div>
+              <label className="text-sm font-medium mb-2 block">Target Months</label>
+              <div className="space-y-2">
+                <Select value="" onValueChange={(value) => {
+                  if (value === 'all') {
+                    setTargetMonths(['all']);
+                  } else {
+                    setTargetMonths(prev => {
+                      const filtered = prev.filter(m => m !== 'all');
+                      return filtered.includes(value) ? filtered.filter(m => m !== value) : [...filtered, value];
+                    });
+                  }
+                }}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select target months..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Months</SelectItem>
+                    {Array.from({length: 12}, (_, i) => (
+                      <SelectItem key={i+1} value={(i+1).toString()}>
+                        {new Date(2000, i).toLocaleDateString('en-US', { month: 'long' })}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {targetMonths.length > 0 && !targetMonths.includes('all') && (
+                  <div className="flex flex-wrap gap-1">
+                    {targetMonths.map(month => (
+                      <Badge key={month} variant="secondary" className="text-xs">
+                        {new Date(2000, parseInt(month) - 1).toLocaleDateString('en-US', { month: 'short' })}
+                        <X 
+                          className="h-3 w-3 ml-1 cursor-pointer" 
+                          onClick={() => setTargetMonths(prev => prev.filter(m => m !== month))}
+                        />
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div>
               <label className="text-sm font-medium mb-2 block">Display</label>
               <Button 
                 onClick={() => setShowValues(!showValues)}
@@ -454,7 +495,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                 filteredData,
                 targetData,
                 selectedYear === 'all' ? undefined : selectedYear,
-                selectedMonths.includes('all') ? undefined : selectedMonths
+                targetMonths.includes('all') ? undefined : targetMonths
               );
 
               if (comparison.length === 0) {
