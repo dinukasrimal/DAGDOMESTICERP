@@ -118,6 +118,7 @@ export const ProductionPlanner: React.FC = () => {
   const [contextMenuOrder, setContextMenuOrder] = useState<PlannedOrder | null>(null);
   const [contextMenuPosition, setContextMenuPosition] = useState<{x: number, y: number} | null>(null);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
+  const [selectedPlannedOrders, setSelectedPlannedOrders] = useState<Set<string>>(new Set());
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [originalPOData, setOriginalPOData] = useState<Map<string, PurchaseOrder>>(new Map());
   const [isManualScheduling, setIsManualScheduling] = useState(false);
@@ -732,7 +733,7 @@ export const ProductionPlanner: React.FC = () => {
   const fetchPlannedOrders = async () => {
     try {
       const { data, error } = await supabase
-        .from('planned_production')
+        .from('planned_orders')
         .select('*')
         .order('planned_date');
 
@@ -740,14 +741,14 @@ export const ProductionPlanner: React.FC = () => {
         console.error('Error fetching planned orders:', error);
         // If table doesn't exist, just set empty array for now
         if (error.code === '42P01') {
-          console.log('planned_production table does not exist yet, using empty array');
+          console.log('planned_orders table does not exist yet, using empty array');
           setPlannedOrders([]);
           return;
         }
         return;
       }
 
-      // Transform planned_production to match PlannedOrder interface
+      // Transform planned_orders to match PlannedOrder interface
       const transformedData = (data || []).map(planned => ({
         id: planned.id,
         po_id: planned.purchase_id,
@@ -803,182 +804,282 @@ export const ProductionPlanner: React.FC = () => {
     e.dataTransfer.dropEffect = 'move';
   };
 
+  // Helper function to check if a date is a working day
+  const isWorkingDay = (date: Date, lineId: string) => {
+    return !isWeekend(date) && !isHoliday(date, lineId);
+  };
+
+  // Helper function to get available capacity for a specific date and line
+  const getAvailableCapacity = (date: Date, lineId: string) => {
+    const dateStr = date.toISOString().split('T')[0];
+    const existingOrders = plannedOrders.filter(order => 
+      order.line_id === lineId && order.scheduled_date === dateStr
+    );
+    const usedCapacity = existingOrders.reduce((sum, order) => sum + order.quantity, 0);
+    const line = productionLines.find(l => l.id === lineId);
+    return (line?.capacity || 0) - usedCapacity;
+  };
+
+  // Helper function to find conflicting orders on a date
+  const getConflictingOrders = (date: Date, lineId: string) => {
+    const dateStr = date.toISOString().split('T')[0];
+    return plannedOrders.filter(order => 
+      order.line_id === lineId && order.scheduled_date === dateStr
+    );
+  };
+
+  // Helper function to reschedule conflicting orders
+  const rescheduleConflictingOrders = async (conflictingOrders: PlannedOrder[], newStartDate: Date, lineId: string) => {
+    const ordersToReschedule = [...conflictingOrders].sort((a, b) => 
+      new Date(a.scheduled_date).getTime() - new Date(b.scheduled_date).getTime()
+    );
+
+    let currentDate = new Date(newStartDate);
+    const rescheduledOrders: PlannedOrder[] = [];
+
+    for (const order of ordersToReschedule) {
+      // Find next available date for this order
+      while (!isWorkingDay(currentDate, lineId) || getAvailableCapacity(currentDate, lineId) < order.quantity) {
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+
+      const dateStr = currentDate.toISOString().split('T')[0];
+      
+      // Update in database
+      await supabase
+        .from('planned_orders')
+        .update({ planned_date: dateStr })
+        .eq('id', order.id);
+
+      // Update local state
+      const updatedOrder = { ...order, scheduled_date: dateStr };
+      rescheduledOrders.push(updatedOrder);
+      
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    return rescheduledOrders;
+  };
+
+  // Main drop handler with advanced scheduling logic
   const handleDrop = async (e: React.DragEvent, line: ProductionLine, date: Date) => {
     e.preventDefault();
     
-    if (draggedPO && isLineActive(line)) {
-      const totalQuantity = draggedPO.pending_qty || 0;
-      const lineCapacity = line.capacity;
-      
-      if (totalQuantity <= 0) {
-        toast({
-          title: 'Invalid Quantity',
-          description: 'Order has no pending quantity to schedule',
-          variant: 'destructive',
+    if (!draggedPO || !isLineActive(line)) {
+      setDraggedPO(null);
+      return;
+    }
+
+    const totalQuantity = draggedPO.pending_qty || 0;
+    const lineCapacity = line.capacity;
+    
+    if (totalQuantity <= 0) {
+      toast({
+        title: 'Invalid Quantity',
+        description: 'Order has no pending quantity to schedule',
+        variant: 'destructive',
+      });
+      setDraggedPO(null);
+      return;
+    }
+
+    // Check if the target date is a working day
+    if (!isWorkingDay(date, line.id)) {
+      toast({
+        title: 'Invalid Date',
+        description: 'Cannot schedule on holidays or weekends',
+        variant: 'destructive',
+      });
+      setDraggedPO(null);
+      return;
+    }
+
+    try {
+      // Check for conflicts on the drop date
+      const conflictingOrders = getConflictingOrders(date, line.id);
+      const availableCapacity = getAvailableCapacity(date, line.id);
+
+      // If there are conflicts and not enough capacity, show dialog
+      if (conflictingOrders.length > 0 && availableCapacity < totalQuantity) {
+        setDropDialogData({
+          targetOrder: conflictingOrders[0],
+          targetDate: date,
+          targetLine: line
         });
-        setDraggedPO(null);
+        setShowDropPositionDialog(true);
         return;
       }
 
-      // Check if the target date is a holiday or weekend
-      if (isHoliday(date, line.id) || isWeekend(date)) {
-        toast({
-          title: 'Invalid Date',
-          description: 'Cannot schedule on holidays or weekends',
-          variant: 'destructive',
-        });
-        setDraggedPO(null);
-        return;
-      }
+      // Calculate scheduling plan
+      let remainingQuantity = totalQuantity;
+      let currentDate = new Date(date);
+      const schedulingPlan: Array<{
+        date: string;
+        quantity: number;
+      }> = [];
 
-      // Get existing orders for this line and date
-      const dateString = date.toISOString().split('T')[0];
-      const existingOrders = plannedOrders.filter(order => 
-        order.line_id === line.id && order.scheduled_date === dateString
-      );
-      const usedCapacity = existingOrders.reduce((sum, order) => sum + order.quantity, 0);
-      const availableCapacity = lineCapacity - usedCapacity;
-
-      try {
-        let plannedDays: Array<{
-          po_id: string;
-          line_id: string;
-          scheduled_date: string;
-          quantity: number;
-          status: 'planned';
-        }> = [];
-
-        let remainingQuantity = totalQuantity;
-        let currentDate = new Date(date);
-
-        // Schedule across multiple days if needed
-        while (remainingQuantity > 0) {
-          const dateStr = currentDate.toISOString().split('T')[0];
+      // Schedule across multiple days if needed
+      while (remainingQuantity > 0) {
+        if (isWorkingDay(currentDate, line.id)) {
+          const availableCapacityOnDate = getAvailableCapacity(currentDate, line.id);
           
-          // Skip holidays and weekends
-          if (isHoliday(currentDate, line.id) || isWeekend(currentDate)) {
-            currentDate.setDate(currentDate.getDate() + 1);
-            continue;
-          }
-
-          // Get available capacity for this date
-          const existingOrdersOnDate = plannedOrders.filter(order => 
-            order.line_id === line.id && order.scheduled_date === dateStr
-          );
-          const usedCapacityOnDate = existingOrdersOnDate.reduce((sum, order) => sum + order.quantity, 0);
-          const availableCapacityOnDate = lineCapacity - usedCapacityOnDate;
-
           if (availableCapacityOnDate > 0) {
             const quantityToSchedule = Math.min(remainingQuantity, availableCapacityOnDate);
             
-            plannedDays.push({
-              po_id: draggedPO.name,
-              line_id: line.id,
-              scheduled_date: dateStr,
-              quantity: quantityToSchedule,
-              status: 'planned'
+            schedulingPlan.push({
+              date: currentDate.toISOString().split('T')[0],
+              quantity: quantityToSchedule
             });
 
             remainingQuantity -= quantityToSchedule;
           }
-
-          currentDate.setDate(currentDate.getDate() + 1);
-          
-          // Prevent infinite loops
-          if (currentDate > new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)) {
-            break;
-          }
         }
 
-        if (plannedDays.length === 0) {
-          toast({
-            title: 'No Available Capacity',
-            description: 'No available capacity found for scheduling',
-            variant: 'destructive',
-          });
-          setDraggedPO(null);
-          return;
+        currentDate.setDate(currentDate.getDate() + 1);
+        
+        // Safety check to prevent infinite loops
+        if (currentDate > new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)) {
+          break;
         }
+      }
 
-        // Save to database - transform to planned_production format
-        const plannedProductionData = plannedDays.map(day => ({
-          purchase_id: day.po_id,
-          line_id: day.line_id,
-          planned_date: day.scheduled_date,
-          planned_quantity: day.quantity,
-          status: day.status,
-          order_index: 0
-        }));
-
-        const { data, error } = await supabase
-          .from('planned_production')
-          .insert(plannedProductionData)
-          .select();
-
-        if (error) throw error;
-
-        // Update local state - transform back to PlannedOrder format
-        const transformedData = data.map(planned => ({
-          id: planned.id,
-          po_id: planned.purchase_id,
-          line_id: planned.line_id,
-          scheduled_date: planned.planned_date,
-          quantity: planned.planned_quantity,
-          status: planned.status
-        }));
-        setPlannedOrders(prev => [...prev, ...transformedData]);
-
-        // Update PO pending quantity
-        const scheduledQuantity = totalQuantity - remainingQuantity;
-        const newPendingQty = Math.max(0, (draggedPO.pending_qty || 0) - scheduledQuantity);
-
-        const { error: updateError } = await supabase
-          .from('purchases')
-          .update({ 
-            pending_qty: newPendingQty,
-            state: newPendingQty <= 0 ? 'planned' : 'purchase'
-          })
-          .eq('id', draggedPO.id);
-
-        if (updateError) throw updateError;
-
-        // Update local PO state
-        if (newPendingQty <= 0) {
-          setPurchaseOrders(prev => prev.filter(po => po.id !== draggedPO.id));
-        } else {
-          setPurchaseOrders(prev => prev.map(po => 
-            po.id === draggedPO.id ? { ...po, pending_qty: newPendingQty } : po
-          ));
-        }
-
-        const dateRange = plannedDays.length > 1 
-          ? `${plannedDays[0].scheduled_date} to ${plannedDays[plannedDays.length - 1].scheduled_date}`
-          : plannedDays[0].scheduled_date;
-
-        const skipMessage = remainingQuantity > 0 ? ` (${remainingQuantity} units could not be scheduled)` : '';
-
+      if (schedulingPlan.length === 0) {
         toast({
-          title: 'Order Scheduled',
-          description: `${draggedPO.name} (${scheduledQuantity} units) scheduled on ${line.name} from ${dateRange}${skipMessage}`,
-        });
-
-      } catch (error) {
-        console.error('Error scheduling order:', error);
-        toast({
-          title: 'Scheduling Error',
-          description: 'Failed to schedule the order',
+          title: 'No Available Capacity',
+          description: 'No available capacity found for scheduling',
           variant: 'destructive',
         });
+        setDraggedPO(null);
+        return;
       }
+
+      // Save to database
+      const plannedProductionData = schedulingPlan.map((plan, index) => ({
+        purchase_id: draggedPO.id,
+        line_id: line.id,
+        planned_date: plan.date,
+        planned_quantity: plan.quantity,
+        status: 'planned',
+        order_index: index
+      }));
+
+      const { data, error } = await supabase
+        .from('planned_orders')
+        .insert(plannedProductionData)
+        .select();
+
+      if (error) throw error;
+
+      // Transform back to PlannedOrder format
+      const transformedData = data.map(planned => ({
+        id: planned.id,
+        po_id: planned.purchase_id,
+        line_id: planned.line_id,
+        scheduled_date: planned.planned_date,
+        quantity: planned.planned_quantity,
+        status: planned.status
+      }));
+
+      setPlannedOrders(prev => [...prev, ...transformedData]);
+
+      // Update PO state
+      const scheduledQuantity = totalQuantity - remainingQuantity;
+      const newPendingQty = Math.max(0, (draggedPO.pending_qty || 0) - scheduledQuantity);
+
+      await supabase
+        .from('purchases')
+        .update({ 
+          pending_qty: newPendingQty,
+          state: newPendingQty <= 0 ? 'planned' : 'purchase'
+        })
+        .eq('id', draggedPO.id);
+
+      // Update local PO state
+      if (newPendingQty <= 0) {
+        setPurchaseOrders(prev => prev.filter(po => po.id !== draggedPO.id));
+      } else {
+        setPurchaseOrders(prev => prev.map(po => 
+          po.id === draggedPO.id ? { ...po, pending_qty: newPendingQty } : po
+        ));
+      }
+
+      const dateRange = schedulingPlan.length > 1 
+        ? `${schedulingPlan[0].date} to ${schedulingPlan[schedulingPlan.length - 1].date}`
+        : schedulingPlan[0].date;
+
+      const skipMessage = remainingQuantity > 0 ? ` (${remainingQuantity} units could not be scheduled)` : '';
+
+      toast({
+        title: 'Order Scheduled Successfully',
+        description: `${draggedPO.name} (${scheduledQuantity} units) scheduled on ${line.name} from ${dateRange}${skipMessage}`,
+      });
+
+    } catch (error) {
+      console.error('Error scheduling order:', error);
+      toast({
+        title: 'Scheduling Error',
+        description: 'Failed to schedule the order',
+        variant: 'destructive',
+      });
     }
     
     setDraggedPO(null);
   };
 
+  // Handle selection of planned orders
+  const handlePlannedOrderClick = (plannedOrder: PlannedOrder, event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    // Get all blocks for the same PO
+    const allBlocksForPO = plannedOrders.filter(order => order.po_id === plannedOrder.po_id);
+    const blockIds = allBlocksForPO.map(order => order.id);
+
+    if (event.ctrlKey || event.metaKey) {
+      // Multi-select mode
+      setIsMultiSelectMode(true);
+      setSelectedPlannedOrders(prev => {
+        const newSelection = new Set(prev);
+        if (newSelection.has(plannedOrder.id)) {
+          // Deselect all blocks for this PO
+          blockIds.forEach(id => newSelection.delete(id));
+        } else {
+          // Select all blocks for this PO
+          blockIds.forEach(id => newSelection.add(id));
+        }
+        return newSelection;
+      });
+    } else {
+      // Single select - select all blocks for this PO
+      setSelectedPlannedOrders(new Set(blockIds));
+      setIsMultiSelectMode(blockIds.length > 1);
+    }
+  };
+
   // Handle dragging planned orders
   const handlePlannedOrderDragStart = (e: React.DragEvent, plannedOrder: PlannedOrder) => {
-    setDraggedPlannedOrder(plannedOrder);
+    // If this order is part of a selection, drag all selected orders
+    if (selectedPlannedOrders.has(plannedOrder.id)) {
+      const selectedOrders = plannedOrders.filter(order => selectedPlannedOrders.has(order.id));
+      setDraggedPlannedOrder(plannedOrder);
+      e.dataTransfer.setData('application/json', JSON.stringify({
+        type: 'multiple-planned-orders',
+        orders: selectedOrders
+      }));
+    } else {
+      setDraggedPlannedOrder(plannedOrder);
+      e.dataTransfer.setData('application/json', JSON.stringify({
+        type: 'single-planned-order',
+        order: plannedOrder
+      }));
+    }
     e.dataTransfer.effectAllowed = 'move';
+  };
+
+  // Clear selection when clicking elsewhere
+  const clearSelection = () => {
+    setSelectedPlannedOrders(new Set());
+    setIsMultiSelectMode(false);
   };
 
   // Handle dropping onto existing planned order blocks (shows dialog)
@@ -998,7 +1099,7 @@ export const ProductionPlanner: React.FC = () => {
   };
 
   // Handle the dialog choice confirmation
-  const handleDropPositionConfirm = async (choice: 'where-dropped' | 'after-order') => {
+  const handleDropPositionConfirm = async (choice: 'plan-right-away' | 'plan-after') => {
     setIsManualScheduling(true);
     const { targetOrder, targetDate, targetLine } = dropDialogData;
     
@@ -1008,11 +1109,86 @@ export const ProductionPlanner: React.FC = () => {
     }
 
     try {
-      if (choice === 'where-dropped') {
-        // Schedule at the exact date where dropped
-        await handleDrop(new Event('drop') as any, targetLine, targetDate);
-      } else if (choice === 'after-order') {
-        // Find the last day of the target order and use remaining capacity
+      if (choice === 'plan-right-away') {
+        // New PO takes priority - reschedule conflicting orders
+        const conflictingOrders = getConflictingOrders(targetDate, targetLine.id);
+        
+        // Schedule the new PO first
+        const totalQuantity = draggedPO.pending_qty || 0;
+        let remainingQuantity = totalQuantity;
+        let currentDate = new Date(targetDate);
+        const schedulingPlan: Array<{ date: string; quantity: number; }> = [];
+
+        // Plan the new PO
+        while (remainingQuantity > 0) {
+          if (isWorkingDay(currentDate, targetLine.id)) {
+            const plannedQuantity = Math.min(remainingQuantity, targetLine.capacity);
+            
+            schedulingPlan.push({
+              date: currentDate.toISOString().split('T')[0],
+              quantity: plannedQuantity
+            });
+
+            remainingQuantity -= plannedQuantity;
+          }
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+
+        // Remove conflicting orders from database and local state
+        for (const conflictOrder of conflictingOrders) {
+          await supabase
+            .from('planned_orders')
+            .delete()
+            .eq('id', conflictOrder.id);
+        }
+        
+        setPlannedOrders(prev => 
+          prev.filter(order => !conflictingOrders.some(conflict => conflict.id === order.id))
+        );
+
+        // Schedule new PO
+        const plannedProductionData = schedulingPlan.map((plan, index) => ({
+          purchase_id: draggedPO.id,
+          line_id: targetLine.id,
+          planned_date: plan.date,
+          planned_quantity: plan.quantity,
+          status: 'planned',
+          order_index: index
+        }));
+
+        const { data, error } = await supabase
+          .from('planned_orders')
+          .insert(plannedProductionData)
+          .select();
+
+        if (error) throw error;
+
+        // Add new planned orders to state
+        const transformedData = data.map(planned => ({
+          id: planned.id,
+          po_id: planned.purchase_id,
+          line_id: planned.line_id,
+          scheduled_date: planned.planned_date,
+          quantity: planned.planned_quantity,
+          status: planned.status
+        }));
+
+        setPlannedOrders(prev => [...prev, ...transformedData]);
+
+        // Find next available date after new PO ends
+        const lastPlannedDate = new Date(schedulingPlan[schedulingPlan.length - 1].date);
+        lastPlannedDate.setDate(lastPlannedDate.getDate() + 1);
+
+        // Reschedule conflicting orders after the new PO
+        await rescheduleConflictingOrders(conflictingOrders, lastPlannedDate, targetLine.id);
+
+        toast({
+          title: 'Order Prioritized',
+          description: `${draggedPO.name} scheduled with priority. Existing orders rescheduled.`,
+        });
+
+      } else if (choice === 'plan-after') {
+        // Schedule after existing orders, utilizing remaining capacity
         const allOrdersForTargetPO = plannedOrders.filter(order => order.po_id === targetOrder.po_id);
         const sortedTargetOrders = allOrdersForTargetPO.sort((a, b) => 
           new Date(a.scheduled_date).getTime() - new Date(b.scheduled_date).getTime()
@@ -1021,34 +1197,73 @@ export const ProductionPlanner: React.FC = () => {
         const lastOrder = sortedTargetOrders[sortedTargetOrders.length - 1];
         const lastDate = new Date(lastOrder.scheduled_date);
         
-        // Calculate remaining capacity on the last day
-        const lastDateStr = lastDate.toISOString().split('T')[0];
-        const allOrdersOnLastDay = plannedOrders.filter(order => 
-          order.line_id === targetLine.id && order.scheduled_date === lastDateStr
-        );
-        const usedCapacityOnLastDay = allOrdersOnLastDay.reduce((sum, order) => sum + order.quantity, 0);
-        const remainingCapacityOnLastDay = targetLine.capacity - usedCapacityOnLastDay;
+        // Check remaining capacity on last day
+        const remainingCapacityOnLastDay = getAvailableCapacity(lastDate, targetLine.id);
         
-        console.log('📊 Total quantity calculation:', {
-          po: draggedPO.name,
-          pendingQty: draggedPO.pending_qty,
-          remainingCapacity: remainingCapacityOnLastDay
-        });
+        let startDate = new Date(lastDate);
+        let totalQuantity = draggedPO.pending_qty || 0;
 
+        // Use remaining capacity on last day if available
         if (remainingCapacityOnLastDay > 0) {
-          // Start scheduling after the last day
-          const afterDate = new Date(lastDate);
-          afterDate.setDate(afterDate.getDate() + 1);
-          await handleDrop(new Event('drop') as any, targetLine, afterDate);
-        } else {
-          // No quantity to schedule
-          toast({
-            title: 'No Quantity Available',
-            description: `No pending quantity found for ${draggedPO.name}`,
-            variant: 'destructive',
-          });
+          const quantityToUseOnLastDay = Math.min(totalQuantity, remainingCapacityOnLastDay);
+          
+          // Add to existing day
+          const additionalPlan = {
+            purchase_id: draggedPO.id,
+            line_id: targetLine.id,
+            planned_date: lastDate.toISOString().split('T')[0],
+            planned_quantity: quantityToUseOnLastDay,
+            status: 'planned',
+            order_index: 0
+          };
+
+          const { data: additionalData, error: additionalError } = await supabase
+            .from('planned_orders')
+            .insert([additionalPlan])
+            .select();
+
+          if (!additionalError && additionalData) {
+            const transformedAdditional = additionalData.map(planned => ({
+              id: planned.id,
+              po_id: planned.purchase_id,
+              line_id: planned.line_id,
+              scheduled_date: planned.planned_date,
+              quantity: planned.planned_quantity,
+              status: planned.status
+            }));
+
+            setPlannedOrders(prev => [...prev, ...transformedAdditional]);
+            totalQuantity -= quantityToUseOnLastDay;
+          }
         }
+
+        // Schedule remaining quantity on subsequent days
+        if (totalQuantity > 0) {
+          startDate.setDate(startDate.getDate() + 1);
+          
+          const tempPO = { ...draggedPO, pending_qty: totalQuantity };
+          setDraggedPO(tempPO);
+          await handleDrop(new Event('drop') as any, targetLine, startDate);
+        }
+
+        toast({
+          title: 'Order Scheduled After',
+          description: `${draggedPO.name} scheduled after existing orders.`,
+        });
       }
+
+      // Update PO state
+      const newPendingQty = 0; // Assuming full quantity is scheduled
+      await supabase
+        .from('purchases')
+        .update({ 
+          pending_qty: newPendingQty,
+          state: 'planned'
+        })
+        .eq('id', draggedPO.id);
+
+      setPurchaseOrders(prev => prev.filter(po => po.id !== draggedPO.id));
+
     } catch (error) {
       console.error('Error in drop position confirmation:', error);
       toast({
@@ -1060,6 +1275,7 @@ export const ProductionPlanner: React.FC = () => {
       setIsManualScheduling(false);
       setShowDropPositionDialog(false);
       setDropDialogData({ targetOrder: null, targetDate: null, targetLine: null });
+      setDraggedPO(null);
     }
   };
 
@@ -1073,7 +1289,7 @@ export const ProductionPlanner: React.FC = () => {
         
         // Update the planned order
         const { error } = await supabase
-          .from('planned_production')
+          .from('planned_orders')
           .update({
             line_id: line.id,
             planned_date: dateString
@@ -1160,7 +1376,7 @@ export const ProductionPlanner: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100/50">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100/50" onClick={clearSelection}>
       <div className="p-6 space-y-6">
         {/* Header with Management Controls */}
         <div className="flex items-center justify-between">
@@ -1244,6 +1460,14 @@ export const ProductionPlanner: React.FC = () => {
             <span>{holidays.length} holidays</span>
             <span>•</span>
             <span>{lineGroups.length} groups</span>
+            {isMultiSelectMode && (
+              <>
+                <span>•</span>
+                <span className="text-blue-600 font-medium">
+                  {selectedPlannedOrders.size} selected
+                </span>
+              </>
+            )}
           </div>
         </div>
 
@@ -1511,17 +1735,77 @@ export const ProductionPlanner: React.FC = () => {
                                   >
                                     {/* Planned Orders */}
                                     <div className="p-1 space-y-1 overflow-hidden">
-                                      {ordersOnDate.map((planned) => (
-                                        <div
-                                          key={planned.id}
-                                          draggable
-                                          onDragStart={(e) => handlePlannedOrderDragStart(e, planned)}
-                                          className="text-xs p-1 bg-green-100 border border-green-300 rounded cursor-move hover:bg-green-200 transition-colors"
-                                        >
-                                          <div className="font-medium truncate">{planned.po_id}</div>
-                                          <div className="text-xs opacity-75">{planned.quantity}</div>
-                                        </div>
-                                      ))}
+                                      {ordersOnDate.map((planned) => {
+                                        const relatedPO = purchaseOrders.find(po => po.id === planned.po_id);
+                                        return (
+                                          <HoverCard key={planned.id}>
+                                            <HoverCardTrigger asChild>
+                                              <div
+                                                draggable
+                                                onClick={(e) => handlePlannedOrderClick(planned, e)}
+                                                onDragStart={(e) => handlePlannedOrderDragStart(e, planned)}
+                                                className={`text-xs p-1 rounded cursor-move transition-colors ${
+                                                  selectedPlannedOrders.has(planned.id)
+                                                    ? 'bg-blue-200 border border-blue-400 shadow-md'
+                                                    : 'bg-green-100 border border-green-300 hover:bg-green-200'
+                                                }`}
+                                              >
+                                                <div className="font-medium truncate">{planned.po_id}</div>
+                                                <div className="text-xs opacity-75">{planned.quantity?.toLocaleString()}</div>
+                                              </div>
+                                            </HoverCardTrigger>
+                                            <HoverCardContent className="w-80">
+                                              <div className="space-y-3">
+                                                <div>
+                                                  <h4 className="font-semibold">{planned.po_id}</h4>
+                                                  <p className="text-sm text-gray-600">{relatedPO?.partner_name || 'Unknown Partner'}</p>
+                                                  <p className="text-xs text-gray-500">
+                                                    Line: {productionLines.find(l => l.id === planned.line_id)?.name || 'Unknown Line'}
+                                                  </p>
+                                                  <p className="text-xs text-gray-500">
+                                                    Date: {new Date(planned.scheduled_date).toLocaleDateString()}
+                                                  </p>
+                                                  <p className="text-xs text-gray-500">
+                                                    Status: <span className="capitalize">{planned.status}</span>
+                                                  </p>
+                                                </div>
+                                                <div>
+                                                  <h5 className="font-medium text-sm mb-2">Production Details:</h5>
+                                                  <div className="p-2 bg-gray-50 rounded text-xs">
+                                                    <div className="font-medium">Planned Quantity: {planned.quantity?.toLocaleString()}</div>
+                                                    <div className="text-gray-600">
+                                                      Total PO Quantity: {relatedPO?.total_qty?.toLocaleString() || 0}
+                                                    </div>
+                                                    <div className="text-gray-600">
+                                                      Remaining: {relatedPO?.pending_qty?.toLocaleString() || 0}
+                                                    </div>
+                                                  </div>
+                                                </div>
+                                                {relatedPO?.order_lines && relatedPO.order_lines.length > 0 && (
+                                                  <div>
+                                                    <h5 className="font-medium text-sm mb-2">Order Line Items:</h5>
+                                                    <div className="space-y-1 max-h-32 overflow-y-auto">
+                                                      {relatedPO.order_lines.slice(0, 3).map((line, index) => (
+                                                        <div key={index} className="p-1 bg-gray-50 rounded text-xs">
+                                                          <div className="font-medium">{line.product_name}</div>
+                                                          <div className="text-gray-600">
+                                                            Qty: {line.product_qty?.toLocaleString() || 0}
+                                                          </div>
+                                                        </div>
+                                                      ))}
+                                                      {relatedPO.order_lines.length > 3 && (
+                                                        <div className="text-xs text-gray-500 italic">
+                                                          +{relatedPO.order_lines.length - 3} more items...
+                                                        </div>
+                                                      )}
+                                                    </div>
+                                                  </div>
+                                                )}
+                                              </div>
+                                            </HoverCardContent>
+                                          </HoverCard>
+                                        );
+                                      })}
                                     </div>
 
                                     {/* Indicators */}
@@ -1593,17 +1877,77 @@ export const ProductionPlanner: React.FC = () => {
                             >
                               {/* Planned Orders */}
                               <div className="p-1 space-y-1 overflow-hidden">
-                                {ordersOnDate.map((planned) => (
-                                  <div
-                                    key={planned.id}
-                                    draggable
-                                    onDragStart={(e) => handlePlannedOrderDragStart(e, planned)}
-                                    className="text-xs p-1 bg-green-100 border border-green-300 rounded cursor-move hover:bg-green-200 transition-colors"
-                                  >
-                                    <div className="font-medium truncate">{planned.po_id}</div>
-                                    <div className="text-xs opacity-75">{planned.quantity}</div>
-                                  </div>
-                                ))}
+                                {ordersOnDate.map((planned) => {
+                                  const relatedPO = purchaseOrders.find(po => po.id === planned.po_id);
+                                  return (
+                                    <HoverCard key={planned.id}>
+                                      <HoverCardTrigger asChild>
+                                        <div
+                                          draggable
+                                          onClick={(e) => handlePlannedOrderClick(planned, e)}
+                                          onDragStart={(e) => handlePlannedOrderDragStart(e, planned)}
+                                          className={`text-xs p-1 rounded cursor-move transition-colors ${
+                                            selectedPlannedOrders.has(planned.id)
+                                              ? 'bg-blue-200 border border-blue-400 shadow-md'
+                                              : 'bg-green-100 border border-green-300 hover:bg-green-200'
+                                          }`}
+                                        >
+                                          <div className="font-medium truncate">{planned.po_id}</div>
+                                          <div className="text-xs opacity-75">{planned.quantity?.toLocaleString()}</div>
+                                        </div>
+                                      </HoverCardTrigger>
+                                      <HoverCardContent className="w-80">
+                                        <div className="space-y-3">
+                                          <div>
+                                            <h4 className="font-semibold">{planned.po_id}</h4>
+                                            <p className="text-sm text-gray-600">{relatedPO?.partner_name || 'Unknown Partner'}</p>
+                                            <p className="text-xs text-gray-500">
+                                              Line: {productionLines.find(l => l.id === planned.line_id)?.name || 'Unknown Line'}
+                                            </p>
+                                            <p className="text-xs text-gray-500">
+                                              Date: {new Date(planned.scheduled_date).toLocaleDateString()}
+                                            </p>
+                                            <p className="text-xs text-gray-500">
+                                              Status: <span className="capitalize">{planned.status}</span>
+                                            </p>
+                                          </div>
+                                          <div>
+                                            <h5 className="font-medium text-sm mb-2">Production Details:</h5>
+                                            <div className="p-2 bg-gray-50 rounded text-xs">
+                                              <div className="font-medium">Planned Quantity: {planned.quantity?.toLocaleString()}</div>
+                                              <div className="text-gray-600">
+                                                Total PO Quantity: {relatedPO?.total_qty?.toLocaleString() || 0}
+                                              </div>
+                                              <div className="text-gray-600">
+                                                Remaining: {relatedPO?.pending_qty?.toLocaleString() || 0}
+                                              </div>
+                                            </div>
+                                          </div>
+                                          {relatedPO?.order_lines && relatedPO.order_lines.length > 0 && (
+                                            <div>
+                                              <h5 className="font-medium text-sm mb-2">Order Line Items:</h5>
+                                              <div className="space-y-1 max-h-32 overflow-y-auto">
+                                                {relatedPO.order_lines.slice(0, 3).map((line, index) => (
+                                                  <div key={index} className="p-1 bg-gray-50 rounded text-xs">
+                                                    <div className="font-medium">{line.product_name}</div>
+                                                    <div className="text-gray-600">
+                                                      Qty: {line.product_qty?.toLocaleString() || 0}
+                                                    </div>
+                                                  </div>
+                                                ))}
+                                                {relatedPO.order_lines.length > 3 && (
+                                                  <div className="text-xs text-gray-500 italic">
+                                                    +{relatedPO.order_lines.length - 3} more items...
+                                                  </div>
+                                                )}
+                                              </div>
+                                            </div>
+                                          )}
+                                        </div>
+                                      </HoverCardContent>
+                                    </HoverCard>
+                                  );
+                                })}
                               </div>
 
                               {/* Indicators */}
@@ -1653,7 +1997,7 @@ export const ProductionPlanner: React.FC = () => {
                         <div className="text-xs text-gray-600">{line?.name}</div>
                         <div className="flex items-center justify-between">
                           <span className="text-xs text-gray-600">
-                            {planned.quantity.toLocaleString()}
+                            {planned.quantity?.toLocaleString() || '0'}
                           </span>
                           <Badge className="bg-green-100 text-green-800 text-xs">
                             {planned.status}
@@ -2020,26 +2364,41 @@ export const ProductionPlanner: React.FC = () => {
       <Dialog open={showDropPositionDialog} onOpenChange={setShowDropPositionDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Choose Drop Position</DialogTitle>
+            <DialogTitle>Scheduling Conflict Detected</DialogTitle>
             <DialogDescription>
-              How would you like to schedule this order?
+              There are existing orders on this date. How would you like to schedule your order?
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
-            <Button
-              variant="outline"
-              className="w-full justify-start"
-              onClick={() => handleDropPositionConfirm('where-dropped')}
-            >
-              Schedule at dropped date
-            </Button>
-            <Button
-              variant="outline"
-              className="w-full justify-start"
-              onClick={() => handleDropPositionConfirm('after-order')}
-            >
-              Schedule after existing order
-            </Button>
+          <div className="space-y-4">
+            <div className="p-3 bg-blue-50 rounded-lg">
+              <h4 className="font-medium text-sm mb-2">Order to Schedule:</h4>
+              <p className="text-sm">{draggedPO?.name}</p>
+              <p className="text-xs text-gray-600">Quantity: {draggedPO?.pending_qty?.toLocaleString()}</p>
+              <p className="text-xs text-gray-600">Partner: {draggedPO?.partner_name}</p>
+            </div>
+            
+            <div className="space-y-3">
+              <Button
+                variant="default"
+                className="w-full justify-start"
+                onClick={() => handleDropPositionConfirm('plan-right-away')}
+              >
+                <div className="text-left">
+                  <div className="font-medium">Plan Right Away</div>
+                  <div className="text-xs opacity-75">This order takes priority. Existing orders will be rescheduled.</div>
+                </div>
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full justify-start"
+                onClick={() => handleDropPositionConfirm('plan-after')}
+              >
+                <div className="text-left">
+                  <div className="font-medium">Plan After</div>
+                  <div className="text-xs opacity-75">Schedule after existing orders, using remaining capacity.</div>
+                </div>
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
