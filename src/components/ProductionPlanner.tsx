@@ -810,7 +810,7 @@ export const ProductionPlanner: React.FC = () => {
 
   // Helper function to check if a date is a working day
   const isWorkingDay = (date: Date, lineId: string) => {
-    return !isWeekend(date) && !isHoliday(date, lineId);
+    return !isHoliday(date, lineId);
   };
 
   // Helper function to get available capacity for a specific date and line
@@ -891,7 +891,7 @@ export const ProductionPlanner: React.FC = () => {
     if (!isWorkingDay(date, line.id)) {
       toast({
         title: 'Invalid Date',
-        description: 'Cannot schedule on holidays or weekends',
+        description: 'Cannot schedule on holidays',
         variant: 'destructive',
       });
       setDraggedPO(null);
@@ -965,8 +965,8 @@ export const ProductionPlanner: React.FC = () => {
           // Find the last day of our new scheduling plan
           const lastScheduledDate = schedulingPlan[schedulingPlan.length - 1]?.date;
           if (lastScheduledDate) {
+            // Start from the last scheduled date to use remaining capacity
             let rescheduleDate = new Date(lastScheduledDate);
-            rescheduleDate.setDate(rescheduleDate.getDate() + 1);
             
             // Find next available slot for the moved order
             let remainingToReschedule = orderToMove.quantity;
@@ -974,12 +974,35 @@ export const ProductionPlanner: React.FC = () => {
             
             while (remainingToReschedule > 0) {
               if (isWorkingDay(rescheduleDate, line.id)) {
-                const availableCapacity = getAvailableCapacity(rescheduleDate, line.id);
+                const dateStr = rescheduleDate.toISOString().split('T')[0];
+                
+                // Calculate available capacity after considering the new order and moved orders
+                let usedCapacity = 0;
+                
+                // Add capacity used by the new order on this date
+                const newOrderOnThisDate = schedulingPlan.find(plan => plan.date === dateStr);
+                if (newOrderOnThisDate) {
+                  usedCapacity += newOrderOnThisDate.quantity;
+                }
+                
+                // Add capacity used by existing planned orders (excluding orders we're moving)
+                const existingOrders = plannedOrders.filter(order => 
+                  order.line_id === line.id && 
+                  order.scheduled_date === dateStr &&
+                  !ordersToMove.some(moveOrder => moveOrder.id === order.id)
+                );
+                usedCapacity += existingOrders.reduce((sum, order) => sum + order.quantity, 0);
+                
+                // Add capacity used by previously rescheduled orders on this date
+                const previouslyRescheduled = reschedulePlan.filter(plan => plan.date === dateStr);
+                usedCapacity += previouslyRescheduled.reduce((sum, plan) => sum + plan.quantity, 0);
+                
+                const availableCapacity = Math.max(0, line.capacity - usedCapacity);
                 
                 if (availableCapacity > 0) {
                   const quantityToSchedule = Math.min(remainingToReschedule, availableCapacity);
                   reschedulePlan.push({
-                    date: rescheduleDate.toISOString().split('T')[0],
+                    date: dateStr,
                     quantity: quantityToSchedule
                   });
                   remainingToReschedule -= quantityToSchedule;
@@ -1189,8 +1212,8 @@ export const ProductionPlanner: React.FC = () => {
     // Create and show context menu
     const contextMenu = document.createElement('div');
     contextMenu.className = 'fixed bg-white border border-gray-200 rounded-md shadow-lg z-50 py-1';
-    contextMenu.style.left = `${event.pageX}px`;
-    contextMenu.style.top = `${event.pageY}px`;
+    contextMenu.style.left = `${event.clientX}px`;
+    contextMenu.style.top = `${event.clientY}px`;
     
     const menuItem = document.createElement('button');
     menuItem.className = 'block w-full text-left px-4 py-2 text-sm hover:bg-gray-100';
