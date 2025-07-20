@@ -270,8 +270,12 @@ export const ProductionPlanner: React.FC = () => {
           const orderLines = Array.isArray(purchase.order_lines) ? purchase.order_lines : [];
           // Total quantity: Sum of product_qty from order lines
           const totalQty = orderLines.reduce((sum, line) => sum + (line.product_qty || 0), 0);
-          // Pending quantity: Use pending_qty from purchases table
-          const pendingQty = purchase.pending_qty || 0;
+          // Pending quantity: Calculate as product_qty - qty_received for each line
+          const pendingQty = orderLines.reduce((sum, line) => {
+            const productQty = line.product_qty || 0;
+            const qtyReceived = line.qty_received || 0;
+            return sum + Math.max(0, productQty - qtyReceived);
+          }, 0);
           
           return {
             id: purchase.id,
@@ -895,39 +899,51 @@ export const ProductionPlanner: React.FC = () => {
     }
 
     try {
-      // Check for conflicts on the drop date
-      const conflictingOrders = getConflictingOrders(date, line.id);
-      const availableCapacity = getAvailableCapacity(date, line.id);
-
-      // If there are conflicts and not enough capacity, show dialog
-      if (conflictingOrders.length > 0 && availableCapacity < totalQuantity) {
-        setDropDialogData({
-          targetOrder: conflictingOrders[0],
-          targetDate: date,
-          targetLine: line
-        });
-        setShowDropPositionDialog(true);
-        return;
-      }
-
-      // Calculate scheduling plan
+      // Calculate scheduling plan with collision detection
       let remainingQuantity = totalQuantity;
       let currentDate = new Date(date);
       const schedulingPlan: Array<{
         date: string;
         quantity: number;
       }> = [];
+      const ordersToMove: PlannedOrder[] = [];
 
       // Schedule across multiple days if needed
       while (remainingQuantity > 0) {
         if (isWorkingDay(currentDate, line.id)) {
+          const dateStr = currentDate.toISOString().split('T')[0];
+          const conflictingOrders = getConflictingOrders(currentDate, line.id);
           const availableCapacityOnDate = getAvailableCapacity(currentDate, line.id);
           
-          if (availableCapacityOnDate > 0) {
-            const quantityToSchedule = Math.min(remainingQuantity, availableCapacityOnDate);
+          // Check if we need to move conflicting orders
+          if (availableCapacityOnDate < remainingQuantity && conflictingOrders.length > 0) {
+            // Move conflicting orders that would be displaced
+            const capacityNeeded = Math.min(remainingQuantity, line.capacity);
+            let capacityToFree = capacityNeeded - availableCapacityOnDate;
+            
+            for (const conflictingOrder of conflictingOrders) {
+              if (capacityToFree <= 0) break;
+              
+              // Add to orders to move (avoid duplicates)
+              if (!ordersToMove.some(order => order.id === conflictingOrder.id)) {
+                ordersToMove.push(conflictingOrder);
+                capacityToFree -= conflictingOrder.quantity;
+              }
+            }
+          }
+          
+          // Calculate available capacity after moving conflicting orders
+          const effectiveCapacity = Math.min(line.capacity, availableCapacityOnDate + 
+            ordersToMove
+              .filter(order => order.scheduled_date === dateStr && order.line_id === line.id)
+              .reduce((sum, order) => sum + order.quantity, 0)
+          );
+          
+          if (effectiveCapacity > 0) {
+            const quantityToSchedule = Math.min(remainingQuantity, effectiveCapacity);
             
             schedulingPlan.push({
-              date: currentDate.toISOString().split('T')[0],
+              date: dateStr,
               quantity: quantityToSchedule
             });
 
@@ -941,6 +957,70 @@ export const ProductionPlanner: React.FC = () => {
         if (currentDate > new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)) {
           break;
         }
+      }
+
+      // Move conflicting orders before scheduling new order
+      if (ordersToMove.length > 0) {
+        for (const orderToMove of ordersToMove) {
+          // Find the last day of our new scheduling plan
+          const lastScheduledDate = schedulingPlan[schedulingPlan.length - 1]?.date;
+          if (lastScheduledDate) {
+            let rescheduleDate = new Date(lastScheduledDate);
+            rescheduleDate.setDate(rescheduleDate.getDate() + 1);
+            
+            // Find next available slot for the moved order
+            let remainingToReschedule = orderToMove.quantity;
+            const reschedulePlan: Array<{date: string; quantity: number}> = [];
+            
+            while (remainingToReschedule > 0) {
+              if (isWorkingDay(rescheduleDate, line.id)) {
+                const availableCapacity = getAvailableCapacity(rescheduleDate, line.id);
+                
+                if (availableCapacity > 0) {
+                  const quantityToSchedule = Math.min(remainingToReschedule, availableCapacity);
+                  reschedulePlan.push({
+                    date: rescheduleDate.toISOString().split('T')[0],
+                    quantity: quantityToSchedule
+                  });
+                  remainingToReschedule -= quantityToSchedule;
+                }
+              }
+              
+              rescheduleDate.setDate(rescheduleDate.getDate() + 1);
+              
+              // Safety check
+              if (rescheduleDate > new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)) {
+                break;
+              }
+            }
+            
+            // Update the moved order's schedule
+            if (reschedulePlan.length > 0) {
+              // Remove old planned order
+              await supabase
+                .from('planned_orders')
+                .delete()
+                .eq('id', orderToMove.id);
+              
+              // Create new planned orders for rescheduled dates
+              const rescheduledData = reschedulePlan.map((plan, index) => ({
+                purchase_id: orderToMove.po_id,
+                line_id: line.id,
+                planned_date: plan.date,
+                planned_quantity: plan.quantity,
+                status: 'planned',
+                order_index: index
+              }));
+              
+              await supabase
+                .from('planned_orders')
+                .insert(rescheduledData);
+            }
+          }
+        }
+        
+        // Refresh planned orders
+        await fetchPlannedOrders();
       }
 
       if (schedulingPlan.length === 0) {
@@ -1054,6 +1134,84 @@ export const ProductionPlanner: React.FC = () => {
       setSelectedPlannedOrders(new Set(blockIds));
       setIsMultiSelectMode(blockIds.length > 1);
     }
+  };
+
+  // Move planned order back to sidebar
+  const movePlannedOrderToSidebar = async (plannedOrder: PlannedOrder) => {
+    try {
+      // Find all blocks for the same PO
+      const allBlocksForPO = plannedOrders.filter(order => order.po_id === plannedOrder.po_id);
+      
+      // Calculate total quantity from all blocks
+      const totalQuantity = allBlocksForPO.reduce((sum, order) => sum + (order.quantity || 0), 0);
+      
+      // Find the related PO and add the total quantity back
+      const relatedPO = purchaseOrders.find(po => po.id === plannedOrder.po_id);
+      if (relatedPO) {
+        const updatedPO = {
+          ...relatedPO,
+          pending_qty: (relatedPO.pending_qty || 0) + totalQuantity
+        };
+        
+        setPurchaseOrders(prev => 
+          prev.map(po => po.id === plannedOrder.po_id ? updatedPO : po)
+        );
+      }
+
+      // Remove all blocks for this PO from planned orders
+      setPlannedOrders(prev => prev.filter(order => order.po_id !== plannedOrder.po_id));
+
+      // Delete all blocks from database
+      await supabase
+        .from('planned_orders')
+        .delete()
+        .eq('purchase_id', plannedOrder.po_id);
+
+      toast({
+        title: 'Order Moved',
+        description: `Complete order (${allBlocksForPO.length} blocks) moved back to sidebar`,
+      });
+    } catch (error) {
+      console.error('Error moving planned order:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to move planned order',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Handle right-click context menu for planned orders
+  const handlePlannedOrderRightClick = (plannedOrder: PlannedOrder, event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    // Create and show context menu
+    const contextMenu = document.createElement('div');
+    contextMenu.className = 'fixed bg-white border border-gray-200 rounded-md shadow-lg z-50 py-1';
+    contextMenu.style.left = `${event.pageX}px`;
+    contextMenu.style.top = `${event.pageY}px`;
+    
+    const menuItem = document.createElement('button');
+    menuItem.className = 'block w-full text-left px-4 py-2 text-sm hover:bg-gray-100';
+    menuItem.textContent = 'Move back to sidebar';
+    menuItem.onclick = () => {
+      movePlannedOrderToSidebar(plannedOrder);
+      document.body.removeChild(contextMenu);
+    };
+    
+    contextMenu.appendChild(menuItem);
+    document.body.appendChild(contextMenu);
+    
+    // Remove context menu when clicking elsewhere
+    const removeMenu = () => {
+      if (document.body.contains(contextMenu)) {
+        document.body.removeChild(contextMenu);
+      }
+      document.removeEventListener('click', removeMenu);
+    };
+    
+    setTimeout(() => document.addEventListener('click', removeMenu), 0);
   };
 
   // Handle dragging planned orders
@@ -1743,6 +1901,7 @@ export const ProductionPlanner: React.FC = () => {
                                               <div
                                                 draggable
                                                 onClick={(e) => handlePlannedOrderClick(planned, e)}
+                                                onContextMenu={(e) => handlePlannedOrderRightClick(planned, e)}
                                                 onDragStart={(e) => handlePlannedOrderDragStart(e, planned)}
                                                 className={`text-xs p-1 rounded cursor-move transition-colors ${
                                                   selectedPlannedOrders.has(planned.id)
@@ -1885,6 +2044,7 @@ export const ProductionPlanner: React.FC = () => {
                                         <div
                                           draggable
                                           onClick={(e) => handlePlannedOrderClick(planned, e)}
+                                          onContextMenu={(e) => handlePlannedOrderRightClick(planned, e)}
                                           onDragStart={(e) => handlePlannedOrderDragStart(e, planned)}
                                           className={`text-xs p-1 rounded cursor-move transition-colors ${
                                             selectedPlannedOrders.has(planned.id)
