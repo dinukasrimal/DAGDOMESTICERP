@@ -41,7 +41,16 @@ export const PendingOrdersSidebar: React.FC<PendingOrdersSidebarProps> = ({
   const handleDragStart = useCallback((e: React.DragEvent, order: Order) => {
     setDraggedOrder(order.id);
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', JSON.stringify(order));
+    
+    // Include source information in drag data
+    const dragData = {
+      ...order,
+      source: 'sidebar',
+      type: 'single-order-drag',
+      orders: [order]
+    };
+    
+    e.dataTransfer.setData('text/plain', JSON.stringify(dragData));
     if (e.currentTarget instanceof HTMLElement) {
       e.currentTarget.style.opacity = '0.5';
     }

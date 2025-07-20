@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { 
@@ -62,11 +63,14 @@ interface PurchaseData {
     price_unit: number;
     price_subtotal: number;
   }>;
+  is_on_hold?: boolean;
 }
 
 interface PurchaseHold {
+  id: string;
   purchase_id: string;
   held_until: string;
+  created_at: string | null;
 }
 
 interface CategoryAnalysis {
@@ -206,7 +210,7 @@ export const AdvancedInventoryReport: React.FC = () => {
     if (inventoryData.length > 0 || salesData.length > 0) {
       analyzeCategories();
     }
-  }, [inventoryData, salesData, selectedMonths, purchaseHolds]);
+  }, [inventoryData, salesData, selectedMonths]);
 
   // Initialize global category filter when category analysis changes
   useEffect(() => {
@@ -252,19 +256,19 @@ export const AdvancedInventoryReport: React.FC = () => {
     try {
       console.log('Loading inventory and sales data...');
       
-      const [inventoryRes, purchaseRes, purchaseHoldsRes, salesRes, productsRes] = await Promise.all([
+      const [inventoryRes, purchaseRes, salesRes, productsRes, holdsRes] = await Promise.all([
         supabase.from('inventory').select('*'),
         supabase.from('purchases').select('*').order('date_order', { ascending: false }),
-        supabase.from('purchase_holds').select('*'),
         supabase.from('invoices').select('*').order('date_order', { ascending: false }),
-        ((supabase as any).from('products')).select('*')
+        ((supabase as any).from('products')).select('*'),
+        supabase.from('purchase_holds').select('*')
       ]);
 
       console.log('Data loaded:', {
         inventory: inventoryRes.data?.length || 0,
         purchases: purchaseRes.data?.length || 0,
-        holds: purchaseHoldsRes.data?.length || 0,
-        sales: salesRes.data?.length || 0
+        sales: salesRes.data?.length || 0,
+        holds: holdsRes.data?.length || 0
       });
 
       if (inventoryRes.error) {
@@ -274,10 +278,6 @@ export const AdvancedInventoryReport: React.FC = () => {
       if (purchaseRes.error) {
         console.error('Purchase error:', purchaseRes.error);
         throw purchaseRes.error;
-      }
-      if (purchaseHoldsRes.error) {
-        console.error('Purchase holds error:', purchaseHoldsRes.error);
-        throw purchaseHoldsRes.error;
       }
       if (salesRes.error) {
         console.error('Sales error:', salesRes.error);
@@ -323,9 +323,46 @@ export const AdvancedInventoryReport: React.FC = () => {
           : []
       }));
 
+      // Set purchase holds data
+      setPurchaseHolds(holdsRes.data || []);
+      
+      // Mark purchases as on hold based on holds data
+      const holdMap = new Map();
+      console.log('Hold records from database:', holdsRes.data);
+      
+      (holdsRes.data || []).forEach((hold: any) => {
+        console.log('Processing hold record:', hold);
+        
+        // Check if this hold is still active (not expired)
+        const heldUntil = new Date(hold.held_until);
+        const now = new Date();
+        
+        if (heldUntil < now) {
+          console.log(`Skipping expired hold for ${hold.purchase_id} (expired: ${hold.held_until})`);
+          return;
+        }
+        
+        // Store the PO name/ID for matching
+        const purchaseId = hold.purchase_id;
+        if (purchaseId) {
+          holdMap.set(purchaseId, true);
+          console.log(`Added to hold map: ${purchaseId}`);
+        }
+      });
+      
+      console.log('Hold map created:', Array.from(holdMap.keys()));
+      
+      const purchasesWithHoldStatus = transformedPurchases.map(purchase => {
+        const isOnHold = holdMap.has(purchase.name);
+        console.log(`Checking PO ${purchase.name}: isOnHold = ${isOnHold}`);
+        return {
+          ...purchase,
+          is_on_hold: isOnHold
+        };
+      });
+
       setInventoryData(transformedInventory);
-      setPurchaseData(transformedPurchases);
-      setPurchaseHolds(purchaseHoldsRes.data || []);
+      setPurchaseData(purchasesWithHoldStatus);
       setSalesData((salesRes.data || []).map(inv => ({
         ...inv,
         order_lines: Array.isArray(inv.order_lines)
@@ -469,11 +506,12 @@ export const AdvancedInventoryReport: React.FC = () => {
   };
 
   const getAvailableIncoming = (productName: string, productId?: string | number): number => {
-    const heldPurchaseIds = new Set(purchaseHolds.map(h => h.purchase_id));
-    
     let totalIncoming = 0;
     purchaseData.forEach(purchase => {
-      if (!heldPurchaseIds.has(purchase.id) && purchase.order_lines) {
+      // Skip if PO is on hold
+      if (purchase.is_on_hold) return;
+      
+      if (purchase.order_lines) {
         purchase.order_lines.forEach(line => {
           let match = false;
           if (productId && 'product_id' in line && line.product_id && String(line.product_id) === String(productId)) {
@@ -502,59 +540,6 @@ export const AdvancedInventoryReport: React.FC = () => {
       ...prev,
       [purchaseId]: !prev[purchaseId]
     }));
-  };
-
-  const handlePurchaseHold = async (purchaseId: string) => {
-    try {
-      const isCurrentlyHeld = purchaseHolds.some(h => h.purchase_id === purchaseId);
-      
-      if (isCurrentlyHeld) {
-        // Remove the hold
-        const { error } = await supabase
-          .from('purchase_holds')
-          .delete()
-          .eq('purchase_id', purchaseId);
-
-        if (error) throw error;
-
-        setPurchaseHolds(prev => prev.filter(h => h.purchase_id !== purchaseId));
-
-        toast({
-          title: "Hold Removed",
-          description: "Purchase order is now active and will be considered in planning",
-        });
-      } else {
-        // Add a hold
-        const heldUntil = new Date();
-        heldUntil.setMonth(heldUntil.getMonth() + 3);
-        
-        const { error } = await supabase
-          .from('purchase_holds')
-          .upsert({
-            purchase_id: purchaseId,
-            held_until: heldUntil.toISOString().split('T')[0]
-          });
-
-        if (error) throw error;
-
-        setPurchaseHolds(prev => [
-          ...prev.filter(h => h.purchase_id !== purchaseId),
-          { purchase_id: purchaseId, held_until: heldUntil.toISOString().split('T')[0] }
-        ]);
-
-        toast({
-          title: "Purchase Held",
-          description: "Purchase order will not be considered in planning for 3 months",
-        });
-      }
-    } catch (error) {
-      console.error('Error toggling purchase hold:', error);
-      toast({
-        title: "Error",
-        description: "Failed to update purchase order status",
-        variant: "destructive",
-      });
-    }
   };
 
   const filterPurchasesByCategory = (category: string) => {
@@ -739,12 +724,65 @@ export const AdvancedInventoryReport: React.FC = () => {
     setExpandedSuppliers(prev => ({ ...prev, [supplier]: !prev[supplier] }));
   };
 
+  // Function to toggle hold status
+  const toggleHoldStatus = async (purchase: PurchaseData) => {
+    try {
+      const isCurrentlyOnHold = purchase.is_on_hold;
+      
+      if (isCurrentlyOnHold) {
+        // Remove hold
+        const { error } = await supabase
+          .from('purchase_holds')
+          .delete()
+          .eq('purchase_id', purchase.name);
+        
+        if (error) throw error;
+        
+        toast({
+          title: "Hold Removed",
+          description: `PO ${purchase.name} is no longer on hold`,
+        });
+      } else {
+        // Add hold
+        // Set hold until tomorrow (24 hours from now)
+        const heldUntil = new Date();
+        heldUntil.setDate(heldUntil.getDate() + 1);
+        
+        const { error } = await supabase
+          .from('purchase_holds')
+          .insert({
+            purchase_id: purchase.name,
+            held_until: heldUntil.toISOString().split('T')[0] // YYYY-MM-DD format
+          });
+        
+        if (error) throw error;
+        
+        toast({
+          title: "Hold Applied",
+          description: `PO ${purchase.name} has been put on hold`,
+        });
+      }
+      
+      // Reload data to update the UI
+      await loadData();
+    } catch (error) {
+      console.error('Error toggling hold status:', error);
+      toast({
+        title: "Error",
+        description: "Failed to toggle hold status: " + (error as Error).message,
+        variant: "destructive",
+      });
+    }
+  };
+
   // Helper to calculate sum of pending for a product (excluding held POs)
   function getPendingIncomingForProduct(product: InventoryData): number {
-    const heldPurchaseIds = new Set(purchaseHolds.map(h => h.purchase_id));
     let sum = 0;
     purchaseData.forEach(po => {
-      if (!heldPurchaseIds.has(po.id) && po.order_lines) {
+      // Skip if PO is on hold
+      if (po.is_on_hold) return;
+      
+      if (po.order_lines) {
         po.order_lines.forEach(line => {
           const anyLine = line as any;
           let lineProductId = undefined;
@@ -1041,7 +1079,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                       </tr>
                       {isSupplierExpanded && (
                         <tr>
-                          <td colSpan={4} className="border p-2">
+                          <td colSpan={6} className="border p-2">
                             <table className="w-full text-xs">
                               <thead>
                                 <tr className="bg-slate-200">
@@ -1055,13 +1093,12 @@ export const AdvancedInventoryReport: React.FC = () => {
                               </thead>
                               <tbody>
                                 {purchases.map((purchase) => {
-                                  const isHeld = purchaseHolds.some(h => h.purchase_id === purchase.id);
                                   const isExpanded = expandedPurchases[purchase.id];
                                   const hasLines = purchase.order_lines && purchase.order_lines.length > 0;
                                   const totalQty = hasLines ? purchase.order_lines.reduce((sum, l) => sum + (l.product_qty || 0), 0) : 0;
                                   return (
                                     <React.Fragment key={purchase.id}>
-                                      <tr className={`hover:bg-gray-50 ${isHeld ? 'bg-red-50' : ''}`}>
+                                      <tr className={`hover:bg-gray-50 ${purchase.is_on_hold ? 'bg-red-50' : ''}`}>
                                         <td className="border p-1">
                                           <div className="flex items-center space-x-2">
                                             {hasLines && (
@@ -1080,30 +1117,46 @@ export const AdvancedInventoryReport: React.FC = () => {
                                           </div>
                                         </td>
                                         <td className="border p-1 text-right">{purchase.received_qty || 0}</td>
-                                        <td className="border p-1 text-right">{purchase.pending_qty || 0}</td>
+                                        <td className="border p-1 text-right">
+                                          <HoverCard>
+                                            <HoverCardTrigger className="cursor-pointer hover:bg-blue-50 px-2 py-1 rounded">
+                                              {purchase.pending_qty || 0}
+                                            </HoverCardTrigger>
+                                            <HoverCardContent className="w-80">
+                                              <div className="space-y-2">
+                                                <h4 className="font-semibold">Order Lines - Pending Quantities</h4>
+                                                {hasLines ? (
+                                                  <div className="space-y-1">
+                                                    {purchase.order_lines.map((line, lineIndex) => {
+                                                      const pendingQty = Math.max(0, line.product_qty - line.qty_received);
+                                                      return pendingQty > 0 ? (
+                                                        <div key={lineIndex} className="flex justify-between text-sm">
+                                                          <span className="font-medium">{line.product_name}</span>
+                                                          <span className="text-orange-600">{pendingQty}</span>
+                                                        </div>
+                                                      ) : null;
+                                                    })}
+                                                  </div>
+                                                ) : (
+                                                  <p className="text-sm text-gray-500">No pending quantities</p>
+                                                )}
+                                              </div>
+                                            </HoverCardContent>
+                                          </HoverCard>
+                                        </td>
                                         <td className="border p-1 text-center">{purchase.expected_date || 'TBD'}</td>
                                         <td className="border p-1 text-center">
-                                          {isHeld ? (
-                                            <Badge variant="destructive">Held</Badge>
-                                          ) : (
-                                            <Badge variant="outline">Active</Badge>
-                                          )}
+                                          <Badge variant={purchase.is_on_hold ? 'destructive' : (purchase.state === 'purchase' ? 'default' : 'secondary')}>
+                                            {purchase.is_on_hold ? 'On Hold' : (purchase.state === 'purchase' ? 'Active' : purchase.state)}
+                                          </Badge>
                                         </td>
                                         <td className="border p-1 text-center">
                                           <Button
                                             size="sm"
-                                            variant={isHeld ? "default" : "destructive"}
-                                            onClick={() => handlePurchaseHold(purchase.id)}
-                                            className="flex items-center space-x-1"
+                                            variant={purchase.is_on_hold ? "outline" : "destructive"}
+                                            onClick={() => toggleHoldStatus(purchase)}
                                           >
-                                            {isHeld ? (
-                                              <>
-                                                <RotateCcw className="h-3 w-3" />
-                                                <span>Activate</span>
-                                              </>
-                                            ) : (
-                                              <span>Hold</span>
-                                            )}
+                                            {purchase.is_on_hold ? 'Unhold' : 'Hold'}
                                           </Button>
                                         </td>
                                       </tr>
@@ -1345,10 +1398,12 @@ export const AdvancedInventoryReport: React.FC = () => {
                         const needsPlanning = Math.max(0, salesQty - stockWithIncoming);
                         const isIncomingExpanded = expandedIncoming[product.id];
                         // Find all purchase order lines (not on hold) for this product
-                        const heldPurchaseIds = new Set(purchaseHolds.map(h => h.purchase_id));
                         const supplierIncomingMap: { [supplier: string]: any[] } = {};
                         purchaseData.forEach(po => {
-                          if (!heldPurchaseIds.has(po.id) && po.order_lines) {
+                          // Skip if PO is on hold
+                          if (po.is_on_hold) return;
+                          
+                          if (po.order_lines) {
                             po.order_lines.forEach(line => {
                               // Normalize product_id for robust matching
                               const anyLine = line as any;
@@ -1746,10 +1801,12 @@ export const AdvancedInventoryReport: React.FC = () => {
                         const urgentQty = Math.max(0, salesQty - product.quantity_on_hand);
                         const isIncomingExpanded = expandedIncoming[product.id];
                         // Find all purchase order lines (not on hold) for this product
-                        const heldPurchaseIds = new Set(purchaseHolds.map(h => h.purchase_id));
                         const supplierIncomingMap: { [supplier: string]: any[] } = {};
                         purchaseData.forEach(po => {
-                          if (!heldPurchaseIds.has(po.id) && po.order_lines) {
+                          // Skip if PO is on hold
+                          if (po.is_on_hold) return;
+                          
+                          if (po.order_lines) {
                             po.order_lines.forEach(line => {
                               // Normalize product_id for robust matching
                               const anyLine = line as any;
@@ -1943,10 +2000,12 @@ export const AdvancedInventoryReport: React.FC = () => {
                               <div className="font-semibold mb-1">Incoming Breakdown for {product.product_name} (Supplier-wise):</div>
                               {(() => {
                                 // Find all purchase order lines (not on hold) for this product
-                                const heldPurchaseIds = new Set(purchaseHolds.map(h => h.purchase_id));
                                 const supplierIncomingMap: { [supplier: string]: any[] } = {};
                                 purchaseData.forEach(po => {
-                                  if (!heldPurchaseIds.has(po.id) && po.order_lines) {
+                                  // Skip if PO is on hold
+                                  if (po.is_on_hold) return;
+                                  
+                                  if (po.order_lines) {
                                     po.order_lines.forEach(line => {
                                       // Normalize product_id for robust matching
                                       const anyLine = line as any;
@@ -2132,10 +2191,12 @@ export const AdvancedInventoryReport: React.FC = () => {
                         const priority = product.quantity_on_hand / salesQty;
                         const availableIncoming = getPendingIncomingForProduct(product);
                         // Supplier breakdown
-                        const heldPurchaseIds = new Set(purchaseHolds.map(h => h.purchase_id));
                         const supplierIncomingMap: { [supplier: string]: any[] } = {};
                         purchaseData.forEach(po => {
-                          if (!heldPurchaseIds.has(po.id) && po.order_lines) {
+                          // Skip if PO is on hold
+                          if (po.is_on_hold) return;
+                          
+                          if (po.order_lines) {
                             po.order_lines.forEach(line => {
                               // Normalize product_id for robust matching
                               const anyLine = line as any;

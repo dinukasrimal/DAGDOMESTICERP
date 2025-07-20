@@ -8,9 +8,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Edit, Trash2, Eye, Calendar, User, Target, TrendingUp, DollarSign } from 'lucide-react';
+import { Edit, Trash2, Eye, Calendar, User, Target, TrendingUp, DollarSign, FileText } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import { generateTargetPDF } from '@/utils/pdfGenerator';
 
 interface SavedTarget {
   id: string;
@@ -253,6 +254,23 @@ export const SavedTargetsManager: React.FC = () => {
       .join(', ');
   };
 
+  const handlePrintPDF = (target: SavedTarget) => {
+    try {
+      generateTargetPDF(target);
+      toast({
+        title: "PDF Generated",
+        description: `Target report for ${target.customer_name} has been downloaded`,
+      });
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      toast({
+        title: "Error",
+        description: "Failed to generate PDF report",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -473,6 +491,15 @@ export const SavedTargetsManager: React.FC = () => {
                 >
                   <Edit className="h-4 w-4 mr-1" />
                   Edit
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handlePrintPDF(target)}
+                  className="flex-1 text-blue-600 hover:text-blue-700"
+                >
+                  <FileText className="h-4 w-4 mr-1" />
+                  PDF
                 </Button>
                 <Button
                   size="sm"

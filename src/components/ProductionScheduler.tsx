@@ -7,9 +7,9 @@ import { GoogleSheetsConfig } from './GoogleSheetsConfig';
 import { Header } from './Header';
 import { LineFilter } from './LineFilter';
 import { Button } from './ui/button';
-import { RefreshCw, FileText, Maximize, Minimize, Database } from 'lucide-react';
+import { RefreshCw, FileText, Maximize, Minimize, Database, Settings2, Calendar as CalendarIcon, Plus, Sidebar, SidebarOpen } from 'lucide-react';
 import { TooltipProvider } from './ui/tooltip';
-import { Order, ProductionLine } from '../types/scheduler';
+import { Order, ProductionLine, LineGroup } from '../types/scheduler';
 import { ReportDialog } from './reports/ReportDialog';
 import { CuttingReportContent } from './reports/CuttingReportContent';
 import { DeliveryReportContent } from './reports/DeliveryReportContent';
@@ -30,6 +30,8 @@ export const ProductionScheduler: React.FC = () => {
   const [selectedProductionLine, setSelectedProductionLine] = useState<ProductionLine | null>(null);
   const [selectedLineIds, setSelectedLineIds] = useState<string[]>([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showQuickActions, setShowQuickActions] = useState(false);
+  const [showSidebar, setShowSidebar] = useState(true);
   
   const {
     orders,
@@ -50,6 +52,9 @@ export const ProductionScheduler: React.FC = () => {
     deleteOrderFromDatabase,
     clearError
   } = useSupabaseProductionData();
+
+  // Line groups state
+  const [lineGroups, setLineGroups] = useState<LineGroup[]>([]);
 
   // Initialize selected lines when production lines are loaded
   React.useEffect(() => {
@@ -89,6 +94,46 @@ export const ProductionScheduler: React.FC = () => {
     setProductionLines(reorderedLines);
   };
 
+  // Line group handlers
+  const handleGroupToggle = (groupId: string, isExpanded: boolean) => {
+    setLineGroups(prev => prev.map(group => 
+      group.id === groupId ? { ...group, isExpanded } : group
+    ));
+  };
+
+  const handleGroupCreate = (groupName: string, lineIds: string[]) => {
+    const newGroup: LineGroup = {
+      id: `group-${Date.now()}`,
+      name: groupName,
+      isExpanded: true,
+      sortOrder: lineGroups.length
+    };
+    
+    setLineGroups(prev => [...prev, newGroup]);
+    
+    // Update lines to assign them to the group
+    const updatedLines = productionLines.map(line => 
+      lineIds.includes(line.id) ? { ...line, groupId: newGroup.id } : line
+    );
+    setProductionLines(updatedLines);
+  };
+
+  const handleGroupDelete = (groupId: string) => {
+    setLineGroups(prev => prev.filter(group => group.id !== groupId));
+    
+    // Remove group assignment from lines
+    const updatedLines = productionLines.map(line => 
+      line.groupId === groupId ? { ...line, groupId: undefined } : line
+    );
+    setProductionLines(updatedLines);
+  };
+
+  const handleLineGroupAssign = (lineId: string, groupId: string | null) => {
+    const updatedLines = productionLines.map(line => 
+      line.id === lineId ? { ...line, groupId: groupId || undefined } : line
+    );
+    setProductionLines(updatedLines);
+  };
   const toggleFullscreen = () => {
     setIsFullscreen(!isFullscreen);
   };
@@ -484,10 +529,39 @@ export const ProductionScheduler: React.FC = () => {
               onSelectAll={handleSelectAll}
               onDeselectAll={handleDeselectAll}
               onLineReorder={handleLineReorder}
+              lineGroups={lineGroups}
+              onGroupToggle={handleGroupToggle}
+              onGroupCreate={handleGroupCreate}
+              onGroupDelete={handleGroupDelete}
+              onLineGroupAssign={handleLineGroupAssign}
             />
           </div>
           
           <div className="flex items-center gap-2">
+            <Button
+              onClick={() => setShowQuickActions(!showQuickActions)}
+              variant="outline"
+              size="sm"
+            >
+              <Settings2 className="h-4 w-4 mr-2" />
+              Quick Actions
+            </Button>
+            
+            {!isFullscreen && (
+              <Button
+                onClick={() => setShowSidebar(!showSidebar)}
+                variant="outline"
+                size="sm"
+                title={showSidebar ? "Hide Sidebar" : "Show Sidebar"}
+              >
+                {showSidebar ? (
+                  <Sidebar className="h-4 w-4" />
+                ) : (
+                  <SidebarOpen className="h-4 w-4" />
+                )}
+              </Button>
+            )}
+            
             <Button
               onClick={() => navigate('/odoo')}
               variant="outline"
@@ -517,10 +591,47 @@ export const ProductionScheduler: React.FC = () => {
           </div>
         </div>
         
+        {/* Quick Actions Panel */}
+        {showQuickActions && (
+          <div className="px-4 py-3 bg-muted/50 border-b border-border">
+            <div className="flex items-center gap-4 flex-wrap">
+              <div className="flex items-center gap-2">
+                <CalendarIcon className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-medium">Holiday Management:</span>
+                <Button
+                  onClick={() => setShowAdminPanel(true)}
+                  variant="outline"
+                  size="sm"
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add Holidays
+                </Button>
+              </div>
+              
+              <div className="flex items-center gap-2">
+                <Settings2 className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-medium">Line Management:</span>
+                <Button
+                  onClick={() => setShowAdminPanel(true)}
+                  variant="outline"
+                  size="sm"
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Manage Lines
+                </Button>
+              </div>
+              
+              <div className="text-sm text-muted-foreground">
+                {holidays.length} holidays • {productionLines.length} lines • {lineGroups.length} groups
+              </div>
+            </div>
+          </div>
+        )}
+        
         {/* Main content area with more space for the plan */}
         <div className="flex-1 flex overflow-hidden">
-          {/* Sidebar container: Hidden in fullscreen mode */}
-          {!isFullscreen && (
+          {/* Sidebar container: Hidden in fullscreen mode or when toggled off */}
+          {!isFullscreen && showSidebar && (
             <div className="w-80 h-full border-r border-border bg-card flex flex-col overflow-y-auto">
               {/* Top section: Google Sheets Config and Refresh Plan */}
               <div className="p-4 border-b border-border space-y-4 flex-shrink-0">
@@ -600,7 +711,6 @@ export const ProductionScheduler: React.FC = () => {
               holidays={holidays}
               rampUpPlans={rampUpPlans}
               onOrderScheduled={handleOrderScheduled}
-              onOrderMovedToPending={handleOrderMovedToPending}
               onOrderSplit={handleOrderSplit}
             />
           </div>

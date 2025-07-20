@@ -9,6 +9,7 @@ import { Checkbox } from './ui/checkbox';
 import { Order, ProductionLine, Holiday, RampUpPlan } from '../types/scheduler';
 import { CalendarDays, Plus, ArrowLeft, Scissors, GripVertical, FileDown, Search, Package } from 'lucide-react';
 import { OverlapConfirmationDialog } from './OverlapConfirmationDialog';
+import { DropPositionChoiceDialog } from './DropPositionChoiceDialog';
 import { downloadElementAsPdf } from '../lib/pdfUtils';
 import { OrderSlot } from './OrderSlot';
 
@@ -18,7 +19,6 @@ interface SchedulingBoardProps {
   holidays: Holiday[];
   rampUpPlans: RampUpPlan[];
   onOrderScheduled: (order: Order, startDate: Date, endDate: Date, dailyPlan: { [date: string]: number }) => Promise<void>;
-  onOrderMovedToPending: (order: Order) => void;
   onOrderSplit: (orderId: string, splitQuantity: number) => void;
 }
 
@@ -28,12 +28,11 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   holidays,
   rampUpPlans,
   onOrderScheduled,
-  onOrderMovedToPending,
   onOrderSplit
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   
-  // Year/Month selection state
+  // Year/Month selection state - Default to current month only
   const [selectedYears, setSelectedYears] = useState<number[]>([new Date().getFullYear()]);
   const [selectedMonths, setSelectedMonths] = useState<number[]>([new Date().getMonth()]);
   
@@ -69,6 +68,20 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     originalTargetDate: null
   });
 
+  const [dropPositionDialog, setDropPositionDialog] = useState<{
+    isOpen: boolean;
+    draggedOrder: Order | null;
+    targetOrder: Order | null;
+    targetDate: Date | null;
+    targetLine: string;
+  }>({
+    isOpen: false,
+    draggedOrder: null,
+    targetOrder: null,
+    targetDate: null,
+    targetLine: ''
+  });
+
   const [planningMethod, setPlanningMethod] = useState<'capacity' | 'rampup'>('capacity');
   const [selectedRampUpPlanId, setSelectedRampUpPlanId] = useState<string>('');
   const [dragHighlight, setDragHighlight] = useState<string | null>(null);
@@ -98,26 +111,23 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   ], []);
 
   // Generate date range based on selected years and months
+  // Auto-extend by 2 months when orders exceed current range
   const dates = useMemo(() => {
+    let currentSelectedYears = selectedYears;
+    let currentSelectedMonths = selectedMonths;
+    
     if (selectedYears.length === 0 || selectedMonths.length === 0) {
       // Fallback to current month if nothing selected
       const today = new Date();
-      const start = new Date(today.getFullYear(), today.getMonth(), 1);
-      const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-      
-      const daysDiff = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-      return Array.from({ length: daysDiff }, (_, i) => {
-        const date = new Date(start);
-        date.setDate(date.getDate() + i);
-        return date;
-      });
+      currentSelectedYears = [today.getFullYear()];
+      currentSelectedMonths = [today.getMonth()];
     }
 
     // Create all date combinations for selected years and months
     const allDates: Date[] = [];
     
-    selectedYears.forEach(year => {
-      selectedMonths.forEach(month => {
+    currentSelectedYears.forEach(year => {
+      currentSelectedMonths.forEach(month => {
         const daysInMonth = new Date(year, month + 1, 0).getDate();
         
         for (let day = 1; day <= daysInMonth; day++) {
@@ -127,8 +137,35 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     });
 
     // Sort dates chronologically
-    return allDates.sort((a, b) => a.getTime() - b.getTime());
-  }, [selectedYears, selectedMonths]);
+    const sortedDates = allDates.sort((a, b) => a.getTime() - b.getTime());
+    
+    // Check if any scheduled orders exceed the current date range
+    const scheduledOrders = orders.filter(order => order.status === 'scheduled');
+    const latestOrderDate = scheduledOrders.reduce((latest, order) => {
+      if (order.planEndDate) {
+        const orderEndDate = new Date(order.planEndDate);
+        return orderEndDate > latest ? orderEndDate : latest;
+      }
+      return latest;
+    }, new Date(0));
+    
+    // If orders exceed the current range, extend by 2 months
+    if (latestOrderDate > sortedDates[sortedDates.length - 1]) {
+      const extendedEndDate = new Date(latestOrderDate.getFullYear(), latestOrderDate.getMonth() + 2 + 1, 0);
+      const lastCurrentDate = sortedDates[sortedDates.length - 1];
+      
+      // Add dates from the day after the last current date to the extended end date
+      const extendDate = new Date(lastCurrentDate);
+      extendDate.setDate(extendDate.getDate() + 1);
+      
+      while (extendDate <= extendedEndDate) {
+        sortedDates.push(new Date(extendDate));
+        extendDate.setDate(extendDate.getDate() + 1);
+      }
+    }
+    
+    return sortedDates;
+  }, [selectedYears, selectedMonths, orders]);
 
   // Filter orders based on search query
   const filteredOrders = useMemo(() => {
@@ -336,7 +373,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     e.dataTransfer.setData('text/plain', JSON.stringify({
       type: dragType,
       orders: ordersToDrag,
-      sourceOrderId: order.id // Track which order initiated the drag
+      sourceOrderId: order.id, // Track which order initiated the drag
+      source: 'scheduled-order'
     }));
 
     if (e.currentTarget instanceof HTMLElement) {
@@ -357,9 +395,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         
         // Move orders to temp hold and remove from their current positions
         ordersToDrop.forEach(order => {
-          if (order.status === 'scheduled') {
-            onOrderMovedToPending(order);
-          }
+          // Orders will be handled by the temp hold mechanism
         });
         
         setTempHoldOrders(prev => ({
@@ -373,9 +409,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         const singleOrder = dragData.orders[0];
         console.log(`📦 Adding order ${singleOrder.poNumber} to temp hold for line ${lineId}`);
         
-        if (singleOrder.status === 'scheduled') {
-          onOrderMovedToPending(singleOrder);
-        }
+        // Order will be handled by the temp hold mechanism
         
         setTempHoldOrders(prev => ({
           ...prev,
@@ -385,7 +419,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     } catch (error) {
       console.error('❌ Failed to parse dropped order data for temp hold:', error);
     }
-  }, [onOrderMovedToPending]);
+  }, []);
 
   // Remove order from temp hold - updated to work per line
   const handleRemoveFromTempHold = useCallback((orderId: string, lineId: string) => {
@@ -400,6 +434,17 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     e.preventDefault();
     setDragHighlight(null);
     if (isHoliday(date)) return;
+    
+    console.log('🔍 Calendar cell drop handler called', { lineId, date: date.toLocaleDateString() });
+    
+    // Check if the drop target is an order block - if so, don't handle it here
+    // The OrderSlot component will handle block drops via handleOrderBlockDrop
+    const target = e.target as HTMLElement;
+    if (target.closest('[data-order-block]')) {
+      console.log('🔍 Drop on order block detected, letting OrderSlot handle it');
+      e.stopPropagation(); // Prevent event bubbling
+      return;
+    }
     
     try {
       const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
@@ -521,6 +566,194 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     }
   }, [isHoliday, getOverlappingOrders, productionLines, onOrderScheduled]);
 
+  // Handle drop on existing order block - schedule dragged order after the target order
+  const handleOrderBlockDrop = useCallback(async (e: React.DragEvent, targetOrder: any, targetDate: Date) => {
+    e.preventDefault();
+    
+    try {
+      const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
+      console.log('🔍 Block drop drag data:', dragData);
+      console.log('🔍 Target order:', targetOrder);
+      console.log('🔍 Target date:', targetDate);
+      
+      if (dragData.type === 'single-order-drag' && dragData.orders && dragData.orders.length === 1) {
+        const draggedOrder = dragData.orders[0];
+        
+        // Don't allow dropping on self
+        if (draggedOrder.id === targetOrder.id) {
+          console.log('❌ Cannot drop on self');
+          return;
+        }
+        
+        console.log(`📍 Block drop: ${draggedOrder.poNumber} onto ${targetOrder.poNumber} at ${targetDate.toLocaleDateString()}`);
+        console.log(`🔍 Drag source: ${dragData.source}`);
+        
+        // Find the target line
+        const targetLineId = targetOrder.assignedLineId;
+        const targetLine = productionLines.find(l => l.id === targetLineId);
+        const targetLineName = targetLine?.name || 'Unknown Line';
+        
+        if (!targetLine) {
+          console.error('❌ Target line not found');
+          return;
+        }
+        
+        // Check if drag source is from sidebar - show position choice dialog
+        if (dragData.source === 'sidebar') {
+          console.log('🎯 Showing position choice dialog');
+          setDropPositionDialog({
+            isOpen: true,
+            draggedOrder,
+            targetOrder,
+            targetDate,
+            targetLine: targetLineName
+          });
+          return;
+        }
+        
+        // For scheduled-order to scheduled-order drops, proceed with direct scheduling after target order
+        console.log('📍 Direct scheduling after target order');
+        await scheduleOrderAfterTarget(draggedOrder, targetOrder, targetDate, targetLine);
+        
+      } else {
+        console.log('❌ Invalid drag data format or not single order drag');
+      }
+    } catch (error) {
+      console.error('❌ Failed to parse dropped order data for block drop:', error);
+    }
+  }, [productionLines]);
+
+  // Helper function to schedule order after target order
+  const scheduleOrderAfterTarget = useCallback(async (draggedOrder: Order, targetOrder: any, targetDate: Date, targetLine: ProductionLine) => {
+    console.log(`📍 Scheduling ${draggedOrder.poNumber} after ${targetOrder.poNumber}`);
+    
+    // Calculate the end date of the target order by finding all its scheduled dates
+    const targetOrderDates = Object.keys(targetOrder.actualProduction || {})
+      .filter(dateStr => targetOrder.actualProduction[dateStr] > 0)
+      .sort();
+    
+    let targetEndDate: Date;
+    if (targetOrderDates.length > 0) {
+      targetEndDate = new Date(targetOrderDates[targetOrderDates.length - 1]);
+    } else {
+      // If no actual production dates, use the target date as reference
+      targetEndDate = new Date(targetDate);
+    }
+    
+    // Calculate the remaining capacity on the target order's last day
+    const targetEndDateStr = targetEndDate.toISOString().split('T')[0];
+    const targetOrderProduction = targetOrder.actualProduction?.[targetEndDateStr] || 0;
+    const remainingCapacity = Math.max(0, targetLine.capacity - targetOrderProduction);
+    
+    // Schedule the dragged order starting from the day after target order ends
+    const schedulingStartDate = new Date(targetEndDate);
+    schedulingStartDate.setDate(schedulingStartDate.getDate() + 1);
+    
+    // If there's remaining capacity on the target order's last day, utilize it
+    let initialProduction = 0;
+    let actualStartDate = new Date(targetEndDate);
+    
+    if (remainingCapacity > 0) {
+      initialProduction = Math.min(remainingCapacity, draggedOrder.orderQuantity);
+      actualStartDate = new Date(targetEndDate);
+    } else {
+      actualStartDate = new Date(schedulingStartDate);
+    }
+    
+    // Calculate production plan for the remaining quantity
+    const remainingQuantity = draggedOrder.orderQuantity - initialProduction;
+    let dailyPlan: { [date: string]: number } = {};
+    
+    if (initialProduction > 0) {
+      const targetEndDateStr = targetEndDate.toISOString().split('T')[0];
+      dailyPlan[targetEndDateStr] = initialProduction;
+    }
+    
+    if (remainingQuantity > 0) {
+      const remainingPlan = getContiguousProductionPlan(
+        remainingQuantity,
+        targetLine.capacity,
+        schedulingStartDate,
+        isHoliday,
+        0
+      );
+      
+      // Merge the plans
+      Object.entries(remainingPlan).forEach(([date, quantity]) => {
+        dailyPlan[date] = (dailyPlan[date] || 0) + quantity;
+      });
+    }
+    
+    // Calculate actual end date
+    const planDates = Object.keys(dailyPlan);
+    const endDate = planDates.length > 0 
+      ? new Date(Math.max(...planDates.map(d => new Date(d).getTime())))
+      : actualStartDate;
+    
+    // Schedule the dragged order (order status will be updated during scheduling)
+    const updatedOrder = { ...draggedOrder, assignedLineId: targetLine.id };
+    await onOrderScheduled(updatedOrder, actualStartDate, endDate, dailyPlan);
+    
+    console.log(`✅ Order ${draggedOrder.poNumber} scheduled after ${targetOrder.poNumber} from ${actualStartDate.toLocaleDateString()} to ${endDate.toLocaleDateString()}`);
+  }, [onOrderScheduled, isHoliday]);
+
+  // Handle drop position dialog confirmation
+  const handleDropPositionConfirm = useCallback(async (choice: 'where-dropped' | 'after-order') => {
+    const { draggedOrder, targetOrder, targetDate, targetLine } = dropPositionDialog;
+    
+    if (!draggedOrder || !targetOrder || !targetDate) {
+      console.error('❌ Missing drop position dialog data');
+      return;
+    }
+    
+    // Find the target line object
+    const targetLineObj = productionLines.find(l => l.name === targetLine);
+    if (!targetLineObj) {
+      console.error('❌ Target line not found');
+      return;
+    }
+    
+    if (choice === 'where-dropped') {
+      // Use the current drop behavior - schedule at the specific date
+      console.log(`📍 Scheduling ${draggedOrder.poNumber} at dropped position ${targetDate.toLocaleDateString()}`);
+      
+      // Check for overlaps and proceed with standard scheduling
+      const overlappingOrders = getOverlappingOrders(draggedOrder, targetLineObj.id, targetDate);
+      
+      if (overlappingOrders.length > 0) {
+        // Show overlap dialog
+        setOverlapDialog({
+          isOpen: true,
+          newOrder: draggedOrder,
+          overlappingOrders,
+          targetDate: targetDate,
+          targetLine: targetLine,
+          originalTargetDate: targetDate
+        });
+      } else {
+        // Schedule directly
+        setScheduleDialog({
+          isOpen: true,
+          order: draggedOrder,
+          lineId: targetLineObj.id,
+          startDate: targetDate
+        });
+      }
+    } else {
+      // Schedule after the target order
+      await scheduleOrderAfterTarget(draggedOrder, targetOrder, targetDate, targetLineObj);
+    }
+    
+    // Close the dialog
+    setDropPositionDialog({
+      isOpen: false,
+      draggedOrder: null,
+      targetOrder: null,
+      targetDate: null,
+      targetLine: ''
+    });
+  }, [dropPositionDialog, productionLines, getOverlappingOrders, scheduleOrderAfterTarget]);
+
   const [pendingReschedule, setPendingReschedule] = useState<{
     toSchedule: Order[];
     afterOrderId: string | null;
@@ -535,9 +768,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     if (!lineId) return;
 
     if (placement === 'before') {
-      for (const order of overlappingOrders) { 
-        await onOrderMovedToPending(order); 
-      }
+      // Overlapping orders will be rescheduled automatically
       setScheduleDialog({
         isOpen: true,
         order: newOrder,
@@ -584,7 +815,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       targetLine: '',
       originalTargetDate: null
     });
-  }, [overlapDialog, productionLines, onOrderMovedToPending, getOrdersForCell]);
+  }, [overlapDialog, productionLines, getOrdersForCell]);
 
   const getContiguousProductionPlan = (
     qty: number,
@@ -661,7 +892,13 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         let magnetDate = new Date(newPlanEnd);
         const newOrderLastDayStr = magnetDate.toISOString().split('T')[0];
         const lineObj = productionLines.find(l => l.id === pendingReschedule.lineId);
-        let lastDayAvailCapacity = lineObj ? lineObj.capacity - (dailyPlan[newOrderLastDayStr] || 0) : 0;
+        
+        // Calculate available capacity on the last day of the newly scheduled order
+        const existingOrdersOnLastDay = getOrdersForCell(pendingReschedule.lineId, magnetDate);
+        const usedCapacityOnLastDay = existingOrdersOnLastDay.reduce(
+          (sum, ord) => sum + (ord.actualProduction?.[newOrderLastDayStr] || 0), 0
+        );
+        let lastDayAvailCapacity = lineObj ? Math.max(0, lineObj.capacity - usedCapacityOnLastDay) : 0;
 
         for (const [i, next] of pendingReschedule.toSchedule.entries()) {
           if (!lineObj) continue;
@@ -908,41 +1145,41 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       {/* Main Schedule Grid */}
       <div className="flex-1 overflow-auto bg-background">
         <div className="min-w-max">
-          {/* Header Row */}
+          {/* Header Row - Dates horizontally */}
           <div className="sticky top-0 z-30 bg-white border-b-2 border-gray-200 shadow-sm flex">
-            {/* Production Lines Header */}
-            <div className="sticky left-0 z-40 w-56 bg-white border-r-2 border-gray-300 shadow-lg">
-              <div className="h-20 p-3 flex items-center justify-center bg-gradient-to-r from-blue-50 to-blue-100 border-r border-gray-300">
+            {/* Line Names Header */}
+            <div className="sticky left-0 z-40 w-48 bg-white border-r-2 border-gray-300 shadow-lg">
+              <div className="h-16 p-3 flex items-center justify-center bg-gradient-to-r from-blue-50 to-blue-100 border-r border-gray-300">
                 <div className="flex items-center space-x-2">
                   <CalendarDays className="h-5 w-5 text-blue-600" />
-                  <span className="font-bold text-base text-gray-800">Production Lines</span>
+                  <span className="font-bold text-sm text-gray-800">Production Lines</span>
                 </div>
               </div>
             </div>
 
-            {/* Temporary Hold Area Header */}
-            <div className="sticky left-56 z-40 w-32 bg-white border-r-2 border-gray-300 shadow-lg">
-              <div className="h-20 p-2 flex items-center justify-center bg-gradient-to-r from-amber-50 to-amber-100 border-r border-gray-300">
+            {/* Temp Hold Header */}
+            <div className="sticky left-48 z-40 w-24 bg-white border-r-2 border-gray-300 shadow-lg">
+              <div className="h-16 p-2 flex items-center justify-center bg-gradient-to-r from-amber-50 to-amber-100 border-r border-gray-300">
                 <div className="flex flex-col items-center space-y-1">
-                  <Package className="h-4 w-4 text-amber-600" />
-                  <span className="font-bold text-xs text-gray-800">Temp Hold</span>
+                  <Package className="h-3 w-3 text-amber-600" />
+                  <span className="font-bold text-xs text-gray-800">Hold</span>
                 </div>
               </div>
             </div>
             
-            {/* Date Headers */}
+            {/* Date Headers - Horizontally */}
             <div className="flex">
               {dates.map(date => (
                 <div
                   key={date.toISOString()}
-                  className={`w-40 h-20 p-3 border-r border-gray-200 flex flex-col justify-center items-center text-center ${
+                  className={`w-32 h-16 p-2 border-r border-gray-200 flex flex-col justify-center items-center text-center ${
                     isHoliday(date) ? 'bg-red-50 border-red-200' : 'bg-white'
                   }`}
                 >
                   <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
                     {date.toLocaleDateString('en-US', { weekday: 'short' })}
                   </div>
-                  <div className="text-lg font-bold text-gray-800 mt-1">
+                  <div className="text-sm font-bold text-gray-800 mt-1">
                     {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                   </div>
                   {isHoliday(date) && (
@@ -953,35 +1190,34 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
             </div>
           </div>
 
-          {/* Production Line Rows */}
+          {/* Production Line Rows - Vertically */}
           {productionLines.map(line => (
             <div key={line.id} className="flex border-b border-gray-200">
-              {/* Line Header */}
-              <div className="sticky left-0 z-20 w-56 bg-white border-r-2 border-gray-300 shadow-md">
-                <div className="h-40 p-3 flex flex-col justify-between bg-gradient-to-r from-gray-50 to-gray-100">
-                  <div className="space-y-1">
-                    <div className="font-bold text-gray-800 text-base">{line.name}</div>
-                    <div className="text-sm text-gray-600">
+              {/* Line Header - Vertical */}
+              <div className="sticky left-0 z-20 w-48 bg-white border-r-2 border-gray-300 shadow-md">
+                <div className="h-24 p-2 flex items-center justify-between bg-gradient-to-r from-gray-50 to-gray-100">
+                  <div className="flex-1 space-y-1">
+                    <div className="font-bold text-gray-800 text-sm">{line.name}</div>
+                    <div className="text-xs text-gray-600">
                       Capacity: <span className="font-semibold text-gray-800">{line.capacity}</span>
                     </div>
                   </div>
                   <Button
                     variant="outline"
                     size="sm"
-                    className="w-full text-xs h-8 flex items-center gap-2 font-medium border-gray-300 hover:bg-blue-50 hover:border-blue-300"
+                    className="ml-2 text-xs h-6 w-6 p-0 flex items-center justify-center border-gray-300 hover:bg-blue-50 hover:border-blue-300"
                     onClick={() => handleDownloadLinePdf(line.id, line.name)}
                     title="Download Production Plan PDF"
                   >
                     <FileDown className="w-3 h-3" />
-                    Download Plan
                   </Button>
                 </div>
               </div>
 
               {/* Temporary Hold Area for this line */}
-              <div className="sticky left-56 z-20 w-32 border-r-2 border-gray-300 bg-white shadow-md">
+              <div className="sticky left-48 z-20 w-24 border-r-2 border-gray-300 bg-white shadow-md">
                 <div
-                  className="h-40 bg-gradient-to-r from-amber-50 to-amber-100 border border-amber-200 border-dashed relative overflow-hidden p-1"
+                  className="h-24 bg-gradient-to-r from-amber-50 to-amber-100 border border-amber-200 border-dashed relative overflow-hidden p-1"
                   onDrop={(e) => handleTempHoldDrop(e, line.id)}
                   onDragOver={handleDragOver}
                 >
@@ -995,7 +1231,6 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                         onDragEnd={handleOrderDragEnd}
                       >
                         <div className="font-semibold text-amber-800 truncate text-xs">{order.poNumber}</div>
-                        <div className="text-amber-700 truncate text-xs">{order.styleId}</div>
                         <button
                           onClick={() => handleRemoveFromTempHold(order.id, line.id)}
                           className="absolute top-0 right-0 w-3 h-3 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
@@ -1007,14 +1242,14 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                     ))}
                     {(tempHoldOrders[line.id] || []).length === 0 && (
                       <div className="h-full flex items-center justify-center text-amber-600 text-xs text-center">
-                        Drop here
+                        Drop
                       </div>
                     )}
                   </div>
                 </div>
               </div>
 
-              {/* Date Cells for this Line */}
+              {/* Date Cells for this Line - Horizontally */}
               <div className="flex">
                 {dates.map(date => {
                   const cellKey = `${line.id}-${date.toISOString().split('T')[0]}`;
@@ -1027,7 +1262,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                   return (
                     <div
                       key={cellKey}
-                      className={`w-40 h-40 border-r border-gray-200 relative transition-all duration-200 ${
+                      className={`w-32 h-24 border-r border-gray-200 relative transition-all duration-200 ${
                         isHolidayCell
                           ? 'bg-red-50/50'
                           : isHighlighted
@@ -1050,13 +1285,13 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                       {/* Empty Cell Plus Icon */}
                       {!isHolidayCell && ordersInCell.length === 0 && (
                         <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
-                          <Plus className="h-6 w-6 text-gray-400" />
+                          <Plus className="h-4 w-4 text-gray-400" />
                         </div>
                       )}
 
                       {/* Available Capacity Badge */}
                       {!isHolidayCell && availableCapacity > 0 && ordersInCell.length > 0 && (
-                        <div className="absolute top-2 right-2 text-xs bg-green-100 text-green-700 px-2 py-1 rounded-md font-semibold shadow-sm">
+                        <div className="absolute top-1 right-1 text-xs bg-green-100 text-green-700 px-1 py-0.5 rounded font-semibold shadow-sm">
                           {availableCapacity}
                         </div>
                       )}
@@ -1064,8 +1299,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                       {/* Drop Highlight */}
                       {isHighlighted && !isHolidayCell && (
                         <div className="absolute inset-0 flex items-center justify-center bg-blue-50 border-2 border-blue-300 border-dashed rounded-sm">
-                          <div className="text-sm font-semibold text-blue-600 bg-white px-3 py-2 rounded-md shadow-sm">
-                            Drop Here
+                          <div className="text-xs font-semibold text-blue-600 bg-white px-2 py-1 rounded shadow-sm">
+                            Drop
                           </div>
                         </div>
                       )}
@@ -1077,8 +1312,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                             const cardKey = `${scheduledOrder.id}-${date.toISOString().split('T')[0]}`;
                             const isSelected = selectedOrders.has(scheduledOrder.id);
                             const cardCount = ordersInCell.length;
-                            const availableHeight = 152; // 160px - 8px padding
-                            const minCardHeight = 36; // Minimum height to show product and percentage
+                            const availableHeight = 88; // 96px - 8px padding
+                            const minCardHeight = 20; // Minimum height to show order info
                             const idealCardHeight = Math.max(minCardHeight, Math.floor(availableHeight / cardCount) - 2);
                             const cardHeight = cardCount > 3 ? minCardHeight : idealCardHeight;
 
@@ -1087,8 +1322,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                                 key={cardKey}
                                 style={{
                                   height: hoveredCard === cardKey ? 'auto' : `${cardHeight}px`,
-                                  minHeight: hoveredCard === cardKey ? '120px' : `${cardHeight}px`,
-                                  maxHeight: hoveredCard === cardKey ? '200px' : `${cardHeight}px`
+                                  minHeight: hoveredCard === cardKey ? '60px' : `${cardHeight}px`,
+                                  maxHeight: hoveredCard === cardKey ? '120px' : `${cardHeight}px`
                                 }}
                               >
                                 <OrderSlot
@@ -1099,8 +1334,8 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
                                   onOrderClick={handleOrderClick}
                                   onOrderDragStart={handleOrderDragStart}
                                   onOrderDragEnd={handleOrderDragEnd}
-                                  onOrderMovedToPending={onOrderMovedToPending}
                                   onOrderSplit={onOrderSplit}
+                                  onOrderBlockDrop={handleOrderBlockDrop}
                                   hoveredCard={hoveredCard}
                                   setHoveredCard={setHoveredCard}
                                   shouldHighlightRed={shouldHighlightRed}
@@ -1213,6 +1448,17 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         overlappingOrders={overlapDialog.overlappingOrders}
         targetDate={overlapDialog.targetDate}
         targetLine={overlapDialog.targetLine}
+      />
+      
+      {/* Drop Position Choice Dialog */}
+      <DropPositionChoiceDialog
+        isOpen={dropPositionDialog.isOpen}
+        onClose={() => setDropPositionDialog(prev => ({ ...prev, isOpen: false }))}
+        onConfirm={handleDropPositionConfirm}
+        draggedOrder={dropPositionDialog.draggedOrder}
+        targetOrder={dropPositionDialog.targetOrder}
+        targetDate={dropPositionDialog.targetDate}
+        targetLine={dropPositionDialog.targetLine}
       />
     </div>
   );

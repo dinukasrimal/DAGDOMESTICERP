@@ -145,21 +145,41 @@ export const AIInventoryPlanningReport: React.FC = () => {
 
   const fetchPurchaseData = async () => {
     try {
-      const { data, error } = await supabase
-        .from('purchases')
-        .select('*');
+      const [purchaseRes, holdsRes] = await Promise.all([
+        supabase.from('purchases').select('*'),
+        supabase.from('purchase_holds').select('*')
+      ]);
       
-      if (error) throw error;
+      if (purchaseRes.error) throw purchaseRes.error;
       
-      const transformed = data?.map(item => ({
+      // Create a map of held purchase orders
+      const holdMap = new Map();
+      (holdsRes.data || []).forEach((hold: any) => {
+        // Only include active holds
+        if (hold.purchase_id && hold.held_until) {
+          const heldUntil = new Date(hold.held_until);
+          const now = new Date();
+          
+          // Check if hold is still active (not expired)
+          if (heldUntil >= now) {
+            holdMap.set(hold.purchase_id, true);
+          }
+        }
+      });
+      
+      // Filter out held purchase orders
+      const activePurchases = purchaseRes.data?.filter(item => !holdMap.has(item.name)) || [];
+      
+      const transformed = activePurchases.map(item => ({
         id: item.id,
         name: item.name || '',
         partner_name: item.partner_name || '',
         state: item.state || '',
         expected_date: item.expected_date || '',
         order_lines: item.order_lines as any[]
-      })) || [];
+      }));
       
+      console.log(`AI Report - Filtered ${purchaseRes.data?.length || 0} purchases to ${transformed.length} active (non-held) purchases`);
       setPurchaseData(transformed);
     } catch (error) {
       console.error('Error fetching purchase data:', error);

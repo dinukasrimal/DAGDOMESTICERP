@@ -15,8 +15,8 @@ interface OrderSlotProps {
   onOrderClick?: (e: React.MouseEvent, orderId: string) => void;
   onOrderDragStart?: (e: React.DragEvent, order: any) => void;
   onOrderDragEnd?: (e: React.DragEvent) => void;
-  onOrderMovedToPending?: (order: any) => void;
   onOrderSplit?: (orderId: string, splitQuantity: number) => void;
+  onOrderBlockDrop?: (e: React.DragEvent, targetOrder: any, date: Date) => void;
   hoveredCard?: string | null;
   setHoveredCard?: (cardKey: string | null) => void;
   shouldHighlightRed?: (order: any, date: Date) => boolean;
@@ -30,8 +30,8 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
   onOrderClick,
   onOrderDragStart,
   onOrderDragEnd,
-  onOrderMovedToPending,
   onOrderSplit,
+  onOrderBlockDrop,
   hoveredCard,
   setHoveredCard,
   shouldHighlightRed
@@ -107,6 +107,23 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
     }
   };
 
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation(); // Prevent event from bubbling to cell handler
+    console.log('🔍 OrderSlot drop handler called', { poNumber: scheduledOrder.poNumber, date: date.toLocaleDateString() });
+    if (onOrderBlockDrop) {
+      console.log('🔍 Calling onOrderBlockDrop');
+      onOrderBlockDrop(e, scheduledOrder, date);
+    } else {
+      console.log('❌ onOrderBlockDrop not provided');
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
   return (
     <div className="relative h-full">
       <Dialog>
@@ -123,9 +140,12 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
                 ? 'scale-110 shadow-2xl z-40 bg-white border-gray-400 text-gray-900' 
                 : ''
             }`}
+            data-order-block
             draggable
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
             onClick={handleClick}
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
@@ -148,20 +168,6 @@ export const OrderSlot: React.FC<OrderSlotProps> = ({
                 </div>
                 {isHovered && (
                   <div className="flex space-x-1 flex-shrink-0">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-4 w-4 p-0 hover:bg-red-100"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (onOrderMovedToPending) {
-                          onOrderMovedToPending(scheduledOrder);
-                        }
-                      }}
-                      title="Move back to pending"
-                    >
-                      <ArrowLeft className="h-2.5 w-2.5" />
-                    </Button>
                     <Button
                       size="sm"
                       variant="ghost"

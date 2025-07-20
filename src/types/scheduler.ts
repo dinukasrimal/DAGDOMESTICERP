@@ -21,6 +21,15 @@ export interface ProductionLine {
   id: string;
   name: string;
   capacity: number;
+  groupId?: string;
+  sortOrder?: number;
+}
+
+export interface LineGroup {
+  id: string;
+  name: string;
+  isExpanded: boolean;
+  sortOrder: number;
 }
 
 export interface Holiday {
