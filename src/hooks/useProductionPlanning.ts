@@ -28,18 +28,10 @@ export const useProductionPlanning = () => {
       setIsLoading(true);
       const { data, error } = await supabase
         .from('purchases')
-        .select(`
-          *,
-          purchase_order_lines(*)
-        `)
-        .not('id', 'in', `(
-          SELECT purchase_id FROM purchase_holds
-        )`)
-        .eq('status', 'pending')
-        .order('order_date', { ascending: true });
-
-      if (error) throw error;
-
+        .select('*')
+        .not('id', 'in', `(SELECT purchase_id FROM purchase_holds)`)
+        .eq('state', 'purchase')
+        .order('date_order', { ascending: true });
       setPurchases(data || []);
     } catch (error) {
       console.error('Error fetching purchases:', error);
@@ -73,6 +65,23 @@ export const useProductionPlanning = () => {
       });
     }
   }, [toast]);
+
+  // Fetch order lines for tooltip (returns data instead of setting state)
+  const fetchOrderLinesForTooltip = useCallback(async (purchaseId: string): Promise<PurchaseOrderLine[]> => {
+    try {
+      const { data, error } = await supabase
+        .from('purchase_order_lines')
+        .select('*')
+        .eq('purchase_id', purchaseId)
+        .order('product_name');
+
+      if (error) throw error;
+      return data || [];
+    } catch (error) {
+      console.error('Error fetching order lines for tooltip:', error);
+      return [];
+    }
+  }, []);
 
   // Fetch production lines
   const fetchProductionLines = useCallback(async () => {
@@ -220,7 +229,7 @@ export const useProductionPlanning = () => {
     }
 
     const days: DayPlan[] = [];
-    let remainingQuantity = purchase.total_quantity;
+    let remainingQuantity = purchase.pending_qty;
     let currentDate = new Date(startDate);
 
     while (remainingQuantity > 0) {
@@ -304,10 +313,10 @@ export const useProductionPlanning = () => {
 
       if (error) throw error;
 
-      // Update purchase status
+      // Update purchase state
       await supabase
         .from('purchases')
-        .update({ status: 'planned' })
+        .update({ state: 'planned' })
         .eq('id', purchase.id);
 
       // Update local state
@@ -316,7 +325,7 @@ export const useProductionPlanning = () => {
 
       toast({
         title: 'Success',
-        description: `${purchase.po_number} planned successfully`,
+        description: `${purchase.name} planned successfully`,
       });
 
     } catch (error) {
@@ -343,10 +352,10 @@ export const useProductionPlanning = () => {
 
       if (deleteError) throw deleteError;
 
-      // Update purchase status back to pending
+      // Update purchase state back to purchase
       const { data: purchaseData, error: updateError } = await supabase
         .from('purchases')
-        .update({ status: 'pending' })
+        .update({ state: 'purchase' })
         .eq('id', planned.purchase_id)
         .select()
         .single();
@@ -427,6 +436,7 @@ export const useProductionPlanning = () => {
 
     // Actions
     fetchOrderLines,
+    fetchOrderLinesForTooltip,
     createProductionLine,
     updateProductionLineCapacity,
     planPurchaseOrder,

@@ -2,14 +2,17 @@
 
 export interface Purchase {
   id: string;
-  po_number: string;
-  supplier: string;
-  total_quantity: number;
-  order_date: string;
-  delivery_date?: string;
-  status: 'pending' | 'planned' | 'completed';
-  created_at: string;
-  updated_at: string;
+  name: string;
+  partner_name: string;
+  pending_qty: number;
+  received_qty: number;
+  amount_total: number;
+  date_order: string;
+  expected_date?: string;
+  state: 'purchase' | 'planned' | 'completed';
+  order_lines: any[];
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface PurchaseOrderLine {

@@ -43,6 +43,7 @@ export const ProductionPlanningBoard: React.FC = () => {
     holidays,
     isLoading,
     fetchOrderLines,
+    fetchOrderLinesForTooltip,
     createProductionLine,
     updateProductionLineCapacity,
     planPurchaseOrder,
@@ -267,6 +268,7 @@ export const ProductionPlanningBoard: React.FC = () => {
               orderLines={orderLines}
               selectedPurchase={selectedPurchase}
               onPurchaseSelect={handlePurchaseSelect}
+              onFetchOrderLines={fetchOrderLinesForTooltip}
               isLoading={isLoading}
             />
           </div>

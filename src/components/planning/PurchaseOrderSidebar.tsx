@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useDrag } from 'react-dnd';
 import { format } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -6,6 +6,12 @@ import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { 
   Package, 
   Calendar, 
@@ -13,7 +19,8 @@ import {
   ChevronDown, 
   ChevronRight,
   Truck,
-  Building
+  Building,
+  Info
 } from 'lucide-react';
 
 import type { Purchase, PurchaseOrderLine } from '@/types/planning';
@@ -23,6 +30,7 @@ interface PurchaseOrderSidebarProps {
   orderLines: PurchaseOrderLine[];
   selectedPurchase: Purchase | null;
   onPurchaseSelect: (purchase: Purchase) => void;
+  onFetchOrderLines: (purchaseId: string) => Promise<PurchaseOrderLine[]>;
   isLoading: boolean;
 }
 
@@ -30,12 +38,14 @@ interface DraggablePurchaseProps {
   purchase: Purchase;
   isSelected: boolean;
   onSelect: (purchase: Purchase) => void;
+  onFetchOrderLines: (purchaseId: string) => Promise<PurchaseOrderLine[]>;
 }
 
 const DraggablePurchase: React.FC<DraggablePurchaseProps> = ({ 
   purchase, 
   isSelected, 
-  onSelect 
+  onSelect,
+  onFetchOrderLines
 }) => {
   const [{ isDragging }, drag] = useDrag({
     type: 'purchase',
@@ -45,9 +55,26 @@ const DraggablePurchase: React.FC<DraggablePurchaseProps> = ({
     }),
   });
 
-  const deliveryDate = purchase.delivery_date ? new Date(purchase.delivery_date) : null;
-  const orderDate = new Date(purchase.order_date);
+  const [tooltipOrderLines, setTooltipOrderLines] = useState<PurchaseOrderLine[]>([]);
+  const [isTooltipLoading, setIsTooltipLoading] = useState(false);
+
+  const deliveryDate = purchase.expected_date ? new Date(purchase.expected_date) : null;
+  const orderDate = new Date(purchase.date_order);
   const isUrgent = deliveryDate && deliveryDate < new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+  const handleTooltipOpen = async () => {
+    if (tooltipOrderLines.length === 0) {
+      setIsTooltipLoading(true);
+      try {
+        const orderLines = await onFetchOrderLines(purchase.id);
+        setTooltipOrderLines(orderLines);
+      } catch (error) {
+        console.error('Error fetching order lines for tooltip:', error);
+      } finally {
+        setIsTooltipLoading(false);
+      }
+    }
+  };
 
   return (
     <div
@@ -68,9 +95,47 @@ const DraggablePurchase: React.FC<DraggablePurchaseProps> = ({
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <Package className="h-4 w-4 text-gray-500" />
-            <span className="font-semibold text-sm text-gray-900">
-              {purchase.po_number}
-            </span>
+            <TooltipProvider>
+              <Tooltip delayDuration={300}>
+                <TooltipTrigger asChild>
+                  <div 
+                    className="flex items-center space-x-1 cursor-help"
+                    onMouseEnter={handleTooltipOpen}
+                  >
+                    <span className="font-semibold text-sm text-gray-900">
+                      {purchase.name}
+                    </span>
+                    <Info className="h-3 w-3 text-gray-400" />
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="right" className="max-w-sm">
+                  <div className="space-y-2">
+                    <div className="font-medium text-sm">Order Line Items</div>
+                    {isTooltipLoading ? (
+                      <div className="text-xs text-gray-500">Loading...</div>
+                    ) : tooltipOrderLines.length > 0 ? (
+                      <div className="space-y-1">
+                        {tooltipOrderLines.slice(0, 5).map((line) => (
+                          <div key={line.id} className="text-xs">
+                            <div className="font-medium">{line.product_name}</div>
+                            <div className="text-gray-500">
+                              Qty: {line.quantity.toLocaleString()} | ${line.unit_price?.toFixed(2) || '0.00'}/unit
+                            </div>
+                          </div>
+                        ))}
+                        {tooltipOrderLines.length > 5 && (
+                          <div className="text-xs text-gray-500 italic">
+                            +{tooltipOrderLines.length - 5} more items...
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-500">No order line items</div>
+                    )}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </div>
           {isUrgent && (
             <Badge variant="secondary" className="text-xs bg-orange-100 text-orange-800">
@@ -82,7 +147,7 @@ const DraggablePurchase: React.FC<DraggablePurchaseProps> = ({
         {/* Supplier */}
         <div className="flex items-center space-x-2 text-sm text-gray-600">
           <Building className="h-3 w-3" />
-          <span className="truncate">{purchase.supplier}</span>
+          <span className="truncate">{purchase.partner_name}</span>
         </div>
 
         {/* Quantity */}
@@ -90,7 +155,7 @@ const DraggablePurchase: React.FC<DraggablePurchaseProps> = ({
           <div className="flex items-center space-x-2 text-sm">
             <TrendingUp className="h-3 w-3 text-gray-500" />
             <span className="font-medium text-gray-900">
-              {purchase.total_quantity.toLocaleString()} units
+              {purchase.pending_qty.toLocaleString()} units
             </span>
           </div>
         </div>
@@ -154,8 +219,9 @@ export const PurchaseOrderSidebar: React.FC<PurchaseOrderSidebarProps> = ({
   orderLines,
   selectedPurchase,
   onPurchaseSelect,
+  onFetchOrderLines,
   isLoading
-}) => {
+) => {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
@@ -197,6 +263,7 @@ export const PurchaseOrderSidebar: React.FC<PurchaseOrderSidebarProps> = ({
                   purchase={purchase}
                   isSelected={selectedPurchase?.id === purchase.id}
                   onSelect={onPurchaseSelect}
+                  onFetchOrderLines={onFetchOrderLines}
                 />
               ))}
             </div>

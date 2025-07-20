@@ -41,9 +41,12 @@ interface ProductionLine {
   id: string;
   name: string;
   capacity: number;
-  current_load: number;
-  efficiency: number;
-  status: 'active' | 'maintenance' | 'offline';
+  mo_count?: number;
+  current_load?: number;
+  efficiency?: number;
+  status?: 'active' | 'maintenance' | 'offline';
+  created_at?: string;
+  updated_at?: string;
 }
 
 interface PlannedOrder {
@@ -251,12 +254,23 @@ export const ProductionPlanner: React.FC = () => {
   const fetchPurchaseOrders = async () => {
     setIsLoading(true);
     try {
-      const data = await supabaseBatchFetch('purchases', 'date_order', 1000);
+      // Fetch purchase orders excluding those in purchase_holds
+      const { data, error } = await supabase
+        .from('purchases')
+        .select('*')
+        .not('id', 'in', `(SELECT purchase_id FROM purchase_holds)`)
+        .order('date_order', { ascending: false })
+        .limit(1000);
+
+      if (error) throw error;
+
       if (data) {
         const transformedData: PurchaseOrder[] = data.map(purchase => {
           const orderLines = Array.isArray(purchase.order_lines) ? purchase.order_lines : [];
-          const totalQty = orderLines.reduce((sum, line) => sum + (line.product_uom_qty || 0), 0);
-          const receivedQty = orderLines.reduce((sum, line) => sum + (line.qty_received || 0), 0);
+          // Total quantity: Sum of product_qty from order lines
+          const totalQty = orderLines.reduce((sum, line) => sum + (line.product_qty || 0), 0);
+          // Pending quantity: Use pending_qty from purchases table
+          const pendingQty = purchase.pending_qty || 0;
           
           return {
             id: purchase.id,
@@ -267,16 +281,13 @@ export const ProductionPlanner: React.FC = () => {
             state: purchase.state || '',
             order_lines: orderLines,
             total_qty: totalQty,
-            pending_qty: totalQty - receivedQty
+            pending_qty: pendingQty
           };
         });
         
-        // Filter for purchase orders that have pending quantities
-        const pendingOrders = transformedData.filter(po => 
-          po.state === 'purchase' && (po.pending_qty || 0) > 0
-        );
-        
-        setPurchaseOrders(pendingOrders);
+        // Show purchase orders (excluding those on hold)
+        setPurchaseOrders(transformedData);
+        console.log(`Loaded ${transformedData.length} purchase orders (excluding holds)`);
       }
     } catch (error) {
       console.error('Error fetching purchase orders:', error);
@@ -300,27 +311,43 @@ export const ProductionPlanner: React.FC = () => {
 
       if (error) {
         console.error('Error fetching production lines:', error);
-        // If no production lines table exists, create mock data
-        const mockLines: ProductionLine[] = [
-          { id: '1', name: 'Line A', capacity: 100, current_load: 60, efficiency: 85, status: 'active' },
-          { id: '2', name: 'Line B', capacity: 120, current_load: 80, efficiency: 92, status: 'active' },
-          { id: '3', name: 'Line C', capacity: 80, current_load: 30, efficiency: 78, status: 'maintenance' },
-          { id: '4', name: 'Line D', capacity: 150, current_load: 120, efficiency: 90, status: 'active' },
+        return;
+      }
+
+      if (data && data.length === 0) {
+        // No production lines exist, create some sample ones
+        const sampleLines = [
+          { name: 'BATHEEGAMA', capacity: 500 },
+          { name: 'BHAGYA FASHION', capacity: 400 },
+          { name: 'DENIM APPAREL', capacity: 1000 },
+          { name: 'DESHAPRIYA', capacity: 300 },
+          { name: 'NIROHAN PANTY', capacity: 800 }
         ];
-        setProductionLines(mockLines);
+
+        for (const line of sampleLines) {
+          try {
+            await supabase
+              .from('production_lines')
+              .insert([{
+                name: line.name,
+                capacity: line.capacity
+              }]);
+          } catch (insertError) {
+            console.error('Error creating sample production line:', insertError);
+          }
+        }
+        
+        // Refetch to get the created lines
+        const { data: newData } = await supabase
+          .from('production_lines')
+          .select('*')
+          .order('name');
+        setProductionLines(newData || []);
       } else {
         setProductionLines(data || []);
       }
     } catch (error) {
       console.error('Error fetching production lines:', error);
-      // Fallback to mock data
-      const mockLines: ProductionLine[] = [
-        { id: '1', name: 'Line A', capacity: 100, current_load: 60, efficiency: 85, status: 'active' },
-        { id: '2', name: 'Line B', capacity: 120, current_load: 80, efficiency: 92, status: 'active' },
-        { id: '3', name: 'Line C', capacity: 80, current_load: 30, efficiency: 78, status: 'maintenance' },
-        { id: '4', name: 'Line D', capacity: 150, current_load: 120, efficiency: 90, status: 'active' },
-      ];
-      setProductionLines(mockLines);
     }
   };
 
@@ -705,18 +732,35 @@ export const ProductionPlanner: React.FC = () => {
   const fetchPlannedOrders = async () => {
     try {
       const { data, error } = await supabase
-        .from('planned_orders')
+        .from('planned_production')
         .select('*')
-        .order('scheduled_date');
+        .order('planned_date');
 
       if (error) {
         console.error('Error fetching planned orders:', error);
+        // If table doesn't exist, just set empty array for now
+        if (error.code === '42P01') {
+          console.log('planned_production table does not exist yet, using empty array');
+          setPlannedOrders([]);
+          return;
+        }
         return;
       }
 
-      setPlannedOrders(data || []);
+      // Transform planned_production to match PlannedOrder interface
+      const transformedData = (data || []).map(planned => ({
+        id: planned.id,
+        po_id: planned.purchase_id,
+        line_id: planned.line_id,
+        scheduled_date: planned.planned_date,
+        quantity: planned.planned_quantity,
+        status: planned.status
+      }));
+
+      setPlannedOrders(transformedData);
     } catch (error) {
       console.error('Error fetching planned orders:', error);
+      setPlannedOrders([]);
     }
   };
 
@@ -762,7 +806,7 @@ export const ProductionPlanner: React.FC = () => {
   const handleDrop = async (e: React.DragEvent, line: ProductionLine, date: Date) => {
     e.preventDefault();
     
-    if (draggedPO && line.status === 'active') {
+    if (draggedPO && isLineActive(line)) {
       const totalQuantity = draggedPO.pending_qty || 0;
       const lineCapacity = line.capacity;
       
@@ -856,16 +900,33 @@ export const ProductionPlanner: React.FC = () => {
           return;
         }
 
-        // Save to database
+        // Save to database - transform to planned_production format
+        const plannedProductionData = plannedDays.map(day => ({
+          purchase_id: day.po_id,
+          line_id: day.line_id,
+          planned_date: day.scheduled_date,
+          planned_quantity: day.quantity,
+          status: day.status,
+          order_index: 0
+        }));
+
         const { data, error } = await supabase
-          .from('planned_orders')
-          .insert(plannedDays)
+          .from('planned_production')
+          .insert(plannedProductionData)
           .select();
 
         if (error) throw error;
 
-        // Update local state
-        setPlannedOrders(prev => [...prev, ...data]);
+        // Update local state - transform back to PlannedOrder format
+        const transformedData = data.map(planned => ({
+          id: planned.id,
+          po_id: planned.purchase_id,
+          line_id: planned.line_id,
+          scheduled_date: planned.planned_date,
+          quantity: planned.planned_quantity,
+          status: planned.status
+        }));
+        setPlannedOrders(prev => [...prev, ...transformedData]);
 
         // Update PO pending quantity
         const scheduledQuantity = totalQuantity - remainingQuantity;
@@ -873,7 +934,10 @@ export const ProductionPlanner: React.FC = () => {
 
         const { error: updateError } = await supabase
           .from('purchases')
-          .update({ pending_qty: newPendingQty })
+          .update({ 
+            pending_qty: newPendingQty,
+            state: newPendingQty <= 0 ? 'planned' : 'purchase'
+          })
           .eq('id', draggedPO.id);
 
         if (updateError) throw updateError;
@@ -1009,10 +1073,10 @@ export const ProductionPlanner: React.FC = () => {
         
         // Update the planned order
         const { error } = await supabase
-          .from('planned_orders')
+          .from('planned_production')
           .update({
             line_id: line.id,
-            scheduled_date: dateString
+            planned_date: dateString
           })
           .eq('id', draggedPlannedOrder.id);
 
@@ -1080,11 +1144,19 @@ export const ProductionPlanner: React.FC = () => {
     }
   };
 
-  const getCapacityColor = (current: number, capacity: number) => {
+  const getCapacityColor = (current: number = 0, capacity: number) => {
     const percentage = (current / capacity) * 100;
     if (percentage < 70) return 'text-green-600';
     if (percentage < 90) return 'text-yellow-600';
     return 'text-red-600';
+  };
+
+  const getLineStatus = (line: ProductionLine) => {
+    return line.status || 'active';
+  };
+
+  const isLineActive = (line: ProductionLine) => {
+    return getLineStatus(line) === 'active';
   };
 
   return (
@@ -1207,38 +1279,71 @@ export const ProductionPlanner: React.FC = () => {
                 ) : (
                   <div className="space-y-2">
                     {filteredPurchaseOrders.map((po) => (
-                      <div
-                        key={po.id}
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, po)}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          setPoContextMenu({ po, x: e.clientX, y: e.clientY });
-                        }}
-                        className={`p-3 bg-white rounded-lg border transition-all cursor-move ${
-                          hiddenPOIds.has(po.id) 
-                            ? 'border-gray-200 opacity-50' 
-                            : 'border-gray-200 hover:border-blue-300 hover:shadow-md'
-                        }`}
-                      >
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <h4 className="font-medium text-gray-900 text-sm truncate">{po.name}</h4>
-                            {hiddenPOIds.has(po.id) && (
-                              <Badge variant="secondary" className="text-xs">Hidden</Badge>
-                            )}
+                      <HoverCard key={po.id}>
+                        <HoverCardTrigger asChild>
+                          <div
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, po)}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              setPoContextMenu({ po, x: e.clientX, y: e.clientY });
+                            }}
+                            className={`p-3 bg-white rounded-lg border transition-all cursor-move ${
+                              hiddenPOIds.has(po.id) 
+                                ? 'border-gray-200 opacity-50' 
+                                : 'border-gray-200 hover:border-blue-300 hover:shadow-md'
+                            }`}
+                          >
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <h4 className="font-medium text-gray-900 text-sm truncate">{po.name}</h4>
+                                {hiddenPOIds.has(po.id) && (
+                                  <Badge variant="secondary" className="text-xs">Hidden</Badge>
+                                )}
+                              </div>
+                              <p className="text-xs text-gray-600 truncate font-medium">{po.partner_name}</p>
+                              <div className="flex items-center space-x-2">
+                                <Badge variant="outline" className="text-xs">
+                                  Total: {po.total_qty?.toLocaleString() || 0}
+                                </Badge>
+                                <Badge variant="outline" className="text-xs">
+                                  Pending: {po.pending_qty?.toLocaleString() || 0}
+                                </Badge>
+                              </div>
+                            </div>
                           </div>
-                          <p className="text-xs text-gray-600 truncate">{po.partner_name}</p>
-                          <div className="flex items-center space-x-2">
-                            <Badge variant="outline" className="text-xs">
-                              Qty: {po.pending_qty?.toLocaleString()}
-                            </Badge>
-                            <Badge variant="outline" className="text-xs">
-                              LKR {(po.amount_total / 1000).toFixed(0)}K
-                            </Badge>
+                        </HoverCardTrigger>
+                        <HoverCardContent className="w-80">
+                          <div className="space-y-3">
+                            <div>
+                              <h4 className="font-semibold">{po.name}</h4>
+                              <p className="text-sm text-gray-600">{po.partner_name}</p>
+                              <p className="text-xs text-gray-500">Date: {new Date(po.date_order).toLocaleDateString()}</p>
+                            </div>
+                            <div>
+                              <h5 className="font-medium text-sm mb-2">Order Line Items:</h5>
+                              {po.order_lines && po.order_lines.length > 0 ? (
+                                <div className="space-y-2 max-h-48 overflow-y-auto">
+                                  {po.order_lines.map((line, index) => (
+                                    <div key={index} className="p-2 bg-gray-50 rounded text-xs">
+                                      <div className="font-medium">{line.product_name}</div>
+                                      <div className="text-gray-600">
+                                        Product Qty: {line.product_qty?.toLocaleString() || 0} | 
+                                        Qty Received: {line.qty_received?.toLocaleString() || 0}
+                                      </div>
+                                      {line.product_category && (
+                                        <div className="text-gray-500">Category: {line.product_category}</div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-xs text-gray-500">No order line items</p>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      </div>
+                        </HoverCardContent>
+                      </HoverCard>
                     ))}
                   </div>
                 )}
@@ -1370,8 +1475,8 @@ export const ProductionPlanner: React.FC = () => {
                                     Cap: <span className="font-semibold text-gray-800">{line.capacity}</span>
                                   </div>
                                   <div className="text-xs text-gray-600">
-                                    Load: <span className={`font-semibold ${getCapacityColor(line.current_load, line.capacity)}`}>
-                                      {line.current_load}
+                                    Load: <span className={`font-semibold ${getCapacityColor(line.current_load || 0, line.capacity)}`}>
+                                      {line.current_load || 0}
                                     </span>
                                   </div>
                                 </div>
@@ -1397,7 +1502,7 @@ export const ProductionPlanner: React.FC = () => {
                                           ? 'bg-orange-50/50'
                                           : isPastDate(date)
                                             ? 'bg-gray-50/70'
-                                            : line.status !== 'active'
+                                            : !isLineActive(line)
                                               ? 'bg-gray-100/50'
                                               : 'bg-white hover:bg-blue-50'
                                     }`}
@@ -1426,7 +1531,7 @@ export const ProductionPlanner: React.FC = () => {
                                     {isHoliday(date, line.id) && (
                                       <div className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></div>
                                     )}
-                                    {!ordersOnDate.length && !isWeekend(date) && !isPastDate(date) && !isHoliday(date, line.id) && line.status === 'active' && (
+                                    {!ordersOnDate.length && !isWeekend(date) && !isPastDate(date) && !isHoliday(date, line.id) && isLineActive(line) && (
                                       <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
                                         <Plus className="h-4 w-4 text-gray-400" />
                                       </div>
@@ -1452,8 +1557,8 @@ export const ProductionPlanner: React.FC = () => {
                               Cap: <span className="font-semibold text-gray-800">{line.capacity}</span>
                             </div>
                             <div className="text-xs text-gray-600">
-                              Load: <span className={`font-semibold ${getCapacityColor(line.current_load, line.capacity)}`}>
-                                {line.current_load}
+                              Load: <span className={`font-semibold ${getCapacityColor(line.current_load || 0, line.capacity)}`}>
+                                {line.current_load || 0}
                               </span>
                             </div>
                           </div>
@@ -1479,7 +1584,7 @@ export const ProductionPlanner: React.FC = () => {
                                     ? 'bg-orange-50/50'
                                     : isPastDate(date)
                                       ? 'bg-gray-50/70'
-                                      : line.status !== 'active'
+                                      : !isLineActive(line)
                                         ? 'bg-gray-100/50'
                                         : 'bg-white hover:bg-blue-50'
                               }`}
@@ -1508,7 +1613,7 @@ export const ProductionPlanner: React.FC = () => {
                               {isHoliday(date, line.id) && (
                                 <div className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></div>
                               )}
-                              {!ordersOnDate.length && !isWeekend(date) && !isPastDate(date) && !isHoliday(date, line.id) && line.status === 'active' && (
+                              {!ordersOnDate.length && !isWeekend(date) && !isPastDate(date) && !isHoliday(date, line.id) && isLineActive(line) && (
                                 <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
                                   <Plus className="h-4 w-4 text-gray-400" />
                                 </div>
@@ -1633,11 +1738,11 @@ export const ProductionPlanner: React.FC = () => {
                       <div className="flex-1">
                         <div className="font-medium">{line.name}</div>
                         <div className="text-sm text-gray-600">
-                          Capacity: {line.capacity}/day • Load: {line.current_load} • Efficiency: {line.efficiency}%
+                          Capacity: {line.capacity}/day • Load: {line.current_load || 0} • Efficiency: {line.efficiency || 100}%
                         </div>
                         <div className="flex items-center gap-2 mt-1">
-                          <div className={`w-2 h-2 rounded-full ${getStatusColor(line.status)}`}></div>
-                          <span className="text-xs text-gray-500 capitalize">{line.status}</span>
+                          <div className={`w-2 h-2 rounded-full ${getStatusColor(getLineStatus(line))}`}></div>
+                          <span className="text-xs text-gray-500 capitalize">{getLineStatus(line)}</span>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
