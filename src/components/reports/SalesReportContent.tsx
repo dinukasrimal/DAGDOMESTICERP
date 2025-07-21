@@ -236,10 +236,23 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   // Fetch target data when filters change
   useEffect(() => {
     const fetchTargets = async () => {
+      // Convert months to 2-digit padded format for target service
+      const paddedTargetMonths = targetMonths.includes('all') 
+        ? undefined 
+        : targetMonths.map(month => month.padStart(2, '0'));
+      
+      console.log('Fetching targets with:', {
+        year: selectedYear,
+        originalMonths: targetMonths,
+        paddedMonths: paddedTargetMonths
+      });
+      
       const targets = await getTargetsForAnalytics(
         selectedYear === 'all' ? undefined : selectedYear,
-        targetMonths.includes('all') ? undefined : targetMonths
+        paddedTargetMonths
       );
+      
+      console.log('Target data received:', targets);
       setTargetData(targets);
     };
 
@@ -249,6 +262,18 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
       setTargetData([]);
     }
   }, [selectedYear, targetMonths]);
+
+  // Auto-sync target months when selected months change
+  useEffect(() => {
+    setTargetMonths(selectedMonths);
+  }, [selectedMonths]);
+
+  // Auto-enable target comparison when target data is available
+  useEffect(() => {
+    if (targetData.length > 0 && !showTargetComparison) {
+      setShowTargetComparison(true);
+    }
+  }, [targetData]);
 
   // Build a map of product_id to product info for fast lookup
   const productMap: Record<string, any> = {};
@@ -400,42 +425,22 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
               </div>
             </div>
             <div>
-              <label className="text-sm font-medium mb-2 block">Target Months</label>
-              <div className="space-y-2">
-                <Select value="" onValueChange={(value) => {
-                  if (value === 'all') {
-                    setTargetMonths(['all']);
-                  } else {
-                    setTargetMonths(prev => {
-                      const filtered = prev.filter(m => m !== 'all');
-                      return filtered.includes(value) ? filtered.filter(m => m !== value) : [...filtered, value];
-                    });
-                  }
-                }}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select target months..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Months</SelectItem>
-                    {Array.from({length: 12}, (_, i) => (
-                      <SelectItem key={i+1} value={(i+1).toString()}>
-                        {new Date(2000, i).toLocaleDateString('en-US', { month: 'long' })}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <label className="text-sm font-medium mb-2 block">Target Months (Auto-synced)</label>
+              <div className="p-3 bg-gray-50 rounded-md">
+                <div className="text-xs text-muted-foreground mb-2">
+                  Target months automatically match selected months
+                </div>
                 {targetMonths.length > 0 && !targetMonths.includes('all') && (
                   <div className="flex flex-wrap gap-1">
                     {targetMonths.map(month => (
                       <Badge key={month} variant="secondary" className="text-xs">
                         {new Date(2000, parseInt(month) - 1).toLocaleDateString('en-US', { month: 'short' })}
-                        <X 
-                          className="h-3 w-3 ml-1 cursor-pointer" 
-                          onClick={() => setTargetMonths(prev => prev.filter(m => m !== month))}
-                        />
                       </Badge>
                     ))}
                   </div>
+                )}
+                {targetMonths.includes('all') && (
+                  <Badge variant="secondary" className="text-xs">All Months</Badge>
                 )}
               </div>
             </div>
@@ -491,11 +496,16 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
           </CardHeader>
           <CardContent>
             {(() => {
+              // Convert months to 2-digit padded format for calculation
+              const paddedSelectedMonths = targetMonths.includes('all') 
+                ? undefined 
+                : targetMonths.map(month => month.padStart(2, '0'));
+              
               const comparison = calculateTargetVsActual(
                 filteredData,
                 targetData,
                 selectedYear === 'all' ? undefined : selectedYear,
-                targetMonths.includes('all') ? undefined : targetMonths
+                paddedSelectedMonths
               );
 
               if (comparison.length === 0) {
