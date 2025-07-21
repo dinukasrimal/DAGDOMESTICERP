@@ -28,7 +28,7 @@ interface PurchaseOrder {
   order_lines?: Array<{
     product_name: string;
     product_uom_qty: number;
-    qty_received: number;
+    recieved_qty: number;
     price_unit: number;
     price_subtotal: number;
     product_category: string;
@@ -270,10 +270,10 @@ export const ProductionPlanner: React.FC = () => {
           const orderLines = Array.isArray(purchase.order_lines) ? purchase.order_lines : [];
           // Total quantity: Sum of product_qty from order lines
           const totalQty = orderLines.reduce((sum, line) => sum + (line.product_qty || 0), 0);
-          // Pending quantity: Calculate as product_qty - qty_received for each line
+          // Pending quantity: Calculate as product_qty - recieved_qty for each line
           const pendingQty = orderLines.reduce((sum, line) => {
             const productQty = line.product_qty || 0;
-            const qtyReceived = line.qty_received || 0;
+            const qtyReceived = line.recieved_qty || 0;
             return sum + Math.max(0, productQty - qtyReceived);
           }, 0);
           
@@ -762,7 +762,26 @@ export const ProductionPlanner: React.FC = () => {
         status: planned.status
       }));
 
-      setPlannedOrders(transformedData);
+      // Consolidate orders for same PO on same date
+      const consolidatedData: PlannedOrder[] = [];
+      const consolidationMap = new Map<string, PlannedOrder>();
+
+      for (const order of transformedData) {
+        const key = `${order.po_id}-${order.line_id}-${order.scheduled_date}`;
+        
+        if (consolidationMap.has(key)) {
+          // Merge quantities for same PO on same date
+          const existing = consolidationMap.get(key)!;
+          existing.quantity += order.quantity;
+        } else {
+          consolidationMap.set(key, { ...order });
+        }
+      }
+
+      // Convert back to array
+      consolidatedData.push(...consolidationMap.values());
+
+      setPlannedOrders(consolidatedData);
     } catch (error) {
       console.error('Error fetching planned orders:', error);
       setPlannedOrders([]);
@@ -961,83 +980,106 @@ export const ProductionPlanner: React.FC = () => {
 
       // Move conflicting orders before scheduling new order
       if (ordersToMove.length > 0) {
+        // Group moved orders by PO to consolidate them
+        const movedOrdersByPO = new Map<string, {orders: PlannedOrder[], totalQuantity: number}>();
+        
         for (const orderToMove of ordersToMove) {
-          // Find the last day of our new scheduling plan
-          const lastScheduledDate = schedulingPlan[schedulingPlan.length - 1]?.date;
-          if (lastScheduledDate) {
-            // Start from the last scheduled date to use remaining capacity
-            let rescheduleDate = new Date(lastScheduledDate);
-            
-            // Find next available slot for the moved order
-            let remainingToReschedule = orderToMove.quantity;
-            const reschedulePlan: Array<{date: string; quantity: number}> = [];
-            
-            while (remainingToReschedule > 0) {
-              if (isWorkingDay(rescheduleDate, line.id)) {
-                const dateStr = rescheduleDate.toISOString().split('T')[0];
-                
-                // Calculate available capacity after considering the new order and moved orders
-                let usedCapacity = 0;
-                
-                // Add capacity used by the new order on this date
-                const newOrderOnThisDate = schedulingPlan.find(plan => plan.date === dateStr);
-                if (newOrderOnThisDate) {
-                  usedCapacity += newOrderOnThisDate.quantity;
-                }
-                
-                // Add capacity used by existing planned orders (excluding orders we're moving)
-                const existingOrders = plannedOrders.filter(order => 
-                  order.line_id === line.id && 
-                  order.scheduled_date === dateStr &&
-                  !ordersToMove.some(moveOrder => moveOrder.id === order.id)
-                );
-                usedCapacity += existingOrders.reduce((sum, order) => sum + order.quantity, 0);
-                
-                // Add capacity used by previously rescheduled orders on this date
-                const previouslyRescheduled = reschedulePlan.filter(plan => plan.date === dateStr);
-                usedCapacity += previouslyRescheduled.reduce((sum, plan) => sum + plan.quantity, 0);
-                
-                const availableCapacity = Math.max(0, line.capacity - usedCapacity);
-                
-                if (availableCapacity > 0) {
-                  const quantityToSchedule = Math.min(remainingToReschedule, availableCapacity);
-                  reschedulePlan.push({
-                    date: dateStr,
-                    quantity: quantityToSchedule
-                  });
-                  remainingToReschedule -= quantityToSchedule;
-                }
-              }
+          const poId = orderToMove.po_id;
+          if (!movedOrdersByPO.has(poId)) {
+            movedOrdersByPO.set(poId, {orders: [], totalQuantity: 0});
+          }
+          const group = movedOrdersByPO.get(poId)!;
+          group.orders.push(orderToMove);
+          group.totalQuantity += orderToMove.quantity;
+        }
+        
+        // Track accumulated schedule across all moved orders for sequential scheduling
+        const accumulatedSchedule = new Map<string, number>();
+        
+        // Add the new order's schedule to accumulated schedule
+        for (const plan of schedulingPlan) {
+          accumulatedSchedule.set(plan.date, (accumulatedSchedule.get(plan.date) || 0) + plan.quantity);
+        }
+        
+        // Find the first available date after the new order
+        let globalStartDate = new Date(schedulingPlan[schedulingPlan.length - 1]?.date || new Date());
+        
+        // Process each PO group sequentially to ensure no mixing
+        for (const [poId, group] of movedOrdersByPO) {
+          // Schedule this PO starting from the global start date
+          let rescheduleDate = new Date(globalStartDate);
+          let remainingToReschedule = group.totalQuantity;
+          const reschedulePlan: Array<{date: string; quantity: number}> = [];
+          
+          while (remainingToReschedule > 0) {
+            if (isWorkingDay(rescheduleDate, line.id)) {
+              const dateStr = rescheduleDate.toISOString().split('T')[0];
               
-              rescheduleDate.setDate(rescheduleDate.getDate() + 1);
+              // Calculate available capacity considering accumulated schedule
+              let usedCapacity = 0;
               
-              // Safety check
-              if (rescheduleDate > new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)) {
-                break;
+              // Add capacity from accumulated schedule (new order + previously scheduled moved orders)
+              usedCapacity += accumulatedSchedule.get(dateStr) || 0;
+              
+              // Add capacity used by existing planned orders (excluding orders we're moving)
+              const existingOrders = plannedOrders.filter(order => 
+                order.line_id === line.id && 
+                order.scheduled_date === dateStr &&
+                !ordersToMove.some(moveOrder => moveOrder.id === order.id)
+              );
+              usedCapacity += existingOrders.reduce((sum, order) => sum + order.quantity, 0);
+              
+              const availableCapacity = Math.max(0, line.capacity - usedCapacity);
+              
+              if (availableCapacity > 0) {
+                const quantityToSchedule = Math.min(remainingToReschedule, availableCapacity);
+                reschedulePlan.push({
+                  date: dateStr,
+                  quantity: quantityToSchedule
+                });
+                
+                // Update accumulated schedule
+                accumulatedSchedule.set(dateStr, (accumulatedSchedule.get(dateStr) || 0) + quantityToSchedule);
+                
+                remainingToReschedule -= quantityToSchedule;
               }
             }
             
-            // Update the moved order's schedule
+            rescheduleDate.setDate(rescheduleDate.getDate() + 1);
+            
+            // Safety check
+            if (rescheduleDate > new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)) {
+              break;
+            }
+          }
+          
+          // Update the moved order's schedule
+          if (reschedulePlan.length > 0) {
+            // Remove all old planned orders for this PO
+            await supabase
+              .from('planned_orders')
+              .delete()
+              .in('id', group.orders.map(order => order.id));
+            
+            // Create new consolidated planned orders for rescheduled dates
+            const rescheduledData = reschedulePlan.map((plan, index) => ({
+              purchase_id: poId,
+              line_id: line.id,
+              planned_date: plan.date,
+              planned_quantity: plan.quantity,
+              status: 'planned',
+              order_index: index
+            }));
+            
+            await supabase
+              .from('planned_orders')
+              .insert(rescheduledData);
+            
+            // Update global start date to start next PO after this one completes
             if (reschedulePlan.length > 0) {
-              // Remove old planned order
-              await supabase
-                .from('planned_orders')
-                .delete()
-                .eq('id', orderToMove.id);
-              
-              // Create new planned orders for rescheduled dates
-              const rescheduledData = reschedulePlan.map((plan, index) => ({
-                purchase_id: orderToMove.po_id,
-                line_id: line.id,
-                planned_date: plan.date,
-                planned_quantity: plan.quantity,
-                status: 'planned',
-                order_index: index
-              }));
-              
-              await supabase
-                .from('planned_orders')
-                .insert(rescheduledData);
+              const lastDate = new Date(reschedulePlan[reschedulePlan.length - 1].date);
+              lastDate.setDate(lastDate.getDate() + 1);
+              globalStartDate = lastDate;
             }
           }
         }
@@ -1734,7 +1776,7 @@ export const ProductionPlanner: React.FC = () => {
                                       <div className="font-medium">{line.product_name}</div>
                                       <div className="text-gray-600">
                                         Product Qty: {line.product_qty?.toLocaleString() || 0} | 
-                                        Qty Received: {line.qty_received?.toLocaleString() || 0}
+                                        Qty Received: {line.recieved_qty?.toLocaleString() || 0}
                                       </div>
                                       {line.product_category && (
                                         <div className="text-gray-500">Category: {line.product_category}</div>
