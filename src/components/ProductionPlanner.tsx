@@ -2016,6 +2016,8 @@ export const ProductionPlanner: React.FC = () => {
                                                 onClick={(e) => handlePlannedOrderClick(planned, e)}
                                                 onContextMenu={(e) => handlePlannedOrderRightClick(planned, e)}
                                                 onDragStart={(e) => handlePlannedOrderDragStart(e, planned)}
+                                                onDragOver={handleDragOver}
+                                                onDrop={(e) => handleOrderBlockDrop(e, planned, line, date)}
                                                 className={`text-xs p-1 rounded cursor-move transition-colors ${
                                                   selectedPlannedOrders.has(planned.id)
                                                     ? 'bg-blue-200 border border-blue-400 shadow-md'
@@ -2159,6 +2161,8 @@ export const ProductionPlanner: React.FC = () => {
                                           onClick={(e) => handlePlannedOrderClick(planned, e)}
                                           onContextMenu={(e) => handlePlannedOrderRightClick(planned, e)}
                                           onDragStart={(e) => handlePlannedOrderDragStart(e, planned)}
+                                          onDragOver={handleDragOver}
+                                          onDrop={(e) => handleOrderBlockDrop(e, planned, line, date)}
                                           className={`text-xs p-1 rounded cursor-move transition-colors ${
                                             selectedPlannedOrders.has(planned.id)
                                               ? 'bg-blue-200 border border-blue-400 shadow-md'
