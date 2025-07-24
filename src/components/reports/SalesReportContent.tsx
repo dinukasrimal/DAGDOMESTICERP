@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { TrendingUp, TrendingDown, Calendar, DollarSign, Package, X, Target } from 'lucide-react';
+import { TrendingUp, TrendingDown, Calendar, DollarSign, Package, X, Target, ChevronUp, ChevronDown } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { getTargetsForAnalytics, calculateTargetVsActual, TargetData } from '@/services/targetService';
 
@@ -40,6 +40,72 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   const [targetData, setTargetData] = useState<TargetData[]>([]);
   const [showTargetComparison, setShowTargetComparison] = useState(false);
   const [targetMonths, setTargetMonths] = useState<string[]>(['all']);
+  
+  // Sorting state for Target vs Actual table
+  const [sortField, setSortField] = useState<string>('customer');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+
+  // Handle sorting
+  const handleSort = (field: string) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  // Sort comparison data
+  const sortComparisonData = (data: any[]) => {
+    return [...data].sort((a, b) => {
+      let aValue = a[sortField];
+      let bValue = b[sortField];
+      
+      // Handle string comparison for customer names
+      if (sortField === 'customer') {
+        aValue = aValue.toLowerCase();
+        bValue = bValue.toLowerCase();
+      }
+      
+      if (sortDirection === 'asc') {
+        return aValue > bValue ? 1 : -1;
+      } else {
+        return aValue < bValue ? 1 : -1;
+      }
+    });
+  };
+
+  // Sortable header component
+  const SortableHeader = ({ field, children, align = "text-left" }: { 
+    field: string; 
+    children: React.ReactNode; 
+    align?: string;
+  }) => (
+    <th 
+      className={`border p-2 ${align} cursor-pointer hover:bg-slate-600 transition-colors select-none`}
+      onClick={() => handleSort(field)}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span>{children}</span>
+        <div className="flex flex-col">
+          <ChevronUp 
+            className={`h-3 w-3 ${
+              sortField === field && sortDirection === 'asc' 
+                ? 'text-white' 
+                : 'text-slate-400'
+            }`} 
+          />
+          <ChevronDown 
+            className={`h-3 w-3 -mt-1 ${
+              sortField === field && sortDirection === 'desc' 
+                ? 'text-white' 
+                : 'text-slate-400'
+            }`} 
+          />
+        </div>
+      </div>
+    </th>
+  );
 
   // Get available years from data
   const availableYears = [...new Set(salesData.map(item => 
@@ -565,19 +631,19 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
                     <table className="w-full border-collapse">
                       <thead>
                         <tr className="bg-slate-700 text-white">
-                          <th className="border p-2 text-left">Customer</th>
-                          <th className="border p-2 text-right">Actual Qty</th>
-                          <th className="border p-2 text-right">Target Qty</th>
-                          <th className="border p-2 text-right">Qty Variance</th>
-                          <th className="border p-2 text-right">Qty Achievement</th>
-                          <th className="border p-2 text-right">Actual Value</th>
-                          <th className="border p-2 text-right">Target Value</th>
-                          <th className="border p-2 text-right">Value Variance</th>
-                          <th className="border p-2 text-right">Value Achievement</th>
+                          <SortableHeader field="customer">Customer</SortableHeader>
+                          <SortableHeader field="actualQty" align="text-right">Actual Qty</SortableHeader>
+                          <SortableHeader field="targetQty" align="text-right">Target Qty</SortableHeader>
+                          <SortableHeader field="qtyVariance" align="text-right">Qty Variance</SortableHeader>
+                          <SortableHeader field="qtyPercentage" align="text-right">Qty Achievement</SortableHeader>
+                          <SortableHeader field="actualValue" align="text-right">Actual Value</SortableHeader>
+                          <SortableHeader field="targetValue" align="text-right">Target Value</SortableHeader>
+                          <SortableHeader field="valueVariance" align="text-right">Value Variance</SortableHeader>
+                          <SortableHeader field="valuePercentage" align="text-right">Value Achievement</SortableHeader>
                         </tr>
                       </thead>
                       <tbody>
-                        {comparison.map((item, index) => (
+                        {sortComparisonData(comparison).map((item, index) => (
                           <tr key={index} className="hover:bg-gray-50">
                             <td className="border p-2 font-medium">{item.customer}</td>
                             <td className="border p-2 text-right">{item.actualQty.toLocaleString()}</td>
