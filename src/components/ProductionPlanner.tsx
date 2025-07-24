@@ -255,15 +255,40 @@ export const ProductionPlanner: React.FC = () => {
   const fetchPurchaseOrders = async () => {
     setIsLoading(true);
     try {
-      // Fetch purchase orders excluding those in purchase_holds
-      const { data, error } = await supabase
+      // First, let's see what's in planned_production
+      const { data: plannedData } = await supabase
+        .from('planned_production')
+        .select('purchase_id');
+      
+      console.log('Planned production data:', plannedData);
+      console.log('Purchase IDs in planned_production:', plannedData?.map(p => p.purchase_id));
+
+      // Get unique planned purchase IDs
+      const plannedPurchaseIds = [...new Set(plannedData?.map(p => p.purchase_id) || [])];
+      console.log('Will exclude these unique PO names:', plannedPurchaseIds);
+
+      // Build the query using Supabase's built-in filtering
+      let query = supabase
         .from('purchases')
         .select('*')
-        .not('id', 'in', `(SELECT purchase_id FROM purchase_holds)`)
+        .not('id', 'in', `(SELECT purchase_id FROM purchase_holds)`);
+
+      // Only exclude planned orders if there are any
+      if (plannedPurchaseIds.length > 0) {
+        query = query.not('name', 'in', `(${plannedPurchaseIds.join(',')})`);
+      }
+
+      const { data, error } = await query
         .order('date_order', { ascending: false })
         .limit(1000);
 
-      if (error) throw error;
+      if (error) {
+        console.error('Query error:', error);
+        throw error;
+      }
+
+      console.log('Fetched purchase orders:', data?.length, 'orders');
+      console.log('First few PO names after exclusion:', data?.slice(0, 10).map(po => po.name));
 
       if (data) {
         const transformedData: PurchaseOrder[] = data.map(purchase => {
@@ -290,9 +315,10 @@ export const ProductionPlanner: React.FC = () => {
           };
         });
         
-        // Show purchase orders (excluding those on hold)
+        // Show purchase orders (excluding those on hold and already planned)
         setPurchaseOrders(transformedData);
-        console.log(`Loaded ${transformedData.length} purchase orders (excluding holds)`);
+        console.log(`Loaded ${transformedData.length} purchase orders (excluding holds and planned production)`);
+        console.log('PO names loaded:', transformedData.map(po => po.name));
       }
     } catch (error) {
       console.error('Error fetching purchase orders:', error);
@@ -737,7 +763,7 @@ export const ProductionPlanner: React.FC = () => {
   const fetchPlannedOrders = async () => {
     try {
       const { data, error } = await supabase
-        .from('planned_orders')
+        .from('planned_production')
         .select('*')
         .order('planned_date');
 
@@ -745,14 +771,14 @@ export const ProductionPlanner: React.FC = () => {
         console.error('Error fetching planned orders:', error);
         // If table doesn't exist, just set empty array for now
         if (error.code === '42P01') {
-          console.log('planned_orders table does not exist yet, using empty array');
+          console.log('planned_production table does not exist yet, using empty array');
           setPlannedOrders([]);
           return;
         }
         return;
       }
 
-      // Transform planned_orders to match PlannedOrder interface
+      // Transform planned_production to match PlannedOrder interface
       const transformedData = (data || []).map(planned => ({
         id: planned.id,
         po_id: planned.purchase_id,
@@ -870,7 +896,7 @@ export const ProductionPlanner: React.FC = () => {
       
       // Update in database
       await supabase
-        .from('planned_orders')
+        .from('planned_production')
         .update({ planned_date: dateStr })
         .eq('id', order.id);
 
@@ -918,6 +944,7 @@ export const ProductionPlanner: React.FC = () => {
     }
 
     try {
+
       // Calculate scheduling plan with collision detection
       let remainingQuantity = totalQuantity;
       let currentDate = new Date(date);
@@ -1057,7 +1084,7 @@ export const ProductionPlanner: React.FC = () => {
           if (reschedulePlan.length > 0) {
             // Remove all old planned orders for this PO
             await supabase
-              .from('planned_orders')
+              .from('planned_production')
               .delete()
               .in('id', group.orders.map(order => order.id));
             
@@ -1072,7 +1099,7 @@ export const ProductionPlanner: React.FC = () => {
             }));
             
             await supabase
-              .from('planned_orders')
+              .from('planned_production')
               .insert(rescheduledData);
             
             // Update global start date to start next PO after this one completes
@@ -1105,11 +1132,12 @@ export const ProductionPlanner: React.FC = () => {
         planned_date: plan.date,
         planned_quantity: plan.quantity,
         status: 'planned',
-        order_index: index
+        order_index: index // Simple sequential index
       }));
 
+
       const { data, error } = await supabase
-        .from('planned_orders')
+        .from('planned_production')
         .insert(plannedProductionData)
         .select();
 
@@ -1131,7 +1159,7 @@ export const ProductionPlanner: React.FC = () => {
       const scheduledQuantity = totalQuantity - remainingQuantity;
       const newPendingQty = Math.max(0, (draggedPO.pending_qty || 0) - scheduledQuantity);
 
-      await supabase
+      const { error: updateError } = await supabase
         .from('purchases')
         .update({ 
           pending_qty: newPendingQty,
@@ -1139,7 +1167,9 @@ export const ProductionPlanner: React.FC = () => {
         })
         .eq('id', draggedPO.id);
 
-      // Update local PO state
+      if (updateError) throw updateError;
+
+      // Only update local PO state after successful database operation
       if (newPendingQty <= 0) {
         setPurchaseOrders(prev => prev.filter(po => po.id !== draggedPO.id));
       } else {
@@ -1163,7 +1193,7 @@ export const ProductionPlanner: React.FC = () => {
       console.error('Error scheduling order:', error);
       toast({
         title: 'Scheduling Error',
-        description: 'Failed to schedule the order',
+        description: error instanceof Error ? error.message : 'Failed to schedule the order',
         variant: 'destructive',
       });
     }
@@ -1210,27 +1240,42 @@ export const ProductionPlanner: React.FC = () => {
       // Calculate total quantity from all blocks
       const totalQuantity = allBlocksForPO.reduce((sum, order) => sum + (order.quantity || 0), 0);
       
-      // Find the related PO and add the total quantity back
-      const relatedPO = purchaseOrders.find(po => po.id === plannedOrder.po_id);
-      if (relatedPO) {
-        const updatedPO = {
-          ...relatedPO,
-          pending_qty: (relatedPO.pending_qty || 0) + totalQuantity
-        };
+      // Delete all blocks from database first
+      const { error: deleteError } = await supabase
+        .from('planned_production')
+        .delete()
+        .eq('purchase_id', plannedOrder.po_id);
+
+      if (deleteError) throw deleteError;
+
+      // Fetch the purchase order from database to get current state
+      const { data: purchaseData, error: fetchError } = await supabase
+        .from('purchases')
+        .select('*')
+        .eq('id', plannedOrder.po_id)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      if (purchaseData) {
+        const newPendingQty = (purchaseData.pending_qty || 0) + totalQuantity;
         
-        setPurchaseOrders(prev => 
-          prev.map(po => po.id === plannedOrder.po_id ? updatedPO : po)
-        );
+        const { error: updateError } = await supabase
+          .from('purchases')
+          .update({ 
+            pending_qty: newPendingQty,
+            state: 'purchase'
+          })
+          .eq('id', plannedOrder.po_id);
+
+        if (updateError) throw updateError;
       }
 
       // Remove all blocks for this PO from planned orders
       setPlannedOrders(prev => prev.filter(order => order.po_id !== plannedOrder.po_id));
 
-      // Delete all blocks from database
-      await supabase
-        .from('planned_orders')
-        .delete()
-        .eq('purchase_id', plannedOrder.po_id);
+      // Refresh purchase orders to show the moved order in sidebar
+      await fetchPurchaseOrders();
 
       toast({
         title: 'Order Moved',
@@ -1360,7 +1405,7 @@ export const ProductionPlanner: React.FC = () => {
         // Remove conflicting orders from database and local state
         for (const conflictOrder of conflictingOrders) {
           await supabase
-            .from('planned_orders')
+            .from('planned_production')
             .delete()
             .eq('id', conflictOrder.id);
         }
@@ -1380,7 +1425,7 @@ export const ProductionPlanner: React.FC = () => {
         }));
 
         const { data, error } = await supabase
-          .from('planned_orders')
+          .from('planned_production')
           .insert(plannedProductionData)
           .select();
 
@@ -1441,7 +1486,7 @@ export const ProductionPlanner: React.FC = () => {
           };
 
           const { data: additionalData, error: additionalError } = await supabase
-            .from('planned_orders')
+            .from('planned_production')
             .insert([additionalPlan])
             .select();
 
@@ -1477,7 +1522,7 @@ export const ProductionPlanner: React.FC = () => {
 
       // Update PO state
       const newPendingQty = 0; // Assuming full quantity is scheduled
-      await supabase
+      const { error: updateError } = await supabase
         .from('purchases')
         .update({ 
           pending_qty: newPendingQty,
@@ -1485,6 +1530,9 @@ export const ProductionPlanner: React.FC = () => {
         })
         .eq('id', draggedPO.id);
 
+      if (updateError) throw updateError;
+
+      // Only update local state after successful database operation
       setPurchaseOrders(prev => prev.filter(po => po.id !== draggedPO.id));
 
     } catch (error) {
@@ -1512,7 +1560,7 @@ export const ProductionPlanner: React.FC = () => {
         
         // Update the planned order
         const { error } = await supabase
-          .from('planned_orders')
+          .from('planned_production')
           .update({
             line_id: line.id,
             planned_date: dateString

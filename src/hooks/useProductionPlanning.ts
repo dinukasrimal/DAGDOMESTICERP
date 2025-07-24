@@ -314,12 +314,14 @@ export const useProductionPlanning = () => {
       if (error) throw error;
 
       // Update purchase state
-      await supabase
+      const { error: updateError } = await supabase
         .from('purchases')
         .update({ state: 'planned' })
         .eq('id', purchase.id);
 
-      // Update local state
+      if (updateError) throw updateError;
+
+      // Only update local state after successful database operations
       setPlannedProduction(prev => [...prev, ...(data || [])]);
       setPurchases(prev => prev.filter(p => p.id !== purchase.id));
 
@@ -362,7 +364,7 @@ export const useProductionPlanning = () => {
 
       if (updateError) throw updateError;
 
-      // Update local state
+      // Only update local state after successful database operations
       setPlannedProduction(prev => 
         prev.filter(p => p.purchase_id !== planned.purchase_id)
       );
