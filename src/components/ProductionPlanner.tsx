@@ -17,6 +17,8 @@ import {
   Edit, Trash2, ChevronDown, ChevronRight, GripVertical, Settings, Search
 } from 'lucide-react';
 import { supabaseBatchFetch, cn } from '@/lib/utils';
+import { supabaseDataService } from '@/services/supabaseDataService';
+import { Holiday } from '@/types/scheduler';
 
 interface PurchaseOrder {
   id: string;
@@ -58,13 +60,6 @@ interface PlannedOrder {
   status: 'planned' | 'in_progress' | 'completed';
 }
 
-interface Holiday {
-  id: string;
-  name: string;
-  date: string;
-  line_ids?: string[];
-  is_global: boolean;
-}
 
 interface LineGroup {
   id: string;
@@ -246,9 +241,10 @@ export const ProductionPlanner: React.FC = () => {
   const isHoliday = (date: Date, lineId?: string) => {
     const dateStr = date.toISOString().split('T')[0];
     return holidays.some(holiday => {
-      if (holiday.date === dateStr) {
-        if (holiday.is_global) return true;
-        if (lineId && holiday.line_ids?.includes(lineId)) return true;
+      const holidayDateStr = holiday.date.toISOString().split('T')[0];
+      if (holidayDateStr === dateStr) {
+        if (holiday.isGlobal) return true;
+        if (lineId && holiday.affectedLineIds?.includes(lineId)) return true;
       }
       return false;
     });
@@ -296,7 +292,6 @@ export const ProductionPlanner: React.FC = () => {
       }
 
       console.log('Fetched purchase orders:', data?.length, 'orders');
-      console.log('First few PO names after exclusion:', data?.slice(0, 10).map(po => po.name));
 
       if (data) {
         // Filter out purchase orders that are on hold
@@ -340,10 +335,20 @@ export const ProductionPlanner: React.FC = () => {
           };
         });
         
-        // Store ALL purchase orders (only excluding those on hold) - planned POs needed for tooltips
-        setPurchaseOrders(transformedData);
-        console.log(`Loaded ${transformedData.length} purchase orders (excluding only holds)`);
-        console.log('PO names loaded:', transformedData.map(po => po.name));
+        // Load split orders and merge with regular purchase orders
+        const splitOrders = await loadSplitOrders();
+        
+        // Filter out original POs that have been split
+        const splitOriginalIds = new Set(splitOrders.map((split: any) => split.original_po_id));
+        const filteredRegularPOs = transformedData.filter(po => !splitOriginalIds.has(po.id));
+        
+        // Combine regular POs with split orders
+        const allPurchaseOrders = [...filteredRegularPOs, ...splitOrders];
+        
+        // Store combined purchase orders
+        setPurchaseOrders(allPurchaseOrders);
+        console.log(`Loaded ${allPurchaseOrders.length} purchase orders (${filteredRegularPOs.length} regular + ${splitOrders.length} splits)`);
+        console.log('PO names loaded:', allPurchaseOrders.map(po => po.name));
       }
     } catch (error) {
       console.error('Error fetching purchase orders:', error);
@@ -586,17 +591,8 @@ export const ProductionPlanner: React.FC = () => {
   // Fetch holidays from Supabase
   const fetchHolidays = async () => {
     try {
-      const { data, error } = await supabase
-        .from('holidays')
-        .select('*')
-        .order('date');
-
-      if (error) {
-        console.error('Error fetching holidays:', error);
-        return;
-      }
-
-      setHolidays(data || []);
+      const holidaysData = await supabaseDataService.getHolidays();
+      setHolidays(holidaysData);
     } catch (error) {
       console.error('Error fetching holidays:', error);
     }
@@ -621,22 +617,14 @@ export const ProductionPlanner: React.FC = () => {
       }
 
       try {
-        const { data, error } = await supabase
-          .from('holidays')
-          .insert([
-            {
-              name: newHolidayName.trim(),
-              date: dateStr,
-              is_global: isGlobalHoliday,
-              line_ids: isGlobalHoliday ? [] : selectedHolidayLines
-            }
-          ])
-          .select()
-          .single();
+        const newHoliday = await supabaseDataService.createHoliday({
+          name: newHolidayName.trim(),
+          date: selectedDate,
+          isGlobal: isGlobalHoliday,
+          affectedLineIds: isGlobalHoliday ? [] : selectedHolidayLines
+        });
 
-        if (error) throw error;
-
-        setHolidays(prev => [...prev, data]);
+        setHolidays(prev => [...prev, newHoliday]);
         
         // Move affected orders to the next available date
         if (affectedOrders.length > 0) {
@@ -652,7 +640,7 @@ export const ProductionPlanner: React.FC = () => {
         
         toast({
           title: 'Holiday Added',
-          description: `${data.name} has been added for ${dateStr}`,
+          description: `${newHoliday.name} has been added for ${selectedDate.toISOString().split('T')[0]}`,
         });
       } catch (error) {
         console.error('Error adding holiday:', error);
@@ -667,13 +655,7 @@ export const ProductionPlanner: React.FC = () => {
   
   const handleDeleteHoliday = async (holidayId: string) => {
     try {
-      const { error } = await supabase
-        .from('holidays')
-        .delete()
-        .eq('id', holidayId);
-
-      if (error) throw error;
-
+      await supabaseDataService.deleteHoliday(holidayId);
       setHolidays(prev => prev.filter(holiday => holiday.id !== holidayId));
       
       toast({
@@ -865,6 +847,200 @@ export const ProductionPlanner: React.FC = () => {
     const totalQty = po.pending_qty || 0;
     setSplitQuantities([Math.floor(totalQty / 2), Math.ceil(totalQty / 2)]); // Default 50/50 split
     setShowSplitPODialog(true);
+  };
+
+  // Save split orders to Supabase split_orders table
+  const saveSplitOrders = async (originalPO: PurchaseOrder, splitPOs: any[]) => {
+    try {
+      // First, delete any existing splits for this original PO
+      const { error: deleteError } = await supabase
+        .from('split_orders')
+        .delete()
+        .eq('original_po_id', originalPO.id);
+
+      if (deleteError) {
+        console.warn('Error deleting existing splits:', deleteError);
+      }
+
+      // Insert new split orders
+      const splitRecords = splitPOs.map(split => ({
+        original_po_id: originalPO.id,
+        original_po_name: originalPO.name,
+        split_name: split.name,
+        split_index: parseInt(split.name.split('-S')[1]),
+        quantity: split.pending_qty,
+        partner_name: split.partner_name,
+        date_order: split.date_order,
+        amount_total: split.amount_total,
+        state: split.state,
+        order_lines: split.order_lines
+      }));
+
+      const { data, error } = await supabase
+        .from('split_orders')
+        .insert(splitRecords)
+        .select();
+
+      if (error) {
+        console.error('Error saving split orders to Supabase:', error);
+        // Fallback to localStorage
+        const existingSplits = JSON.parse(localStorage.getItem('splitOrders') || '[]');
+        const filteredSplits = existingSplits.filter((split: any) => split.original_po_id !== originalPO.id);
+        const updatedSplits = [...filteredSplits, ...splitPOs];
+        localStorage.setItem('splitOrders', JSON.stringify(updatedSplits));
+        console.log('Split orders saved to localStorage as fallback');
+      } else {
+        console.log('Split orders saved to Supabase:', data.length, 'records');
+      }
+    } catch (error) {
+      console.error('Error in saveSplitOrders:', error);
+      // Fallback to localStorage
+      try {
+        const existingSplits = JSON.parse(localStorage.getItem('splitOrders') || '[]');
+        const filteredSplits = existingSplits.filter((split: any) => split.original_po_id !== originalPO.id);
+        const updatedSplits = [...filteredSplits, ...splitPOs];
+        localStorage.setItem('splitOrders', JSON.stringify(updatedSplits));
+        console.log('Split orders saved to localStorage as fallback');
+      } catch (fallbackError) {
+        console.error('Even localStorage fallback failed:', fallbackError);
+      }
+    }
+  };
+
+  // Load split orders from Supabase split_orders table
+  const loadSplitOrders = async (): Promise<PurchaseOrder[]> => {
+    try {
+      const { data, error } = await supabase
+        .from('split_orders')
+        .select('*')
+        .order('original_po_name', { ascending: true })
+        .order('split_index', { ascending: true });
+
+      if (error) {
+        console.error('Error loading split orders from Supabase:', error);
+        // Fallback to localStorage
+        const splitOrders = JSON.parse(localStorage.getItem('splitOrders') || '[]');
+        console.log('Loaded split orders from localStorage as fallback:', splitOrders.length);
+        return splitOrders;
+      }
+
+      if (!data || data.length === 0) {
+        console.log('No split orders found in Supabase');
+        return [];
+      }
+
+      // Transform Supabase data back to PurchaseOrder format
+      const splitOrders: PurchaseOrder[] = data.map(split => ({
+        id: `split-${split.original_po_id}-S${split.split_index}`,
+        name: split.split_name,
+        partner_name: split.partner_name || '',
+        date_order: split.date_order || '',
+        amount_total: split.amount_total || 0,
+        state: split.state || 'purchase',
+        order_lines: split.order_lines || [],
+        total_qty: split.quantity,
+        pending_qty: split.quantity,
+        is_split: true,
+        original_po_id: split.original_po_id
+      }));
+
+      console.log('Loaded split orders from Supabase:', splitOrders.map(s => s.name));
+      return splitOrders;
+    } catch (error) {
+      console.error('Error in loadSplitOrders:', error);
+      // Fallback to localStorage
+      try {
+        const splitOrders = JSON.parse(localStorage.getItem('splitOrders') || '[]');
+        console.log('Loaded split orders from localStorage as fallback:', splitOrders.length);
+        return splitOrders;
+      } catch (fallbackError) {
+        console.error('Even localStorage fallback failed:', fallbackError);
+        return [];
+      }
+    }
+  };
+
+  const handleSplitOrder = async () => {
+    if (!poToSplit) return;
+
+    try {
+      const originalPO = poToSplit;
+      
+      // Create split orders using a separate storage approach
+      const splitPOs = splitQuantities.map((quantity, index) => {
+        const splitName = `${originalPO.name}-S${index + 1}`;
+        
+        // Calculate order lines for this split proportionally
+        const splitOrderLines = originalPO.order_lines?.map(line => ({
+          ...line,
+          product_uom_qty: Math.round((line.product_uom_qty || 0) * (quantity / (originalPO.pending_qty || 1))),
+          qty_received: 0 // Reset received quantity for splits
+        })) || [];
+
+        return {
+          id: `split-${originalPO.id}-S${index + 1}`, // Unique split ID
+          name: splitName,
+          partner_name: originalPO.partner_name,
+          date_order: originalPO.date_order,
+          amount_total: Math.round((originalPO.amount_total || 0) * (quantity / (originalPO.pending_qty || 1))),
+          state: 'purchase',
+          order_lines: splitOrderLines,
+          total_qty: quantity,
+          pending_qty: quantity,
+          is_split: true, // Mark as split order
+          original_po_id: originalPO.id // Reference to original
+        } as PurchaseOrder & { is_split: boolean; original_po_id: string };
+      });
+
+      // Store split orders separately in a custom table or local storage
+      await saveSplitOrders(originalPO, splitPOs);
+
+      // Remove original PO from the array and add split POs
+      setPurchaseOrders(prev => {
+        const filtered = prev.filter(po => po.id !== originalPO.id);
+        return [...filtered, ...splitPOs];
+      });
+
+      // Update any planned production that references the original PO
+      const plannedOrdersForOriginalPO = plannedOrders.filter(planned => planned.po_id === originalPO.name);
+      
+      if (plannedOrdersForOriginalPO.length > 0) {
+        // Move all planned production to the first split (local state only for now)
+        const firstSplitName = splitPOs[0].name;
+        
+        // Update local state
+        setPlannedOrders(prev => 
+          prev.map(planned => 
+            planned.po_id === originalPO.name 
+              ? { ...planned, po_id: firstSplitName }
+              : planned
+          )
+        );
+      }
+
+      toast({
+        title: 'Order Split Successfully',
+        description: `${originalPO.name} has been split into ${splitQuantities.length} orders`,
+      });
+
+      setShowSplitPODialog(false);
+      setPoToSplit(null);
+      setSplitQuantities([]);
+
+    } catch (error) {
+      console.error('Error splitting order:', error);
+      console.error('Error details:', {
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+        code: error.code
+      });
+      toast({
+        title: 'Error',
+        description: `Failed to split the order: ${error.message || 'Unknown error'}`,
+        variant: 'destructive',
+      });
+    }
   };
 
   // Drag and drop handlers
@@ -1350,15 +1526,16 @@ export const ProductionPlanner: React.FC = () => {
     contextMenu.style.left = `${event.clientX}px`;
     contextMenu.style.top = `${event.clientY}px`;
     
-    const menuItem = document.createElement('button');
-    menuItem.className = 'block w-full text-left px-4 py-2 text-sm hover:bg-gray-100';
-    menuItem.textContent = 'Move back to sidebar';
-    menuItem.onclick = () => {
+    // Move back to sidebar option
+    const moveMenuItem = document.createElement('button');
+    moveMenuItem.className = 'block w-full text-left px-4 py-2 text-sm hover:bg-gray-100';
+    moveMenuItem.textContent = 'Move back to sidebar';
+    moveMenuItem.onclick = () => {
       movePlannedOrderToSidebar(plannedOrder);
       document.body.removeChild(contextMenu);
     };
     
-    contextMenu.appendChild(menuItem);
+    contextMenu.appendChild(moveMenuItem);
     document.body.appendChild(contextMenu);
     
     // Remove context menu when clicking elsewhere
@@ -2773,10 +2950,10 @@ export const ProductionPlanner: React.FC = () => {
                         <div className="flex-1">
                           <div className="font-medium">{holiday.name}</div>
                           <div className="text-sm text-gray-600">
-                            {new Date(holiday.date).toLocaleDateString()}
+                            {holiday.date.toLocaleDateString()}
                           </div>
                           <div className="text-xs text-gray-500 mt-1">
-                            {holiday.is_global ? 'Global holiday' : `Affects ${holiday.line_ids?.length || 0} lines`}
+                            {holiday.isGlobal ? 'Global holiday' : `Affects ${holiday.affectedLineIds?.length || 0} lines`}
                           </div>
                         </div>
                         <Button
@@ -3022,10 +3199,7 @@ export const ProductionPlanner: React.FC = () => {
               Cancel
             </Button>
             <Button
-              onClick={() => {
-                // Handle split logic here
-                setShowSplitPODialog(false);
-              }}
+              onClick={handleSplitOrder}
               disabled={splitQuantities.reduce((sum, qty) => sum + qty, 0) !== poToSplit?.pending_qty}
             >
               Split Order
