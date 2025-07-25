@@ -28,7 +28,7 @@ interface PurchaseOrder {
   order_lines?: Array<{
     product_name: string;
     product_uom_qty: number;
-    recieved_qty: number;
+    qty_received: number;
     price_unit: number;
     price_subtotal: number;
     product_category: string;
@@ -139,6 +139,14 @@ export const ProductionPlanner: React.FC = () => {
   const filteredPurchaseOrders = useMemo(() => {
     let filtered = purchaseOrders;
     
+    // Filter out POs with 0 pending quantity (for sidebar display only)
+    filtered = filtered.filter(po => (po.pending_qty || 0) > 0);
+    
+    // Filter out POs that already have planned production (for sidebar display only)
+    // We need to check this dynamically since plannedOrders might change
+    const plannedPONames = new Set(plannedOrders.map(planned => planned.po_id));
+    filtered = filtered.filter(po => !plannedPONames.has(po.name));
+    
     // Apply search filter
     if (poSearchTerm.trim()) {
       const searchLower = poSearchTerm.toLowerCase();
@@ -154,7 +162,7 @@ export const ProductionPlanner: React.FC = () => {
     }
     
     return filtered;
-  }, [purchaseOrders, poSearchTerm, hiddenPOIds, showHiddenPOs]);
+  }, [purchaseOrders, plannedOrders, poSearchTerm, hiddenPOIds, showHiddenPOs]);
 
   // Group lines by their group assignment
   const groupedLines = useMemo(() => {
@@ -267,19 +275,18 @@ export const ProductionPlanner: React.FC = () => {
       const plannedPurchaseIds = [...new Set(plannedData?.map(p => p.purchase_id) || [])];
       console.log('Will exclude these unique PO names:', plannedPurchaseIds);
 
-      // Build the query using Supabase's built-in filtering
-      let query = supabase
+      // First, get the purchase_holds to exclude them
+      const { data: holdData } = await supabase
+        .from('purchase_holds')
+        .select('purchase_id');
+      
+      const heldPurchaseIds = holdData?.map(hold => hold.purchase_id) || [];
+      console.log('Purchase holds to exclude:', heldPurchaseIds);
+
+      // Build the query - fetch ALL POs first, then filter out holds
+      const { data, error } = await supabase
         .from('purchases')
         .select('*')
-        .not('id', 'in', `(SELECT purchase_id FROM purchase_holds)`)
-        .gt('pending_qty', 0);
-
-      // Only exclude planned orders if there are any
-      if (plannedPurchaseIds.length > 0) {
-        query = query.not('name', 'in', `(${plannedPurchaseIds.join(',')})`);
-      }
-
-      const { data, error } = await query
         .order('date_order', { ascending: false })
         .limit(1000);
 
@@ -292,10 +299,33 @@ export const ProductionPlanner: React.FC = () => {
       console.log('First few PO names after exclusion:', data?.slice(0, 10).map(po => po.name));
 
       if (data) {
-        const transformedData: PurchaseOrder[] = data.map(purchase => {
+        // Filter out purchase orders that are on hold
+        const filteredData = data.filter(purchase => !heldPurchaseIds.includes(purchase.id));
+        console.log(`Filtered out ${data.length - filteredData.length} purchase orders on hold`);
+        
+        const transformedData: PurchaseOrder[] = filteredData.map(purchase => {
           const orderLines = Array.isArray(purchase.order_lines) ? purchase.order_lines : [];
-          // Total quantity: Sum of product_qty from order lines
-          const totalQty = orderLines.reduce((sum, line) => sum + (line.product_qty || 0), 0);
+          
+          // Debug: Check what fields are actually available
+          if (orderLines.length > 0 && purchase.name === 'PO2007') {
+            console.log('Debug PO2007 order lines:', orderLines.map(line => ({
+              product_name: line.product_name,
+              product_qty: line.product_qty,
+              product_uom_qty: line.product_uom_qty,
+              qty_received: line.qty_received,
+              availableFields: Object.keys(line)
+            })));
+          }
+          
+          // Try both field names to be safe
+          const totalQty = orderLines.reduce((sum, line) => {
+            const qty = line.product_uom_qty || line.product_qty || 0;
+            return sum + qty;
+          }, 0);
+          
+          // Calculate actual pending quantity: total - received
+          const totalReceived = orderLines.reduce((sum, line) => sum + (line.qty_received || 0), 0);
+          const calculatedPending = Math.max(0, totalQty - totalReceived);
           
           return {
             id: purchase.id,
@@ -306,13 +336,13 @@ export const ProductionPlanner: React.FC = () => {
             state: purchase.state || '',
             order_lines: orderLines,
             total_qty: totalQty,
-            pending_qty: purchase.pending_qty || 0
+            pending_qty: calculatedPending // Use calculated value instead of database value
           };
         });
         
-        // Show purchase orders (excluding those on hold and already planned)
+        // Store ALL purchase orders (only excluding those on hold) - planned POs needed for tooltips
         setPurchaseOrders(transformedData);
-        console.log(`Loaded ${transformedData.length} purchase orders (excluding holds and planned production)`);
+        console.log(`Loaded ${transformedData.length} purchase orders (excluding only holds)`);
         console.log('PO names loaded:', transformedData.map(po => po.name));
       }
     } catch (error) {
@@ -2045,8 +2075,8 @@ export const ProductionPlanner: React.FC = () => {
                                     <div key={index} className="p-2 bg-gray-50 rounded text-xs">
                                       <div className="font-medium">{line.product_name}</div>
                                       <div className="text-gray-600">
-                                        Product Qty: {line.product_qty?.toLocaleString() || 0} | 
-                                        Qty Received: {line.recieved_qty?.toLocaleString() || 0}
+                                        Product Qty: {line.product_uom_qty?.toLocaleString() || 0} | 
+                                        Qty Received: {line.qty_received?.toLocaleString() || 0}
                                       </div>
                                       {line.product_category && (
                                         <div className="text-gray-500">Category: {line.product_category}</div>
@@ -2229,7 +2259,12 @@ export const ProductionPlanner: React.FC = () => {
                                     {/* Planned Orders */}
                                     <div className="p-1 space-y-1 overflow-hidden">
                                       {ordersOnDate.map((planned) => {
-                                        const relatedPO = purchaseOrders.find(po => po.id === planned.po_id);
+                                        // Try both matching strategies
+                                        let relatedPO = purchaseOrders.find(po => po.name === planned.po_id);
+                                        if (!relatedPO) {
+                                          relatedPO = purchaseOrders.find(po => po.id === planned.po_id);
+                                        }
+                                        
                                         return (
                                           <HoverCard key={planned.id}>
                                             <HoverCardTrigger asChild>
@@ -2293,20 +2328,19 @@ export const ProductionPlanner: React.FC = () => {
                                                 {relatedPO?.order_lines && relatedPO.order_lines.length > 0 && (
                                                   <div>
                                                     <h5 className="font-medium text-sm mb-2">Order Line Items:</h5>
-                                                    <div className="space-y-1 max-h-32 overflow-y-auto">
-                                                      {relatedPO.order_lines.slice(0, 3).map((line, index) => (
-                                                        <div key={index} className="p-1 bg-gray-50 rounded text-xs">
+                                                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                                                      {relatedPO.order_lines.map((line, index) => (
+                                                        <div key={index} className="p-2 bg-gray-50 rounded text-xs">
                                                           <div className="font-medium">{line.product_name}</div>
                                                           <div className="text-gray-600">
-                                                            Qty: {line.product_qty?.toLocaleString() || 0}
+                                                            Product Qty: {line.product_uom_qty?.toLocaleString() || 0} | 
+                                                            Qty Received: {line.qty_received?.toLocaleString() || 0}
                                                           </div>
+                                                          {line.product_category && (
+                                                            <div className="text-gray-500">Category: {line.product_category}</div>
+                                                          )}
                                                         </div>
                                                       ))}
-                                                      {relatedPO.order_lines.length > 3 && (
-                                                        <div className="text-xs text-gray-500 italic">
-                                                          +{relatedPO.order_lines.length - 3} more items...
-                                                        </div>
-                                                      )}
                                                     </div>
                                                   </div>
                                                 )}
@@ -2387,7 +2421,11 @@ export const ProductionPlanner: React.FC = () => {
                               {/* Planned Orders */}
                               <div className="p-1 space-y-1 overflow-hidden">
                                 {ordersOnDate.map((planned) => {
-                                  const relatedPO = purchaseOrders.find(po => po.id === planned.po_id);
+                                  // Try both matching strategies
+                                  let relatedPO = purchaseOrders.find(po => po.name === planned.po_id);
+                                  if (!relatedPO) {
+                                    relatedPO = purchaseOrders.find(po => po.id === planned.po_id);
+                                  }
                                   return (
                                     <HoverCard key={planned.id}>
                                       <HoverCardTrigger asChild>
@@ -2451,20 +2489,19 @@ export const ProductionPlanner: React.FC = () => {
                                           {relatedPO?.order_lines && relatedPO.order_lines.length > 0 && (
                                             <div>
                                               <h5 className="font-medium text-sm mb-2">Order Line Items:</h5>
-                                              <div className="space-y-1 max-h-32 overflow-y-auto">
-                                                {relatedPO.order_lines.slice(0, 3).map((line, index) => (
-                                                  <div key={index} className="p-1 bg-gray-50 rounded text-xs">
+                                              <div className="space-y-2 max-h-48 overflow-y-auto">
+                                                {relatedPO.order_lines.map((line, index) => (
+                                                  <div key={index} className="p-2 bg-gray-50 rounded text-xs">
                                                     <div className="font-medium">{line.product_name}</div>
                                                     <div className="text-gray-600">
-                                                      Qty: {line.product_qty?.toLocaleString() || 0}
+                                                      Product Qty: {line.product_uom_qty?.toLocaleString() || 0} | 
+                                                      Qty Received: {line.qty_received?.toLocaleString() || 0}
                                                     </div>
+                                                    {line.product_category && (
+                                                      <div className="text-gray-500">Category: {line.product_category}</div>
+                                                    )}
                                                   </div>
                                                 ))}
-                                                {relatedPO.order_lines.length > 3 && (
-                                                  <div className="text-xs text-gray-500 italic">
-                                                    +{relatedPO.order_lines.length - 3} more items...
-                                                  </div>
-                                                )}
                                               </div>
                                             </div>
                                           )}
