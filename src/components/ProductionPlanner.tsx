@@ -86,10 +86,11 @@ export const ProductionPlanner: React.FC = () => {
   // Holiday management states
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [showHolidayDialog, setShowHolidayDialog] = useState(false);
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
+  const [selectedDates, setSelectedDates] = useState<Date[]>([]);
   const [newHolidayName, setNewHolidayName] = useState('');
   const [isGlobalHoliday, setIsGlobalHoliday] = useState(true);
   const [selectedHolidayLines, setSelectedHolidayLines] = useState<string[]>([]);
+  const [isCreatingHolidays, setIsCreatingHolidays] = useState(false);
   
   // Line grouping states
   const [lineGroups, setLineGroups] = useState<LineGroup[]>([]);
@@ -564,6 +565,51 @@ export const ProductionPlanner: React.FC = () => {
 
   const handleDeleteLine = async (lineId: string) => {
     try {
+      // First, check if there are any orders assigned to this production line
+      console.log('Checking for orders assigned to production line:', lineId);
+      
+      const { data: assignedOrders, error: queryError } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('assigned_line_id', lineId);
+
+      if (queryError) {
+        console.error('Error querying assigned orders:', queryError);
+        throw queryError;
+      }
+
+      console.log('Found assigned orders:', assignedOrders);
+
+      if (assignedOrders && assignedOrders.length > 0) {
+        // Show user the hidden orders and ask for confirmation
+        const orderDetails = assignedOrders.map(order => 
+          `${order.po_number || order.id} (Status: ${order.status})`
+        ).join(', ');
+        
+        const shouldProceed = window.confirm(
+          `This production line has ${assignedOrders.length} assigned orders that are not visible on the calendar:\n\n${orderDetails}\n\nDo you want to unassign these orders and delete the production line?`
+        );
+
+        if (!shouldProceed) {
+          return;
+        }
+
+        // Unassign all orders from this production line
+        console.log('Unassigning orders from production line...');
+        const { error: unassignError } = await supabase
+          .from('orders')
+          .update({ assigned_line_id: null })
+          .eq('assigned_line_id', lineId);
+
+        if (unassignError) {
+          console.error('Error unassigning orders:', unassignError);
+          throw unassignError;
+        }
+
+        console.log(`Successfully unassigned ${assignedOrders.length} orders`);
+      }
+
+      // Now delete the production line
       const { error } = await supabase
         .from('production_lines')
         .delete()
@@ -576,13 +622,26 @@ export const ProductionPlanner: React.FC = () => {
       
       toast({
         title: 'Line Deleted',
-        description: 'Production line has been deleted successfully',
+        description: assignedOrders && assignedOrders.length > 0 
+          ? `Production line deleted and ${assignedOrders.length} orders unassigned`
+          : 'Production line has been deleted successfully',
       });
     } catch (error) {
       console.error('Error deleting production line:', error);
+      
+      // Enhanced error message
+      let errorMessage = 'Failed to delete production line';
+      if (error && typeof error === 'object' && 'message' in error) {
+        if (error.message.includes('violates foreign key constraint')) {
+          errorMessage = 'Cannot delete: Production line has assigned orders. Please try again - the system will show you which orders need to be unassigned.';
+        } else {
+          errorMessage = `Failed to delete production line: ${error.message}`;
+        }
+      }
+      
       toast({
         title: 'Error',
-        description: 'Failed to delete production line',
+        description: errorMessage,
         variant: 'destructive',
       });
     }
@@ -600,55 +659,113 @@ export const ProductionPlanner: React.FC = () => {
 
   // Holiday management functions
   const handleAddHoliday = async () => {
-    if (selectedDate && newHolidayName.trim()) {
-      // Check if there are any planned orders on the selected date
-      const dateStr = selectedDate.toISOString().split('T')[0];
-      const affectedOrders = plannedOrders.filter(order => 
-        order.scheduled_date === dateStr && 
-        (isGlobalHoliday || selectedHolidayLines.includes(order.line_id))
-      );
-
-      if (affectedOrders.length > 0) {
-        const confirmMove = window.confirm(
-          `This holiday will affect ${affectedOrders.length} planned orders. Do you want to continue and reschedule them?`
-        );
-        
-        if (!confirmMove) return;
-      }
-
+    if (selectedDates.length > 0 && newHolidayName.trim()) {
+      setIsCreatingHolidays(true);
+      
       try {
-        const newHoliday = await supabaseDataService.createHoliday({
-          name: newHolidayName.trim(),
-          date: selectedDate,
-          isGlobal: isGlobalHoliday,
-          affectedLineIds: isGlobalHoliday ? [] : selectedHolidayLines
-        });
+        // Check for existing holidays on selected dates
+        const existingHolidayDates = holidays
+          .filter(holiday => selectedDates.some(date => 
+            holiday.date.toISOString().split('T')[0] === date.toISOString().split('T')[0]
+          ))
+          .map(holiday => holiday.date.toLocaleDateString());
 
-        setHolidays(prev => [...prev, newHoliday]);
-        
-        // Move affected orders to the next available date
-        if (affectedOrders.length > 0) {
-          // Implementation for moving orders would go here
-          console.log('Moving affected orders:', affectedOrders);
+        if (existingHolidayDates.length > 0) {
+          const shouldProceed = window.confirm(
+            `Some selected dates already have holidays: ${existingHolidayDates.join(', ')}\n\nDo you want to continue and create additional holidays on these dates?`
+          );
+          if (!shouldProceed) {
+            setIsCreatingHolidays(false);
+            return;
+          }
         }
 
+        // Check for affected planned orders across all selected dates
+        const allAffectedOrders = plannedOrders.filter(order => 
+          selectedDates.some(date => {
+            const dateStr = date.toISOString().split('T')[0];
+            return order.scheduled_date === dateStr && 
+                   (isGlobalHoliday || selectedHolidayLines.includes(order.line_id));
+          })
+        );
+
+        if (allAffectedOrders.length > 0) {
+          const confirmMove = window.confirm(
+            `Creating holidays on these dates will affect ${allAffectedOrders.length} planned orders across ${selectedDates.length} dates. Do you want to continue and reschedule them?`
+          );
+          
+          if (!confirmMove) {
+            setIsCreatingHolidays(false);
+            return;
+          }
+        }
+
+        // Create holidays for all selected dates
+        const createdHolidays = [];
+        let successCount = 0;
+        let errorCount = 0;
+
+        for (const date of selectedDates) {
+          try {
+            const newHoliday = await supabaseDataService.createHoliday({
+              name: newHolidayName.trim(),
+              date: date,
+              isGlobal: isGlobalHoliday,
+              affectedLineIds: isGlobalHoliday ? [] : selectedHolidayLines
+            });
+            createdHolidays.push(newHoliday);
+            successCount++;
+          } catch (error) {
+            console.error(`Error creating holiday for ${date.toLocaleDateString()}:`, error);
+            errorCount++;
+          }
+        }
+
+        // Update holidays state with successfully created holidays
+        if (createdHolidays.length > 0) {
+          setHolidays(prev => [...prev, ...createdHolidays]);
+        }
+
+        // Move affected orders (implementation could be enhanced)
+        if (allAffectedOrders.length > 0) {
+          console.log('Moving affected orders:', allAffectedOrders);
+        }
+
+        // Reset form
         setNewHolidayName('');
-        setSelectedDate(undefined);
+        setSelectedDates([]);
         setIsGlobalHoliday(true);
         setSelectedHolidayLines([]);
         setShowHolidayDialog(false);
         
-        toast({
-          title: 'Holiday Added',
-          description: `${newHoliday.name} has been added for ${selectedDate.toISOString().split('T')[0]}`,
-        });
+        // Show result toast
+        if (errorCount === 0) {
+          toast({
+            title: 'Holidays Created',
+            description: `Successfully created "${newHolidayName.trim()}" for ${successCount} date${successCount === 1 ? '' : 's'}`,
+          });
+        } else if (successCount > 0) {
+          toast({
+            title: 'Partial Success',
+            description: `Created ${successCount} holidays, but ${errorCount} failed. Check console for details.`,
+            variant: 'destructive',
+          });
+        } else {
+          toast({
+            title: 'Error',
+            description: 'Failed to create any holidays',
+            variant: 'destructive',
+          });
+        }
       } catch (error) {
-        console.error('Error adding holiday:', error);
+        console.error('Error in bulk holiday creation:', error);
         toast({
           title: 'Error',
-          description: 'Failed to add holiday',
+          description: 'Failed to create holidays',
           variant: 'destructive',
         });
+      } finally {
+        setIsCreatingHolidays(false);
       }
     }
   };
@@ -2882,13 +2999,85 @@ export const ProductionPlanner: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label className="text-sm font-medium">Date</label>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-sm font-medium">Select Dates</label>
+                      <div className="flex gap-1">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const today = new Date();
+                            const currentMonth = today.getMonth();
+                            const currentYear = today.getFullYear();
+                            const weekends = [];
+                            
+                            // Get all weekends in current month
+                            for (let day = 1; day <= 31; day++) {
+                              const date = new Date(currentYear, currentMonth, day);
+                              if (date.getMonth() !== currentMonth) break;
+                              if (date.getDay() === 0 || date.getDay() === 6) { // Sunday or Saturday
+                                weekends.push(date);
+                              }
+                            }
+                            setSelectedDates(weekends);
+                          }}
+                          disabled={isCreatingHolidays}
+                        >
+                          This Month's Weekends
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSelectedDates([])}
+                          disabled={selectedDates.length === 0}
+                        >
+                          Clear All
+                        </Button>
+                      </div>
+                    </div>
                     <CalendarComponent
-                      mode="single"
-                      selected={selectedDate}
-                      onSelect={setSelectedDate}
+                      mode="multiple"
+                      selected={selectedDates}
+                      onSelect={(dates) => setSelectedDates(dates || [])}
                       className="rounded-md border"
                     />
+                    {selectedDates.length > 0 && (
+                      <div className="mt-2 p-3 bg-blue-50 rounded border">
+                        <p className="text-sm font-medium text-blue-800 mb-2">
+                          {selectedDates.length} date{selectedDates.length === 1 ? '' : 's'} selected
+                        </p>
+                        <div className="max-h-32 overflow-y-auto">
+                          <div className="flex flex-wrap gap-1">
+                            {selectedDates
+                              .sort((a, b) => a.getTime() - b.getTime())
+                              .map((date, index) => (
+                                <div
+                                  key={index}
+                                  className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs"
+                                >
+                                  <span>{date.toLocaleDateString()}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedDates(prev => prev.filter(d => d.getTime() !== date.getTime()));
+                                    }}
+                                    className="text-blue-600 hover:text-blue-800 ml-1"
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                        {selectedDates.length > 1 && (
+                          <div className="mt-2 text-xs text-blue-600">
+                            All selected dates will be created with the same holiday name and settings
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <div className="flex items-center space-x-2">
@@ -2929,11 +3118,23 @@ export const ProductionPlanner: React.FC = () => {
                   </div>
                   <Button 
                     onClick={handleAddHoliday} 
-                    disabled={!newHolidayName.trim() || !selectedDate}
+                    disabled={!newHolidayName.trim() || selectedDates.length === 0 || isCreatingHolidays}
                     className="w-full"
                   >
-                    <Plus className="h-4 w-4 mr-2" />
-                    Add Holiday
+                    {isCreatingHolidays ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                        Creating...
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="h-4 w-4 mr-2" />
+                        {selectedDates.length > 1 
+                          ? `Add Holidays (${selectedDates.length} dates)`
+                          : 'Add Holiday'
+                        }
+                      </>
+                    )}
                   </Button>
                 </div>
               </div>

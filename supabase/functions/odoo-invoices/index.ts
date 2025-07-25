@@ -91,6 +91,7 @@ serve(async (req) => {
     );
 
     console.log(`Found ${existingInvoiceNames.size} existing invoices in Supabase`);
+    console.log('Existing invoice names (first 10):', Array.from(existingInvoiceNames).slice(0, 10));
 
     // Add batching for fetching all invoices
     const batchSize = parseInt(Deno.env.get('ODOO_INVOICE_BATCH_SIZE') || '100', 10);
@@ -146,6 +147,8 @@ serve(async (req) => {
       }
     }
     console.log(`[Odoo Sync] Total invoices fetched: ${allInvoices.length}`);
+    console.log('First 10 invoice names from Odoo:', allInvoices.slice(0, 10).map(inv => inv.name));
+    console.log('Last 10 invoice names from Odoo:', allInvoices.slice(-10).map(inv => inv.name));
 
     // Filter out existing invoices
     const newInvoices = allInvoices.filter((invoice: Invoice) => 
@@ -153,6 +156,8 @@ serve(async (req) => {
     );
 
     console.log(`${newInvoices.length} new invoices to process`);
+    console.log('New invoice names (first 10):', newInvoices.slice(0, 10).map(inv => inv.name));
+    console.log('New invoice names (last 10):', newInvoices.slice(-10).map(inv => inv.name));
 
     if (newInvoices.length === 0) {
       return new Response(JSON.stringify({ 
@@ -171,6 +176,7 @@ serve(async (req) => {
     for (let i = 0; i < newInvoices.length; i += batchSize) {
       const batch = newInvoices.slice(i, i + batchSize);
       console.log(`Processing batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(newInvoices.length/batchSize)}: ${batch.length} invoices`);
+      console.log('Batch invoice names:', batch.map(inv => inv.name));
 
       // Collect all invoice line IDs for this batch
       const allLineIds: number[] = [];
@@ -305,6 +311,7 @@ serve(async (req) => {
       });
 
       console.log(`Transformed ${transformedInvoices.length} invoices for batch`);
+      console.log('Transformed invoice names:', transformedInvoices.map(inv => inv.name));
 
       // Insert invoices in small sub-batches to avoid timeouts
       const insertBatchSize = 10;
@@ -312,6 +319,7 @@ serve(async (req) => {
       
       for (let j = 0; j < transformedInvoices.length; j += insertBatchSize) {
         const subBatch = transformedInvoices.slice(j, j + insertBatchSize);
+        console.log(`Inserting sub-batch: ${subBatch.map(inv => inv.name).join(', ')}`);
         
         try {
           const { error } = await supabase
@@ -319,13 +327,15 @@ serve(async (req) => {
             .insert(subBatch);
 
           if (error) {
-            console.error(`Error inserting sub-batch:`, error);
+            console.error(`Error inserting sub-batch [${subBatch.map(inv => inv.name).join(', ')}]:`, error);
+            console.error('Error details:', JSON.stringify(error, null, 2));
           } else {
             batchSyncedCount += subBatch.length;
-            console.log(`Inserted sub-batch of ${subBatch.length} invoices`);
+            console.log(`Successfully inserted sub-batch of ${subBatch.length} invoices: ${subBatch.map(inv => inv.name).join(', ')}`);
           }
         } catch (error) {
-          console.error(`Sub-batch insert error:`, error);
+          console.error(`Sub-batch insert error for [${subBatch.map(inv => inv.name).join(', ')}]:`, error);
+          console.error('Catch error details:', JSON.stringify(error, null, 2));
         }
         
         // Small delay between sub-batches
@@ -345,13 +355,20 @@ serve(async (req) => {
     }
 
     console.log(`Sync completed. ${totalSynced}/${newInvoices.length} new invoices synced to Supabase.`);
+    
+    // Check if there were any failures
+    const failedCount = newInvoices.length - totalSynced;
+    if (failedCount > 0) {
+      console.log(`WARNING: ${failedCount} invoices failed to sync`);
+    }
 
     return new Response(JSON.stringify({ 
       success: true, 
       totalInvoices: allInvoices.length,
       newInvoices: newInvoices.length,
       syncedToSupabase: totalSynced,
-      message: `Successfully synced ${totalSynced} new invoices with proper Odoo product categories and order lines`
+      failedToSync: failedCount,
+      message: `Successfully synced ${totalSynced} new invoices with proper Odoo product categories and order lines${failedCount > 0 ? ` (${failedCount} failed)` : ''}`
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
