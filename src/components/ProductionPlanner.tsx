@@ -271,7 +271,8 @@ export const ProductionPlanner: React.FC = () => {
       let query = supabase
         .from('purchases')
         .select('*')
-        .not('id', 'in', `(SELECT purchase_id FROM purchase_holds)`);
+        .not('id', 'in', `(SELECT purchase_id FROM purchase_holds)`)
+        .gt('pending_qty', 0);
 
       // Only exclude planned orders if there are any
       if (plannedPurchaseIds.length > 0) {
@@ -295,12 +296,6 @@ export const ProductionPlanner: React.FC = () => {
           const orderLines = Array.isArray(purchase.order_lines) ? purchase.order_lines : [];
           // Total quantity: Sum of product_qty from order lines
           const totalQty = orderLines.reduce((sum, line) => sum + (line.product_qty || 0), 0);
-          // Pending quantity: Calculate as product_qty - recieved_qty for each line
-          const pendingQty = orderLines.reduce((sum, line) => {
-            const productQty = line.product_qty || 0;
-            const qtyReceived = line.recieved_qty || 0;
-            return sum + Math.max(0, productQty - qtyReceived);
-          }, 0);
           
           return {
             id: purchase.id,
@@ -311,7 +306,7 @@ export const ProductionPlanner: React.FC = () => {
             state: purchase.state || '',
             order_lines: orderLines,
             total_qty: totalQty,
-            pending_qty: pendingQty
+            pending_qty: purchase.pending_qty || 0
           };
         });
         
@@ -853,6 +848,29 @@ export const ProductionPlanner: React.FC = () => {
     e.dataTransfer.dropEffect = 'move';
   };
 
+  // Universal drop handler that routes to appropriate function
+  const handleUniversalDrop = async (e: React.DragEvent, line: ProductionLine, date: Date) => {
+    e.preventDefault();
+    console.log('Universal drop called:', { 
+      draggedPlannedOrder: !!draggedPlannedOrder, 
+      draggedPO: !!draggedPO,
+      line: line.name,
+      date: date.toISOString().split('T')[0]
+    });
+    
+    // For planned orders, allow dropping on holidays (we'll auto-skip to next working day)
+    // For new POs, still enforce the working day restriction
+    if (draggedPlannedOrder) {
+      console.log('Routing to handlePlannedOrderDrop');
+      await handlePlannedOrderDrop(e, line, date);
+    } else if (draggedPO) {
+      console.log('Routing to handleDrop (new PO)');
+      await handleDrop(e, line, date);
+    } else {
+      console.log('No dragged item found');
+    }
+  };
+
   // Helper function to check if a date is a working day
   const isWorkingDay = (date: Date, lineId: string) => {
     return !isHoliday(date, lineId);
@@ -1324,21 +1342,36 @@ export const ProductionPlanner: React.FC = () => {
     setTimeout(() => document.addEventListener('click', removeMenu), 0);
   };
 
-  // Handle dragging planned orders
+  // Handle dragging planned orders - always drag entire PO
   const handlePlannedOrderDragStart = (e: React.DragEvent, plannedOrder: PlannedOrder) => {
-    // If this order is part of a selection, drag all selected orders
+    console.log('🎯 Drag started for PO:', plannedOrder.po_id);
+    
+    // Always get all blocks for this PO
+    const allBlocksForPO = plannedOrders.filter(order => order.po_id === plannedOrder.po_id);
+    
+    // If we have a multi-selection that includes orders from this PO, include all selected orders
     if (selectedPlannedOrders.has(plannedOrder.id)) {
       const selectedOrders = plannedOrders.filter(order => selectedPlannedOrders.has(order.id));
+      
+      // Group selected orders by PO to get complete POs
+      const selectedPOIds = new Set(selectedOrders.map(order => order.po_id));
+      const completeSelectedOrders = plannedOrders.filter(order => selectedPOIds.has(order.po_id));
+      
+      console.log('📦 Multi-select drag with', selectedPOIds.size, 'complete POs');
+      
       setDraggedPlannedOrder(plannedOrder);
       e.dataTransfer.setData('application/json', JSON.stringify({
-        type: 'multiple-planned-orders',
-        orders: selectedOrders
+        type: 'multiple-complete-pos',
+        orders: completeSelectedOrders
       }));
     } else {
+      // Single PO drag - include all blocks of this PO
+      console.log('📦 Single PO drag with', allBlocksForPO.length, 'blocks');
+      
       setDraggedPlannedOrder(plannedOrder);
       e.dataTransfer.setData('application/json', JSON.stringify({
-        type: 'single-planned-order',
-        order: plannedOrder
+        type: 'single-complete-po',
+        orders: allBlocksForPO
       }));
     }
     e.dataTransfer.effectAllowed = 'move';
@@ -1550,43 +1583,232 @@ export const ProductionPlanner: React.FC = () => {
     }
   };
 
-  // Handle dropping planned orders to new dates
+  // Helper function to find next working day
+  const findNextWorkingDay = (startDate: Date, lineId: string) => {
+    let currentDate = new Date(startDate);
+    while (!isWorkingDay(currentDate, lineId)) {
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+    return currentDate;
+  };
+
+  // Handle dropping planned orders to new dates with smart placement
   const handlePlannedOrderDrop = async (e: React.DragEvent, line: ProductionLine, date: Date) => {
     e.preventDefault();
+    console.log('🎯 Drop handler called for', line.name, 'on', date.toISOString().split('T')[0]);
     
     if (draggedPlannedOrder) {
       try {
-        const dateString = date.toISOString().split('T')[0];
-        
-        // Update the planned order
-        const { error } = await supabase
-          .from('planned_production')
-          .update({
-            line_id: line.id,
-            planned_date: dateString
-          })
-          .eq('id', draggedPlannedOrder.id);
+        // Check what type of move this is
+        const dragData = JSON.parse(e.dataTransfer.getData('application/json') || '{}');
+        const ordersToMove = dragData.orders || [draggedPlannedOrder];
+        console.log('📦 Moving', ordersToMove.length, 'orders');
 
-        if (error) throw error;
-
-        // Update local state
-        setPlannedOrders(prev => 
-          prev.map(order => 
-            order.id === draggedPlannedOrder.id 
-              ? { ...order, line_id: line.id, scheduled_date: dateString }
-              : order
-          )
+        // Sort orders by their current date to maintain sequence
+        const sortedOrders = ordersToMove.sort((a, b) => 
+          new Date(a.scheduled_date).getTime() - new Date(b.scheduled_date).getTime()
         );
 
-        toast({
-          title: 'Order Moved',
-          description: `Order moved to ${line.name} on ${date.toLocaleDateString()}`,
+        // Find the starting working day
+        let currentDate = findNextWorkingDay(date, line.id);
+        
+        console.log('Moving PO:', {
+          originalDate: date.toISOString().split('T')[0],
+          newStartDate: currentDate.toISOString().split('T')[0],
+          ordersToMove: ordersToMove.length,
+          poIds: [...new Set(ordersToMove.map(o => o.po_id))]
         });
+        
+        // Always proceed with the move, even if the date seems the same
+        // This handles cases where user drags within the same PO range
+        
+        const updates = [];
+        let moveCount = 0;
+        const lineCapacity = line.capacity;
+        
+        // Track daily capacity usage during placement
+        const dailyUsage = new Map();
+
+        // Get existing orders on this line that are NOT being moved (for capacity calculation)
+        const poIdsToMove = [...new Set(ordersToMove.map(order => order.po_id))];
+        const existingOrdersOnLine = plannedOrders.filter(order => 
+          order.line_id === line.id && !poIdsToMove.includes(order.po_id)
+        );
+        
+        // Add existing orders to daily usage calculation
+        existingOrdersOnLine.forEach(order => {
+          const currentUsage = dailyUsage.get(order.scheduled_date) || 0;
+          dailyUsage.set(order.scheduled_date, currentUsage + order.quantity);
+        });
+
+        // Group ALL orders being moved by their ORIGINAL scheduled date (cross-PO consolidation)
+        const ordersByOriginalDate = new Map();
+        sortedOrders.forEach(order => {
+          const dateKey = order.scheduled_date;
+          if (!ordersByOriginalDate.has(dateKey)) {
+            ordersByOriginalDate.set(dateKey, []);
+          }
+          ordersByOriginalDate.get(dateKey).push(order);
+        });
+
+        console.log('📅 Original date groups:', Object.fromEntries(
+          Array.from(ordersByOriginalDate.entries()).map(([date, orders]) => [
+            date, 
+            orders.map(o => `${o.po_id}(${o.quantity})`).join(', ')
+          ])
+        ));
+
+        // Process orders by original date to maintain cross-PO consolidation
+        let placementDate = new Date(currentDate);
+        
+        for (const [originalDate, dateGroup] of ordersByOriginalDate) {
+          placementDate = findNextWorkingDay(placementDate, line.id);
+          
+          // Calculate total quantity for all orders on this original date
+          const totalQuantityForDate = dateGroup.reduce((sum, order) => sum + order.quantity, 0);
+          
+          console.log(`📦 Processing date group ${originalDate}: ${dateGroup.length} orders, total qty: ${totalQuantityForDate}`);
+          
+          // Try to fit all orders from this original date on the same new date
+          let attempts = 0;
+          let placed = false;
+          
+          while (!placed && attempts < 30) {
+            const dateString = placementDate.toISOString().split('T')[0];
+            const currentUsage = dailyUsage.get(dateString) || 0;
+            const availableCapacity = lineCapacity - currentUsage;
+            
+            console.log(`📊 Trying ${dateString}: capacity ${lineCapacity}, used ${currentUsage}, available ${availableCapacity}, need ${totalQuantityForDate}`);
+            
+            if (totalQuantityForDate <= availableCapacity) {
+              // All orders from this original date can fit together
+              console.log(`✅ Placing all orders from ${originalDate} on ${dateString}`);
+              
+              dateGroup.forEach(order => {
+                updates.push({
+                  id: order.id,
+                  line_id: line.id,
+                  planned_date: dateString
+                });
+                moveCount++;
+              });
+              
+              // Update daily usage tracking
+              dailyUsage.set(dateString, currentUsage + totalQuantityForDate);
+              placed = true;
+              
+              // Move to next working day for next date group
+              placementDate.setDate(placementDate.getDate() + 1);
+              placementDate = findNextWorkingDay(placementDate, line.id);
+            } else {
+              // Can't fit together, try next day
+              console.log(`❌ Cannot fit on ${dateString}, trying next day`);
+              placementDate.setDate(placementDate.getDate() + 1);
+              placementDate = findNextWorkingDay(placementDate, line.id);
+              attempts++;
+            }
+          }
+          
+          // If we couldn't maintain consolidation after reasonable attempts, fall back to individual placement
+          if (!placed) {
+            console.log(`⚠️ Failed to maintain consolidation for ${originalDate}, placing individually`);
+            
+            for (const order of dateGroup) {
+              let individualPlacementDate = new Date(placementDate);
+              let individualPlaced = false;
+              
+              while (!individualPlaced) {
+                individualPlacementDate = findNextWorkingDay(individualPlacementDate, line.id);
+                const dateString = individualPlacementDate.toISOString().split('T')[0];
+                const currentUsage = dailyUsage.get(dateString) || 0;
+                const availableCapacity = lineCapacity - currentUsage;
+                
+                if (order.quantity <= availableCapacity) {
+                  updates.push({
+                    id: order.id,
+                    line_id: line.id,
+                    planned_date: dateString
+                  });
+                  
+                  dailyUsage.set(dateString, currentUsage + order.quantity);
+                  moveCount++;
+                  individualPlaced = true;
+                } else {
+                  individualPlacementDate.setDate(individualPlacementDate.getDate() + 1);
+                }
+              }
+            }
+          }
+        }
+        
+        console.log('📊 Daily capacity usage after accounting for existing orders:', 
+          Object.fromEntries(dailyUsage.entries()));
+        
+        // Now delete all existing blocks for the POs being moved to avoid conflicts
+        
+        for (const poId of poIdsToMove) {
+          const { error: deleteError } = await supabase
+            .from('planned_production')
+            .delete()
+            .eq('purchase_id', poId);
+
+          if (deleteError) throw deleteError;
+        }
+
+        // Then create new blocks at the new positions
+        const newBlocks = updates.map((update, index) => ({
+          purchase_id: ordersToMove.find(order => order.id === update.id)?.po_id,
+          line_id: update.line_id,
+          planned_date: update.planned_date,
+          planned_quantity: ordersToMove.find(order => order.id === update.id)?.quantity || 0,
+          status: 'planned',
+          order_index: index
+        }));
+
+        const { data: insertedData, error: insertError } = await supabase
+          .from('planned_production')
+          .insert(newBlocks)
+          .select();
+
+        if (insertError) throw insertError;
+
+        // Update local state - remove old orders and add new ones
+        setPlannedOrders(prev => {
+          // Remove all orders for the moved POs
+          const filteredOrders = prev.filter(order => !poIdsToMove.includes(order.po_id));
+          
+          // Transform inserted data to match PlannedOrder interface
+          const newPlannedOrders = (insertedData || []).map(inserted => ({
+            id: inserted.id,
+            po_id: inserted.purchase_id,
+            line_id: inserted.line_id,
+            scheduled_date: inserted.planned_date,
+            quantity: inserted.planned_quantity,
+            status: inserted.status
+          }));
+          
+          // Return filtered orders plus new orders
+          return [...filteredOrders, ...newPlannedOrders];
+        });
+
+        // Clear selection after successful move
+        setSelectedPlannedOrders(new Set());
+        setIsMultiSelectMode(false);
+
+        // Count unique POs moved
+        const uniquePOs = new Set(ordersToMove.map(order => order.po_id));
+        const poCount = uniquePOs.size;
+        
+        toast({
+          title: 'Purchase Orders Moved',
+          description: `${poCount} complete PO${poCount > 1 ? 's' : ''} (${moveCount} block${moveCount > 1 ? 's' : ''}) moved to ${line.name} starting ${date.toLocaleDateString()} (holidays skipped)`,
+        });
+
       } catch (error) {
-        console.error('Error moving planned order:', error);
+        console.error('Error moving planned orders:', error);
         toast({
           title: 'Move Error',
-          description: 'Failed to move the planned order',
+          description: 'Failed to move the planned orders',
           variant: 'destructive',
         });
       }
@@ -2002,7 +2224,7 @@ export const ProductionPlanner: React.FC = () => {
                                               : 'bg-white hover:bg-blue-50'
                                     }`}
                                     onDragOver={handleDragOver}
-                                    onDrop={(e) => handleDrop(e, line, date)}
+                                    onDrop={(e) => handleUniversalDrop(e, line, date)}
                                   >
                                     {/* Planned Orders */}
                                     <div className="p-1 space-y-1 overflow-hidden">
@@ -2017,11 +2239,24 @@ export const ProductionPlanner: React.FC = () => {
                                                 onContextMenu={(e) => handlePlannedOrderRightClick(planned, e)}
                                                 onDragStart={(e) => handlePlannedOrderDragStart(e, planned)}
                                                 onDragOver={handleDragOver}
-                                                onDrop={(e) => handleOrderBlockDrop(e, planned, line, date)}
+                                                onDrop={(e) => {
+                                                  // If we're dragging a planned order (not a new PO), let it bubble up to the calendar cell
+                                                  if (draggedPlannedOrder && !draggedPO) {
+                                                    e.stopPropagation(); // Prevent calendar cell from handling it
+                                                    handleUniversalDrop(e, line, date); // Handle it here instead
+                                                    return;
+                                                  }
+                                                  handleOrderBlockDrop(e, planned, line, date);
+                                                }}
                                                 className={`text-xs p-1 rounded cursor-move transition-colors ${
                                                   selectedPlannedOrders.has(planned.id)
                                                     ? 'bg-blue-200 border border-blue-400 shadow-md'
                                                     : 'bg-green-100 border border-green-300 hover:bg-green-200'
+                                                } ${
+                                                  draggedPlannedOrder && 
+                                                  plannedOrders.some(order => 
+                                                    order.po_id === draggedPlannedOrder.po_id && order.id === planned.id
+                                                  ) ? 'opacity-50' : ''
                                                 }`}
                                               >
                                                 <div className="font-medium truncate">{planned.po_id}</div>
@@ -2147,7 +2382,7 @@ export const ProductionPlanner: React.FC = () => {
                                         : 'bg-white hover:bg-blue-50'
                               }`}
                               onDragOver={handleDragOver}
-                              onDrop={(e) => handleDrop(e, line, date)}
+                              onDrop={(e) => handleUniversalDrop(e, line, date)}
                             >
                               {/* Planned Orders */}
                               <div className="p-1 space-y-1 overflow-hidden">
@@ -2162,11 +2397,24 @@ export const ProductionPlanner: React.FC = () => {
                                           onContextMenu={(e) => handlePlannedOrderRightClick(planned, e)}
                                           onDragStart={(e) => handlePlannedOrderDragStart(e, planned)}
                                           onDragOver={handleDragOver}
-                                          onDrop={(e) => handleOrderBlockDrop(e, planned, line, date)}
+                                          onDrop={(e) => {
+                                            // If we're dragging a planned order (not a new PO), let it bubble up to the calendar cell
+                                            if (draggedPlannedOrder && !draggedPO) {
+                                              e.stopPropagation(); // Prevent calendar cell from handling it
+                                              handleUniversalDrop(e, line, date); // Handle it here instead
+                                              return;
+                                            }
+                                            handleOrderBlockDrop(e, planned, line, date);
+                                          }}
                                           className={`text-xs p-1 rounded cursor-move transition-colors ${
                                             selectedPlannedOrders.has(planned.id)
                                               ? 'bg-blue-200 border border-blue-400 shadow-md'
                                               : 'bg-green-100 border border-green-300 hover:bg-green-200'
+                                          } ${
+                                            draggedPlannedOrder && 
+                                            plannedOrders.some(order => 
+                                              order.po_id === draggedPlannedOrder.po_id && order.id === planned.id
+                                            ) ? 'opacity-50' : ''
                                           }`}
                                         >
                                           <div className="font-medium truncate">{planned.po_id}</div>
