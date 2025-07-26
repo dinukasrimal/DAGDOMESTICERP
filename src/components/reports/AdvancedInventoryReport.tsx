@@ -333,16 +333,7 @@ export const AdvancedInventoryReport: React.FC = () => {
       (holdsRes.data || []).forEach((hold: any) => {
         console.log('Processing hold record:', hold);
         
-        // Check if this hold is still active (not expired)
-        const heldUntil = new Date(hold.held_until);
-        const now = new Date();
-        
-        if (heldUntil < now) {
-          console.log(`Skipping expired hold for ${hold.purchase_id} (expired: ${hold.held_until})`);
-          return;
-        }
-        
-        // Store the PO name/ID for matching
+        // Store the PO name/ID for matching (no expiration check)
         const purchaseId = hold.purchase_id;
         if (purchaseId) {
           holdMap.set(purchaseId, true);
@@ -743,16 +734,12 @@ export const AdvancedInventoryReport: React.FC = () => {
           description: `PO ${purchase.name} is no longer on hold`,
         });
       } else {
-        // Add hold
-        // Set hold until tomorrow (24 hours from now)
-        const heldUntil = new Date();
-        heldUntil.setDate(heldUntil.getDate() + 1);
-        
+        // Add hold (no expiration date needed)
         const { error } = await supabase
           .from('purchase_holds')
           .insert({
             purchase_id: purchase.name,
-            held_until: heldUntil.toISOString().split('T')[0] // YYYY-MM-DD format
+            held_until: '9999-12-31' // Far future date to satisfy NOT NULL constraint
           });
         
         if (error) throw error;
