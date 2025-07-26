@@ -9,7 +9,7 @@ import { SalesTargetDialog } from '@/components/reports/SalesTargetDialog';
 import { SavedTargetsManager } from '@/components/reports/SavedTargetsManager';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
-import { FileText, BarChart3, Package, Download, RefreshCw, ArrowLeft, Target, Calendar, Settings, Home, Users, Sparkles, ClipboardList } from 'lucide-react';
+import { FileText, BarChart3, Package, Download, RefreshCw, ArrowLeft, Target, Calendar, Settings, Home, Users, Sparkles, ClipboardList, CheckCircle, XCircle, Clock, AlertCircle, RotateCcw, Zap } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { supabaseBatchFetch, SupabaseTable } from '@/lib/utils';
 
@@ -46,9 +46,12 @@ const Reports: React.FC = () => {
   const navigate = useNavigate();
   const [activeDialog, setActiveDialog] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<string[]>([]);
+  const [syncStatus, setSyncStatus] = useState<any[]>([]);
   const [salesData, setSalesData] = useState<SalesData[]>([]);
   const [purchaseData, setPurchaseData] = useState<PurchaseData[]>([]);
   const [showTargetsDialog, setShowTargetsDialog] = useState(false);
+  const [autoSyncStatus, setAutoSyncStatus] = useState<any>(null);
 
   const fetchSalesData = async () => {
     setIsLoading(true);
@@ -215,9 +218,38 @@ const Reports: React.FC = () => {
     }
   };
 
+  const fetchSyncStatus = async () => {
+    try {
+      // Clean up stale running sync records older than 10 minutes
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      await supabase
+        .from('sync_status')
+        .update({ status: 'failed', error_message: 'Sync timed out or was interrupted' })
+        .eq('status', 'running')
+        .lt('last_sync_timestamp', tenMinutesAgo);
+
+      const { data, error } = await supabase
+        .from('sync_status')
+        .select('*')
+        .order('last_sync_timestamp', { ascending: false })
+        .limit(10);
+
+      if (error) {
+        console.error('Failed to fetch sync status:', error);
+      } else {
+        setSyncStatus(data || []);
+      }
+    } catch (error) {
+      console.error('Error fetching sync status:', error);
+    }
+  };
+
   useEffect(() => {
     fetchSalesData();
     fetchPurchaseData();
+    fetchSyncStatus();
+    checkAutoSyncStatus();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const openDialog = (dialogType: string) => {
@@ -238,41 +270,158 @@ const Reports: React.FC = () => {
 
   const refreshData = async () => {
     setIsLoading(true);
+    setSyncProgress([]);
+    
+    const syncFunctions = [
+      { name: 'Inventory', func: 'odoo-inventory' },
+      { name: 'Products', func: 'odoo-products' },
+      { name: 'Purchases', func: 'odoo-purchases' },
+      { name: 'Invoices', func: 'odoo-invoices' },
+      { name: 'Sales', func: 'odoo-sales' }
+    ];
+
     toast({
       title: 'Refreshing Data',
-      description: 'Syncing latest data from Odoo...'
+      description: `Starting sync for ${syncFunctions.length} modules...`
     });
+
     try {
-      // Trigger all syncs in parallel
-      const syncResults = await Promise.all([
-        supabase.functions.invoke('odoo-inventory'),
-        supabase.functions.invoke('odoo-products'),
-        supabase.functions.invoke('odoo-purchases'),
-        supabase.functions.invoke('odoo-invoices')
-      ]);
-      const allOk = syncResults.every(res => !res.error && res.data && res.data.success !== false);
-      if (!allOk) {
+      // Track progress by updating state as each sync completes
+      const syncResults = await Promise.all(
+        syncFunctions.map(async (sync) => {
+          try {
+            const result = await supabase.functions.invoke(sync.func);
+            setSyncProgress(prev => [...prev, sync.name]);
+            return { name: sync.name, result, success: true };
+          } catch (error) {
+            setSyncProgress(prev => [...prev, `${sync.name} (Failed)`]);
+            return { name: sync.name, result: { error }, success: false };
+          }
+        })
+      );
+
+      // Check results and provide detailed feedback
+      const failedSyncs: string[] = [];
+      const successfulSyncs: string[] = [];
+      
+      syncResults.forEach(({ name, result, success }) => {
+        if (!success || result.error || (result.data && result.data.success === false)) {
+          failedSyncs.push(name);
+          console.error(`${name} sync failed:`, result.error || result.data?.error);
+        } else {
+          successfulSyncs.push(name);
+        }
+      });
+
+      if (failedSyncs.length > 0) {
         toast({
-          title: 'Sync Error',
-          description: 'One or more syncs failed. Check logs.',
+          title: 'Partial Sync Error',
+          description: `Failed: ${failedSyncs.join(', ')}. Successful: ${successfulSyncs.join(', ')}`,
           variant: 'destructive',
         });
       } else {
         toast({
           title: 'Sync Complete',
-          description: 'Odoo data synced successfully.',
+          description: `All Odoo data synced successfully: ${successfulSyncs.join(', ')}`,
         });
       }
-      // Reload both sales and purchase data
+      
+      // Reload both sales and purchase data to reflect changes
       await Promise.all([
         fetchSalesData(),
-        fetchPurchaseData()
+        fetchPurchaseData(),
+        fetchSyncStatus()
       ]);
     } catch (error) {
+      console.error('Refresh data error:', error);
       toast({
         title: 'Sync Error',
         description: error instanceof Error ? error.message : 'Failed to sync from Odoo',
         variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+      setSyncProgress([]);
+    }
+  };
+
+  const clearStuckSyncs = async () => {
+    try {
+      const { error } = await supabase
+        .from('sync_status')
+        .update({ status: 'failed', error_message: 'Manually cleared stuck sync' })
+        .eq('status', 'running');
+
+      if (error) {
+        throw error;
+      }
+
+      toast({
+        title: 'Sync Status Cleared',
+        description: 'All stuck sync processes have been cleared'
+      });
+
+      await fetchSyncStatus();
+    } catch (error) {
+      console.error('Error clearing stuck syncs:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to clear stuck sync processes',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  const checkAutoSyncStatus = async () => {
+    try {
+      const { data, error } = await supabase.functions.invoke('auto-sync');
+      
+      if (error) {
+        console.error('Auto-sync status check failed:', error);
+        return;
+      }
+
+      setAutoSyncStatus(data);
+    } catch (error) {
+      console.error('Error checking auto-sync status:', error);
+    }
+  };
+
+  const triggerAutoSync = async () => {
+    try {
+      setIsLoading(true);
+      toast({
+        title: 'Auto-Sync Triggered',
+        description: 'Running scheduled auto-sync process...'
+      });
+
+      const { data, error } = await supabase.functions.invoke('auto-sync');
+      
+      if (error) {
+        throw error;
+      }
+
+      if (data.success) {
+        toast({
+          title: 'Auto-Sync Complete',
+          description: data.message || 'All sync operations completed successfully'
+        });
+      } else {
+        toast({
+          title: 'Auto-Sync Partial Success',
+          description: data.message || 'Some sync operations had issues',
+          variant: 'default'
+        });
+      }
+
+      setAutoSyncStatus(data);
+      await fetchSyncStatus();
+    } catch (error) {
+      console.error('Auto-sync trigger failed:', error);
+      toast({
+        title: 'Auto-Sync Error',
+        description: error instanceof Error ? error.message : 'Failed to trigger auto-sync',
+        variant: 'destructive'
       });
     } finally {
       setIsLoading(false);
@@ -354,6 +503,15 @@ const Reports: React.FC = () => {
                   Set Targets
                 </Button>
                 <Button 
+                  onClick={triggerAutoSync} 
+                  disabled={isLoading} 
+                  variant="outline"
+                  className="bg-yellow-50 hover:bg-yellow-100 border-yellow-200 hover:border-yellow-300 text-yellow-700 hover:shadow-lg transition-all duration-300"
+                >
+                  <Zap className="mr-2 h-4 w-4" />
+                  Auto-Sync Now
+                </Button>
+                <Button 
                   onClick={refreshData} 
                   disabled={isLoading} 
                   variant="outline"
@@ -364,10 +522,142 @@ const Reports: React.FC = () => {
                   ) : (
                     <RefreshCw className="mr-2 h-4 w-4" />
                   )}
-                  Refresh Data
+                  {isLoading && syncProgress.length > 0 
+                    ? `Syncing... (${syncProgress.length}/5)`
+                    : isLoading 
+                    ? 'Starting Sync...'
+                    : 'Refresh Data'
+                  }
                 </Button>
               </div>
             </div>
+
+            {/* Auto-Sync Status Panel */}
+            {autoSyncStatus && (
+              <Card className="bg-gradient-to-r from-yellow-50 to-orange-50 border-yellow-200 mb-6">
+                <CardHeader>
+                  <CardTitle className="flex items-center space-x-2 text-yellow-800">
+                    <Zap className="h-5 w-5" />
+                    <span>Auto-Sync Status (2-Hour Intervals)</span>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-yellow-700">
+                        {autoSyncStatus.configuration?.enabled ? 'Enabled' : 'Disabled'}
+                      </div>
+                      <div className="text-sm text-yellow-600">Auto-Sync Status</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-yellow-700">
+                        {autoSyncStatus.configuration?.intervalMinutes || 120} min
+                      </div>
+                      <div className="text-sm text-yellow-600">Sync Interval</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-yellow-700">
+                        {autoSyncStatus.nextSyncDue ? 
+                          new Date(autoSyncStatus.nextSyncDue).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 
+                          'N/A'
+                        }
+                      </div>
+                      <div className="text-sm text-yellow-600">Next Sync</div>
+                    </div>
+                  </div>
+                  {autoSyncStatus.syncResults && autoSyncStatus.syncResults.length > 0 && (
+                    <div className="mt-4 pt-4 border-t border-yellow-200">
+                      <div className="text-sm text-yellow-700 mb-2">Last Auto-Sync Results:</div>
+                      <div className="flex flex-wrap gap-2">
+                        {autoSyncStatus.syncResults.map((result: any, index: number) => (
+                          <span 
+                            key={index}
+                            className={`px-2 py-1 rounded text-xs ${
+                              result.success 
+                                ? 'bg-green-100 text-green-700' 
+                                : 'bg-red-100 text-red-700'
+                            }`}
+                          >
+                            {result.syncType}: {result.success ? '✓' : '✗'}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Sync Status Panel */}
+            {syncStatus.length > 0 && (
+              <Card className="bg-white/80 backdrop-blur-sm mb-6">
+                <CardHeader>
+                  <CardTitle className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <Clock className="h-5 w-5" />
+                      <span>Sync Status</span>
+                    </div>
+                    {syncStatus.some(status => status.status === 'running') && (
+                      <Button
+                        onClick={clearStuckSyncs}
+                        variant="outline"
+                        size="sm"
+                        className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                      >
+                        <RotateCcw className="h-4 w-4 mr-1" />
+                        Clear Stuck
+                      </Button>
+                    )}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                    {syncStatus.slice(0, 5).map((status, index) => {
+                      const getStatusIcon = () => {
+                        switch (status.status) {
+                          case 'completed': return <CheckCircle className="h-4 w-4 text-green-600" />;
+                          case 'completed_with_errors': return <AlertCircle className="h-4 w-4 text-yellow-600" />;
+                          case 'failed': return <XCircle className="h-4 w-4 text-red-600" />;
+                          case 'running': return <RefreshCw className="h-4 w-4 text-blue-600 animate-spin" />;
+                          default: return <Clock className="h-4 w-4 text-gray-600" />;
+                        }
+                      };
+
+                      const getStatusColor = () => {
+                        switch (status.status) {
+                          case 'completed': return 'border-green-200 bg-green-50';
+                          case 'completed_with_errors': return 'border-yellow-200 bg-yellow-50';
+                          case 'failed': return 'border-red-200 bg-red-50';
+                          case 'running': return 'border-blue-200 bg-blue-50';
+                          default: return 'border-gray-200 bg-gray-50';
+                        }
+                      };
+
+                      return (
+                        <div key={index} className={`p-3 rounded-lg border ${getStatusColor()}`}>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="font-medium capitalize text-sm">{status.sync_type}</span>
+                            {getStatusIcon()}
+                          </div>
+                          <div className="text-xs text-gray-600">
+                            <div>Records: {status.synced_records || 0}/{status.total_records || 0}</div>
+                            <div>
+                              {status.last_sync_timestamp 
+                                ? new Date(status.last_sync_timestamp).toLocaleString()
+                                : 'Never'
+                              }
+                            </div>
+                            {status.failed_records > 0 && (
+                              <div className="text-red-600">Failed: {status.failed_records}</div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             <Tabs defaultValue="reports" className="w-full">
               <TabsList className="grid w-full grid-cols-2 bg-white/80 backdrop-blur-sm">
