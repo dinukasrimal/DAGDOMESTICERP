@@ -26,7 +26,7 @@ import {
   List
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { downloadElementAsPdf } from '@/lib/pdfUtils';
+import { downloadElementAsPdf, generatePlanningReportPdf } from '@/lib/pdfUtils';
 import { AIInventoryPlanningReport } from './AIInventoryPlanningReport';
 
 interface InventoryData {
@@ -79,6 +79,7 @@ interface CategoryAnalysis {
   totalStock: number;
   totalIncoming: number;
   totalOutgoing: number;
+  totalSalesQty: number;
   needsPlanning: number;
   expanded: boolean;
 }
@@ -169,6 +170,62 @@ export const AdvancedInventoryReport: React.FC = () => {
   const [viewCategoryDialog, setViewCategoryDialog] = useState<{ open: boolean, category: string | null }>({ open: false, category: null });
   const [showAIReport, setShowAIReport] = useState(false);
   const [showUrgentPdfDialog, setShowUrgentPdfDialog] = useState(false);
+  
+  // Function to generate optimized PDF
+  const generateOptimizedPdf = async () => {
+    if (!categoryAnalysis || categoryAnalysis.length === 0) {
+      toast({
+        title: "No Data",
+        description: "No data available for PDF generation.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Prepare data for PDF generation
+    const pdfData = categoryAnalysis
+      .filter(categoryData => {
+        const category = categoryData.category || 'Uncategorized';
+        return globalCategoryFilter.length === 0 || globalCategoryFilter.includes(category);
+      })
+      .map(categoryData => {
+        const products = categoryData.products.map(product => {
+          const salesQty = Math.round(getSalesQtyForProduct(product, parseInt(selectedMonths)) * (1 + salesQtyPercent / 100));
+          const availableIncoming = getPendingIncomingForProduct(product);
+          const stockWithIncoming = product.quantity_on_hand + availableIncoming;
+          const needsPlanning = Math.max(0, salesQty - stockWithIncoming);
+          
+          return {
+            ...product,
+            salesQty,
+            availableIncoming,
+            stockWithIncoming,
+            needsPlanning
+          };
+        });
+
+        return {
+          category: categoryData.category || 'Uncategorized',
+          products: products.sort((a, b) => b.needsPlanning - a.needsPlanning)
+        };
+      });
+
+    try {
+      await generatePlanningReportPdf(pdfData, selectedMonths, salesQtyPercent, globalCategoryFilter);
+      
+      toast({
+        title: "PDF Generated",
+        description: "Planning report PDF has been downloaded successfully.",
+      });
+    } catch (error) {
+      console.error('PDF generation failed:', error);
+      toast({
+        title: "PDF Generation Failed",
+        description: "Failed to generate PDF. Please check the console for details.",
+        variant: "destructive",
+      });
+    }
+  };
   const [salesQtyPercent, setSalesQtyPercent] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
   const [categorySearch, setCategorySearch] = useState('');
@@ -472,21 +529,32 @@ export const AdvancedInventoryReport: React.FC = () => {
       const totalStock = products.reduce((sum, p) => sum + p.quantity_on_hand, 0);
       const totalIncoming = products.reduce((sum, p) => sum + (p.incoming_qty || 0), 0);
       const totalOutgoing = products.reduce((sum, p) => sum + p.outgoing_qty, 0);
+      
+      // Calculate total sales quantity for the category
+      const totalSalesQty = products.reduce((sum, product) => {
+        const salesQty = Math.round(getSalesQtyForProduct(product, parseInt(selectedMonths)) * (1 + salesQtyPercent / 100));
+        return sum + salesQty;
+      }, 0);
+      
+      // Calculate needs planning, excluding items that are 'OK' (have sufficient stock)
       let needsPlanning = 0;
       products.forEach(product => {
-        const forecast = calculateSalesForecast(product.product_name, parseInt(selectedMonths), product.product_id);
-        const availableIncoming = product.incoming_qty || 0;
+        const salesQty = Math.round(getSalesQtyForProduct(product, parseInt(selectedMonths)) * (1 + salesQtyPercent / 100));
+        const availableIncoming = getPendingIncomingForProduct(product);
         const stockWithIncoming = product.quantity_on_hand + availableIncoming;
-        if (forecast > stockWithIncoming) {
-          needsPlanning += forecast - stockWithIncoming;
+        const productNeedsPlanning = Math.max(0, salesQty - stockWithIncoming);
+        if (productNeedsPlanning > 0) {
+          needsPlanning += productNeedsPlanning;
         }
       });
+      
       return {
         category,
         products,
         totalStock,
         totalIncoming,
         totalOutgoing,
+        totalSalesQty,
         needsPlanning,
         expanded: false
       };
@@ -1194,10 +1262,19 @@ export const AdvancedInventoryReport: React.FC = () => {
       {/* Multi-Month Planning Table */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center space-x-2">
-            <Calendar className="h-5 w-5" />
-            <span>{selectedMonths} Month Planning Analysis</span>
-          </CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center space-x-2">
+              <Calendar className="h-5 w-5" />
+              <span>{selectedMonths} Month Planning Analysis</span>
+            </CardTitle>
+            <Button 
+              variant="outline" 
+              onClick={generateOptimizedPdf}
+              className="ml-auto"
+            >
+              Download PDF
+            </Button>
+          </div>
           <div className="flex items-center space-x-4 mt-4">
             <div className="flex items-center space-x-2">
               <label className="text-sm font-medium">
@@ -1342,7 +1419,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                         <td className="border p-2 font-medium" colSpan={2}>
                           {category.expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />} {category.category}
                         </td>
-                        <td className="border p-2 text-right">-</td>
+                        <td className="border p-2 text-right">{category.totalSalesQty}</td>
                         <td className="border p-2 text-right">{category.totalStock}</td>
                         <td className="border p-2 text-right">{category.totalIncoming}</td>
                         <td className="border p-2 text-right">{category.totalStock + category.totalIncoming}</td>
@@ -1729,7 +1806,12 @@ export const AdvancedInventoryReport: React.FC = () => {
                         <td className="border p-2 font-medium" colSpan={2}>
                           {category.expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />} {category.category}
                         </td>
-                        <td className="border p-2 text-right">-</td>
+                        <td className="border p-2 text-right">
+                          {category.products.reduce((sum, product) => {
+                            const salesQty = getSalesQtyForProduct(product, 1);
+                            return sum + salesQty;
+                          }, 0)}
+                        </td>
                         <td className="border p-2 text-right">{category.totalStock}</td>
                         <td className="border p-2 text-right">-</td>
                         <td className="border p-2 text-right">{category.totalIncoming}</td>
@@ -2276,6 +2358,7 @@ export const AdvancedInventoryReport: React.FC = () => {
           </div>
         </DialogContent>
       </Dialog>
+
 
       {/* AI Planning Report Tab */}
       <div className="space-y-6">
