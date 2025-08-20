@@ -4,22 +4,47 @@ import { ProductionScheduler } from '../components/ProductionScheduler';
 import { ProductionPlanner } from '../components/ProductionPlanner';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Calendar, BarChart3, Package, FileText, Settings, Home, Users, TrendingUp, Sparkles, ArrowRight, ClipboardList } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { Calendar, BarChart3, Package, FileText, Settings, Home, Users, TrendingUp, Sparkles, ArrowRight, ClipboardList, Factory, ShoppingCart } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 const Index: React.FC = () => {
   const navigate = useNavigate();
-  const [activeView, setActiveView] = useState('dashboard');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeView, setActiveView] = useState(() => {
+    const view = searchParams.get('view');
+    return view && ['dashboard', 'scheduler', 'planner'].includes(view) ? view : 'dashboard';
+  });
 
   const sidebarItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: Home, onClick: () => setActiveView('dashboard') },
-    { id: 'scheduler', label: 'Production Scheduler', icon: Calendar, onClick: () => setActiveView('scheduler') },
-    { id: 'planner', label: 'Production Planner', icon: ClipboardList, onClick: () => setActiveView('planner') },
+    { id: 'dashboard', label: 'Dashboard', icon: Home, onClick: () => {
+      setActiveView('dashboard');
+      setSearchParams({});
+    }},
+    { id: 'scheduler', label: 'Production Scheduler', icon: Calendar, onClick: () => {
+      setActiveView('scheduler');
+      setSearchParams({ view: 'scheduler' });
+    }},
+    { id: 'planner', label: 'Production Planner', icon: ClipboardList, onClick: () => {
+      setActiveView('planner');
+      setSearchParams({ view: 'planner' });
+    }},
+    { id: 'materials', label: 'Raw Materials', icon: Package, onClick: () => navigate('/materials') },
+    { id: 'bom', label: 'Bill of Materials', icon: Factory, onClick: () => navigate('/bom') },
     { id: 'reports', label: 'Reports & Analytics', icon: BarChart3, onClick: () => navigate('/reports') },
-    { id: 'inventory', label: 'Inventory', icon: Package, onClick: () => {} },
-    { id: 'customers', label: 'Customers', icon: Users, onClick: () => {} },
-    { id: 'settings', label: 'Settings', icon: Settings, onClick: () => {} },
+    { id: 'inventory', label: 'Inventory', icon: ShoppingCart, onClick: () => {}, disabled: true },
+    { id: 'customers', label: 'Customers', icon: Users, onClick: () => {}, disabled: true },
+    { id: 'settings', label: 'Settings', icon: Settings, onClick: () => {}, disabled: true },
   ];
+
+  // Listen for URL changes to update active view
+  React.useEffect(() => {
+    const view = searchParams.get('view');
+    if (view && ['dashboard', 'scheduler', 'planner'].includes(view)) {
+      setActiveView(view);
+    } else {
+      setActiveView('dashboard');
+    }
+  }, [searchParams]);
 
   const dashboardCards = [
     {
@@ -47,12 +72,20 @@ const Index: React.FC = () => {
       onClick: () => navigate('/reports')
     },
     {
-      title: 'Inventory Management',
-      description: 'Track stock levels, manage suppliers, and optimize inventory',
+      title: 'Raw Materials Management',
+      description: 'Manage raw materials, units, and inventory tracking',
       icon: Package,
       gradient: 'bg-gradient-to-br from-purple-500 via-purple-600 to-purple-700',
       accentColor: 'from-purple-500/20 to-purple-600/20',
-      onClick: () => {}
+      onClick: () => navigate('/materials')
+    },
+    {
+      title: 'Bill of Materials (BOM)',
+      description: 'Create and manage product BOMs with material requirements',
+      icon: Factory,
+      gradient: 'bg-gradient-to-br from-orange-500 via-orange-600 to-orange-700',
+      accentColor: 'from-orange-500/20 to-orange-600/20',
+      onClick: () => navigate('/bom')
     }
   ];
 
@@ -138,7 +171,7 @@ const Index: React.FC = () => {
               </div>
               <h2 className="text-2xl font-bold text-gray-900">Quick Actions</h2>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-6 gap-6">
               <Button 
                 variant="outline" 
                 className="h-24 flex flex-col items-center justify-center space-y-3 bg-white/80 hover:bg-white border-gray-200 hover:border-blue-300 hover:shadow-lg transition-all duration-300 group"
@@ -157,6 +190,22 @@ const Index: React.FC = () => {
               </Button>
               <Button 
                 variant="outline" 
+                className="h-24 flex flex-col items-center justify-center space-y-3 bg-white/80 hover:bg-white border-gray-200 hover:border-purple-300 hover:shadow-lg transition-all duration-300 group"
+                onClick={() => navigate('/materials')}
+              >
+                <Package className="h-7 w-7 text-purple-600 group-hover:scale-110 transition-transform duration-300" />
+                <span className="font-medium text-gray-700 group-hover:text-purple-600 transition-colors">Raw Materials</span>
+              </Button>
+              <Button 
+                variant="outline" 
+                className="h-24 flex flex-col items-center justify-center space-y-3 bg-white/80 hover:bg-white border-gray-200 hover:border-orange-300 hover:shadow-lg transition-all duration-300 group"
+                onClick={() => navigate('/bom')}
+              >
+                <Factory className="h-7 w-7 text-orange-600 group-hover:scale-110 transition-transform duration-300" />
+                <span className="font-medium text-gray-700 group-hover:text-orange-600 transition-colors">BOM Manager</span>
+              </Button>
+              <Button 
+                variant="outline" 
                 className="h-24 flex flex-col items-center justify-center space-y-3 bg-white/80 hover:bg-white border-gray-200 hover:border-emerald-300 hover:shadow-lg transition-all duration-300 group"
                 onClick={() => navigate('/reports')}
               >
@@ -165,11 +214,11 @@ const Index: React.FC = () => {
               </Button>
               <Button 
                 variant="outline" 
-                className="h-24 flex flex-col items-center justify-center space-y-3 bg-white/80 hover:bg-white border-gray-200 hover:border-purple-300 hover:shadow-lg transition-all duration-300 group"
+                className="h-24 flex flex-col items-center justify-center space-y-3 bg-white/80 hover:bg-white border-gray-200 hover:border-gray-300 hover:shadow-lg transition-all duration-300 group"
                 onClick={() => {}}
               >
-                <Package className="h-7 w-7 text-purple-600 group-hover:scale-110 transition-transform duration-300" />
-                <span className="font-medium text-gray-700 group-hover:text-purple-600 transition-colors">Inventory Status</span>
+                <ShoppingCart className="h-7 w-7 text-gray-600 group-hover:scale-110 transition-transform duration-300" />
+                <span className="font-medium text-gray-700 group-hover:text-gray-600 transition-colors">Inventory Status</span>
               </Button>
             </div>
           </div>
@@ -198,16 +247,22 @@ const Index: React.FC = () => {
             <button
               key={item.id}
               onClick={item.onClick}
+              disabled={item.disabled}
               className={`w-full flex items-center space-x-4 px-6 py-4 rounded-2xl text-left transition-all duration-300 mb-2 group ${
                 activeView === item.id 
                   ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg shadow-blue-500/25' 
+                  : item.disabled
+                  ? 'text-slate-500 cursor-not-allowed opacity-60'
                   : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
               }`}
             >
               <item.icon className={`h-5 w-5 transition-transform duration-300 ${
-                activeView === item.id ? 'scale-110' : 'group-hover:scale-110'
+                activeView === item.id ? 'scale-110' : !item.disabled ? 'group-hover:scale-110' : ''
               }`} />
               <span className="font-medium">{item.label}</span>
+              {item.disabled && (
+                <span className="ml-auto text-xs text-slate-500 bg-slate-700 px-2 py-1 rounded-full">Soon</span>
+              )}
               {activeView === item.id && (
                 <div className="ml-auto w-2 h-2 bg-white rounded-full animate-pulse"></div>
               )}

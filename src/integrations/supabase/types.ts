@@ -7,13 +7,192 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instanciate createClient with right options
+  // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
     PostgrestVersion: "12.2.3 (519615d)"
   }
   public: {
     Tables: {
+      auto_sync_logs: {
+        Row: {
+          created_at: string | null
+          cross_project_invoices_synced: number | null
+          cross_project_lines_synced: number | null
+          details: Json | null
+          duration_ms: number | null
+          id: string
+          internal_movements_created: number | null
+          message: string | null
+          phases_completed: Json | null
+          status: string
+          sync_id: string
+          total_errors: number | null
+        }
+        Insert: {
+          created_at?: string | null
+          cross_project_invoices_synced?: number | null
+          cross_project_lines_synced?: number | null
+          details?: Json | null
+          duration_ms?: number | null
+          id?: string
+          internal_movements_created?: number | null
+          message?: string | null
+          phases_completed?: Json | null
+          status: string
+          sync_id: string
+          total_errors?: number | null
+        }
+        Update: {
+          created_at?: string | null
+          cross_project_invoices_synced?: number | null
+          cross_project_lines_synced?: number | null
+          details?: Json | null
+          duration_ms?: number | null
+          id?: string
+          internal_movements_created?: number | null
+          message?: string | null
+          phases_completed?: Json | null
+          status?: string
+          sync_id?: string
+          total_errors?: number | null
+        }
+        Relationships: []
+      }
+      bom_headers: {
+        Row: {
+          active: boolean | null
+          created_at: string | null
+          id: string
+          name: string
+          product_id: number | null
+          quantity: number
+          unit: string
+          updated_at: string | null
+          version: string | null
+        }
+        Insert: {
+          active?: boolean | null
+          created_at?: string | null
+          id?: string
+          name: string
+          product_id?: number | null
+          quantity?: number
+          unit: string
+          updated_at?: string | null
+          version?: string | null
+        }
+        Update: {
+          active?: boolean | null
+          created_at?: string | null
+          id?: string
+          name?: string
+          product_id?: number | null
+          quantity?: number
+          unit?: string
+          updated_at?: string | null
+          version?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bom_headers_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      bom_lines: {
+        Row: {
+          bom_header_id: string | null
+          created_at: string | null
+          id: string
+          notes: string | null
+          quantity: number
+          raw_material_id: number | null
+          sort_order: number | null
+          unit: string
+          updated_at: string | null
+          waste_percentage: number | null
+        }
+        Insert: {
+          bom_header_id?: string | null
+          created_at?: string | null
+          id?: string
+          notes?: string | null
+          quantity: number
+          raw_material_id?: number | null
+          sort_order?: number | null
+          unit: string
+          updated_at?: string | null
+          waste_percentage?: number | null
+        }
+        Update: {
+          bom_header_id?: string | null
+          created_at?: string | null
+          id?: string
+          notes?: string | null
+          quantity?: number
+          raw_material_id?: number | null
+          sort_order?: number | null
+          unit?: string
+          updated_at?: string | null
+          waste_percentage?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bom_lines_bom_header_id_fkey"
+            columns: ["bom_header_id"]
+            isOneToOne: false
+            referencedRelation: "bom_headers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "bom_lines_raw_material_id_fkey"
+            columns: ["raw_material_id"]
+            isOneToOne: false
+            referencedRelation: "raw_materials"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      holiday_line_assignments_main: {
+        Row: {
+          created_at: string | null
+          holiday_id: string
+          id: string
+          line_id: string
+        }
+        Insert: {
+          created_at?: string | null
+          holiday_id: string
+          id?: string
+          line_id: string
+        }
+        Update: {
+          created_at?: string | null
+          holiday_id?: string
+          id?: string
+          line_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "holiday_line_assignments_main_holiday_id_fkey"
+            columns: ["holiday_id"]
+            isOneToOne: false
+            referencedRelation: "holidays_main"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "holiday_line_assignments_main_line_id_fkey"
+            columns: ["line_id"]
+            isOneToOne: false
+            referencedRelation: "production_lines_main"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       holiday_production_lines: {
         Row: {
           created_at: string
@@ -71,6 +250,33 @@ export type Database = {
           id?: string
           is_global?: boolean
           name?: string
+        }
+        Relationships: []
+      }
+      holidays_main: {
+        Row: {
+          created_at: string | null
+          date: string
+          id: string
+          is_global: boolean | null
+          name: string
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          date: string
+          id?: string
+          is_global?: boolean | null
+          name: string
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          date?: string
+          id?: string
+          is_global?: boolean | null
+          name?: string
+          updated_at?: string | null
         }
         Relationships: []
       }
@@ -160,6 +366,114 @@ export type Database = {
         }
         Relationships: []
       }
+      line_groups: {
+        Row: {
+          created_at: string | null
+          id: string
+          is_expanded: boolean | null
+          name: string
+          sort_order: number | null
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          is_expanded?: boolean | null
+          name: string
+          sort_order?: number | null
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          is_expanded?: boolean | null
+          name?: string
+          sort_order?: number | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      line_groups_production: {
+        Row: {
+          created_at: string | null
+          id: string
+          is_expanded: boolean | null
+          name: string
+          sort_order: number | null
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          is_expanded?: boolean | null
+          name: string
+          sort_order?: number | null
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          is_expanded?: boolean | null
+          name?: string
+          sort_order?: number | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      material_categories: {
+        Row: {
+          active: boolean | null
+          created_at: string | null
+          description: string | null
+          id: number
+          name: string
+          updated_at: string | null
+        }
+        Insert: {
+          active?: boolean | null
+          created_at?: string | null
+          description?: string | null
+          id?: number
+          name: string
+          updated_at?: string | null
+        }
+        Update: {
+          active?: boolean | null
+          created_at?: string | null
+          description?: string | null
+          id?: number
+          name?: string
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      material_suppliers: {
+        Row: {
+          active: boolean | null
+          contact_info: string | null
+          created_at: string | null
+          id: number
+          name: string
+          updated_at: string | null
+        }
+        Insert: {
+          active?: boolean | null
+          contact_info?: string | null
+          created_at?: string | null
+          id?: number
+          name: string
+          updated_at?: string | null
+        }
+        Update: {
+          active?: boolean | null
+          contact_info?: string | null
+          created_at?: string | null
+          id?: number
+          name?: string
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
       orders: {
         Row: {
           actual_production: Json | null
@@ -228,6 +542,142 @@ export type Database = {
           },
         ]
       }
+      planned_orders: {
+        Row: {
+          created_at: string | null
+          id: number
+          line_id: string
+          order_index: number
+          planned_date: string
+          planned_quantity: number
+          purchase_id: string
+          status: string
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: number
+          line_id: string
+          order_index: number
+          planned_date: string
+          planned_quantity: number
+          purchase_id: string
+          status?: string
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          id?: number
+          line_id?: string
+          order_index?: number
+          planned_date?: string
+          planned_quantity?: number
+          purchase_id?: string
+          status?: string
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      planned_orders_main: {
+        Row: {
+          created_at: string | null
+          id: string
+          line_id: string
+          order_index: number | null
+          planned_date: string | null
+          planned_quantity: number | null
+          po_id: string
+          purchase_id: number | null
+          quantity: number
+          scheduled_date: string
+          status: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          line_id: string
+          order_index?: number | null
+          planned_date?: string | null
+          planned_quantity?: number | null
+          po_id: string
+          purchase_id?: number | null
+          quantity?: number
+          scheduled_date: string
+          status?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          line_id?: string
+          order_index?: number | null
+          planned_date?: string | null
+          planned_quantity?: number | null
+          po_id?: string
+          purchase_id?: number | null
+          quantity?: number
+          scheduled_date?: string
+          status?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "planned_orders_main_line_id_fkey"
+            columns: ["line_id"]
+            isOneToOne: false
+            referencedRelation: "production_lines_main"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      planned_production: {
+        Row: {
+          actual_quantity: number | null
+          created_at: string | null
+          id: string
+          line_id: string
+          order_index: number | null
+          planned_date: string
+          planned_quantity: number
+          purchase_id: string
+          status: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          actual_quantity?: number | null
+          created_at?: string | null
+          id?: string
+          line_id: string
+          order_index?: number | null
+          planned_date: string
+          planned_quantity: number
+          purchase_id: string
+          status?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          actual_quantity?: number | null
+          created_at?: string | null
+          id?: string
+          line_id?: string
+          order_index?: number | null
+          planned_date?: string
+          planned_quantity?: number
+          purchase_id?: string
+          status?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "planned_production_line_id_fkey"
+            columns: ["line_id"]
+            isOneToOne: false
+            referencedRelation: "production_lines"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       production_lines: {
         Row: {
           capacity: number
@@ -255,15 +705,64 @@ export type Database = {
         }
         Relationships: []
       }
+      production_lines_main: {
+        Row: {
+          capacity: number
+          created_at: string | null
+          current_load: number | null
+          efficiency: number | null
+          group_id: string | null
+          id: string
+          name: string
+          sort_order: number | null
+          status: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          capacity?: number
+          created_at?: string | null
+          current_load?: number | null
+          efficiency?: number | null
+          group_id?: string | null
+          id?: string
+          name: string
+          sort_order?: number | null
+          status?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          capacity?: number
+          created_at?: string | null
+          current_load?: number | null
+          efficiency?: number | null
+          group_id?: string | null
+          id?: string
+          name?: string
+          sort_order?: number | null
+          status?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "production_lines_main_group_id_fkey"
+            columns: ["group_id"]
+            isOneToOne: false
+            referencedRelation: "line_groups_production"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       products: {
         Row: {
           active: boolean | null
           category_id: number | null
+          colour: string | null
           created_at: string | null
           default_code: string | null
           id: number
           name: string
           product_category: string | null
+          size: string | null
           sub_category: string | null
           type: string | null
           uom: string | null
@@ -272,11 +771,13 @@ export type Database = {
         Insert: {
           active?: boolean | null
           category_id?: number | null
+          colour?: string | null
           created_at?: string | null
           default_code?: string | null
           id: number
           name: string
           product_category?: string | null
+          size?: string | null
           sub_category?: string | null
           type?: string | null
           uom?: string | null
@@ -285,11 +786,13 @@ export type Database = {
         Update: {
           active?: boolean | null
           category_id?: number | null
+          colour?: string | null
           created_at?: string | null
           default_code?: string | null
           id?: number
           name?: string
           product_category?: string | null
+          size?: string | null
           sub_category?: string | null
           type?: string | null
           uom?: string | null
@@ -455,6 +958,110 @@ export type Database = {
         }
         Relationships: []
       }
+      raw_material_inventory: {
+        Row: {
+          id: string
+          last_updated: string | null
+          location: string | null
+          quantity_available: number
+          quantity_on_hand: number
+          quantity_reserved: number
+          raw_material_id: number | null
+        }
+        Insert: {
+          id?: string
+          last_updated?: string | null
+          location?: string | null
+          quantity_available?: number
+          quantity_on_hand?: number
+          quantity_reserved?: number
+          raw_material_id?: number | null
+        }
+        Update: {
+          id?: string
+          last_updated?: string | null
+          location?: string | null
+          quantity_available?: number
+          quantity_on_hand?: number
+          quantity_reserved?: number
+          raw_material_id?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "raw_material_inventory_raw_material_id_fkey"
+            columns: ["raw_material_id"]
+            isOneToOne: false
+            referencedRelation: "raw_materials"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      raw_materials: {
+        Row: {
+          active: boolean | null
+          base_unit: string
+          category_id: number | null
+          code: string | null
+          conversion_factor: number
+          cost_per_unit: number | null
+          created_at: string | null
+          description: string | null
+          id: number
+          name: string
+          purchase_unit: string
+          reorder_level: number | null
+          supplier_id: number | null
+          updated_at: string | null
+        }
+        Insert: {
+          active?: boolean | null
+          base_unit: string
+          category_id?: number | null
+          code?: string | null
+          conversion_factor?: number
+          cost_per_unit?: number | null
+          created_at?: string | null
+          description?: string | null
+          id?: number
+          name: string
+          purchase_unit: string
+          reorder_level?: number | null
+          supplier_id?: number | null
+          updated_at?: string | null
+        }
+        Update: {
+          active?: boolean | null
+          base_unit?: string
+          category_id?: number | null
+          code?: string | null
+          conversion_factor?: number
+          cost_per_unit?: number | null
+          created_at?: string | null
+          description?: string | null
+          id?: number
+          name?: string
+          purchase_unit?: string
+          reorder_level?: number | null
+          supplier_id?: number | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "raw_materials_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "material_categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raw_materials_supplier_id_fkey"
+            columns: ["supplier_id"]
+            isOneToOne: false
+            referencedRelation: "material_suppliers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       sales_targets: {
         Row: {
           adjusted_total_qty: number
@@ -506,14 +1113,152 @@ export type Database = {
         }
         Relationships: []
       }
+      split_orders: {
+        Row: {
+          amount_total: number | null
+          created_at: string | null
+          date_order: string | null
+          id: string
+          order_lines: Json | null
+          original_po_id: string
+          original_po_name: string
+          partner_name: string | null
+          quantity: number
+          split_index: number
+          split_name: string
+          state: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          amount_total?: number | null
+          created_at?: string | null
+          date_order?: string | null
+          id?: string
+          order_lines?: Json | null
+          original_po_id: string
+          original_po_name: string
+          partner_name?: string | null
+          quantity: number
+          split_index: number
+          split_name: string
+          state?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          amount_total?: number | null
+          created_at?: string | null
+          date_order?: string | null
+          id?: string
+          order_lines?: Json | null
+          original_po_id?: string
+          original_po_name?: string
+          partner_name?: string | null
+          quantity?: number
+          split_index?: number
+          split_name?: string
+          state?: string | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      sync_status: {
+        Row: {
+          created_at: string | null
+          error_message: string | null
+          failed_records: number | null
+          id: string
+          last_sync_timestamp: string | null
+          status: string
+          sync_type: string
+          synced_records: number | null
+          total_records: number | null
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          error_message?: string | null
+          failed_records?: number | null
+          id?: string
+          last_sync_timestamp?: string | null
+          status?: string
+          sync_type: string
+          synced_records?: number | null
+          total_records?: number | null
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          error_message?: string | null
+          failed_records?: number | null
+          id?: string
+          last_sync_timestamp?: string | null
+          status?: string
+          sync_type?: string
+          synced_records?: number | null
+          total_records?: number | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
-      [_ in never]: never
+      auto_sync_stats: {
+        Row: {
+          avg_duration_ms: number | null
+          failed_syncs: number | null
+          first_sync_at: string | null
+          last_sync_at: string | null
+          success_rate_percent: number | null
+          successful_syncs: number | null
+          syncs_last_24h: number | null
+          syncs_last_week: number | null
+          total_invoices_synced: number | null
+          total_lines_synced: number | null
+          total_movements_created: number | null
+          total_sync_operations: number | null
+        }
+        Relationships: []
+      }
+      recent_auto_sync_activity: {
+        Row: {
+          created_at: string | null
+          cross_project_invoices_synced: number | null
+          cross_project_lines_synced: number | null
+          duration_ms: number | null
+          internal_movements_created: number | null
+          message: string | null
+          phases_completed: Json | null
+          row_num: number | null
+          status: string | null
+          sync_id: string | null
+          total_errors: number | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
+      extract_colour_from_name: {
+        Args: { product_name: string }
+        Returns: string
+      }
+      extract_size_from_name: {
+        Args: { product_name: string }
+        Returns: string
+      }
       is_superuser: {
         Args: Record<PropertyKey, never>
         Returns: boolean
+      }
+      update_sync_status: {
+        Args: {
+          p_error_message?: string
+          p_failed_records?: number
+          p_status: string
+          p_sync_type: string
+          p_synced_records?: number
+          p_total_records?: number
+        }
+        Returns: string
       }
     }
     Enums: {

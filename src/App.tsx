@@ -11,6 +11,8 @@ import Auth from "./pages/Auth";
 import OdooIntegration from "./pages/OdooIntegration";
 import Reports from "./pages/Reports";
 import NotFound from "./pages/NotFound";
+import { RawMaterialsManager } from "./components/materials/RawMaterialsManager";
+import { BOMManager } from "./components/bom/BOMManager";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -43,6 +45,16 @@ const App: React.FC = () => {
             <Route path="/reports" element={
               <ProtectedRoute>
                 <Reports />
+              </ProtectedRoute>
+            } />
+            <Route path="/materials" element={
+              <ProtectedRoute>
+                <RawMaterialsManager />
+              </ProtectedRoute>
+            } />
+            <Route path="/bom" element={
+              <ProtectedRoute>
+                <BOMManager />
               </ProtectedRoute>
             } />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
