@@ -27,7 +27,8 @@ import {
   GoodsReceivedService, 
   GoodsReceived, 
   CreateGoodsReceived, 
-  CreateGoodsReceivedLine 
+  CreateGoodsReceivedLine,
+  FabricRoll
 } from '../../services/goodsReceivedService';
 import { PurchaseOrderService, PurchaseOrder } from '../../services/purchaseOrderService';
 import { ModernLayout } from '../layout/ModernLayout';
@@ -58,6 +59,14 @@ export const GoodsReceivedManager: React.FC = () => {
   const [showCloseLineDialog, setShowCloseLineDialog] = useState(false);
   const [linesToClose, setLinesToClose] = useState<{lineId: string, materialName: string, percentage: number}[]>([]);
   const [selectedLinesToClose, setSelectedLinesToClose] = useState<Set<string>>(new Set());
+  
+  // Fabric scanning states
+  const [fabricRolls, setFabricRolls] = useState<{[key: string]: FabricRoll[]}>({});
+  const [showFabricScanner, setShowFabricScanner] = useState(false);
+  const [currentScanningLine, setCurrentScanningLine] = useState<string | null>(null);
+  const [scannedBarcode, setScannedBarcode] = useState('');
+  const [rollWeight, setRollWeight] = useState<number>(0);
+  const [rollLength, setRollLength] = useState<number>(0);
 
   useEffect(() => {
     loadInitialData();
@@ -109,6 +118,16 @@ export const GoodsReceivedManager: React.FC = () => {
     setReceivingLines(initialLines);
   };
 
+  const isFabricMaterial = (poLine: any): boolean => {
+    // Check if material belongs to fabric category (ID: 1)
+    const material = poLine?.raw_material;
+    if (material?.category_id === 1) {
+      return true;
+    }
+    // Fallback to name check if category_id not available
+    return material?.name?.toLowerCase().includes('fabric') || false;
+  };
+
   const handleUpdateReceivingLine = (lineId: string, field: keyof CreateGoodsReceivedLine, value: any) => {
     setReceivingLines(prev => ({
       ...prev,
@@ -117,6 +136,76 @@ export const GoodsReceivedManager: React.FC = () => {
         [field]: value
       }
     }));
+  };
+
+  const handleFabricScanClick = (lineId: string) => {
+    setCurrentScanningLine(lineId);
+    setShowFabricScanner(true);
+    setScannedBarcode('');
+    setRollWeight(0);
+    setRollLength(0);
+  };
+
+  const handleAddFabricRoll = () => {
+    if (!currentScanningLine || !scannedBarcode || rollWeight <= 0) {
+      toast({
+        title: 'Validation Error',
+        description: 'Please provide barcode and weight for the roll',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    // Check if barcode already exists for this line
+    const existingRolls = fabricRolls[currentScanningLine] || [];
+    if (existingRolls.some(roll => roll.barcode === scannedBarcode)) {
+      toast({
+        title: 'Duplicate Barcode',
+        description: 'This barcode has already been scanned for this material',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    const newRoll: FabricRoll = {
+      barcode: scannedBarcode,
+      weight: rollWeight,
+      length: rollLength > 0 ? rollLength : undefined,
+    };
+
+    setFabricRolls(prev => ({
+      ...prev,
+      [currentScanningLine]: [...(prev[currentScanningLine] || []), newRoll]
+    }));
+
+    // Update total weight in receiving line
+    const totalWeight = [...existingRolls, newRoll].reduce((sum, roll) => sum + roll.weight, 0);
+    handleUpdateReceivingLine(currentScanningLine, 'quantity_received', totalWeight);
+
+    // Clear form
+    setScannedBarcode('');
+    setRollWeight(0);
+    setRollLength(0);
+
+    toast({
+      title: 'Roll Added',
+      description: `Roll ${scannedBarcode} added successfully`
+    });
+  };
+
+  const handleRemoveFabricRoll = (lineId: string, barcode: string) => {
+    setFabricRolls(prev => {
+      const updatedRolls = (prev[lineId] || []).filter(roll => roll.barcode !== barcode);
+      const totalWeight = updatedRolls.reduce((sum, roll) => sum + roll.weight, 0);
+      
+      // Update total weight in receiving line
+      handleUpdateReceivingLine(lineId, 'quantity_received', totalWeight);
+      
+      return {
+        ...prev,
+        [lineId]: updatedRolls
+      };
+    });
   };
 
   const handleCreateGRN = async () => {
@@ -137,6 +226,28 @@ export const GoodsReceivedManager: React.FC = () => {
         toast({
           title: 'Validation Error',
           description: 'Please specify quantities to receive for at least one line',
+          variant: 'destructive'
+        });
+        return;
+      }
+
+      // Validate fabric materials have scanned rolls
+      const fabricLinesWithoutScans: string[] = [];
+      
+      Object.entries(receivingLines).forEach(([lineId, receivingLine]) => {
+        const poLine = selectedPO.lines?.find(line => line.id === lineId);
+        if (poLine && isFabricMaterial(poLine)) {
+          const rolls = fabricRolls[lineId] || [];
+          if (rolls.length === 0) {
+            fabricLinesWithoutScans.push(poLine.raw_material?.name || 'Unknown Fabric');
+          }
+        }
+      });
+
+      if (fabricLinesWithoutScans.length > 0) {
+        toast({
+          title: 'Fabric Scanning Required',
+          description: `Please scan barcodes for: ${fabricLinesWithoutScans.join(', ')}`,
           variant: 'destructive'
         });
         return;
@@ -185,12 +296,46 @@ export const GoodsReceivedManager: React.FC = () => {
     try {
       setLoading(true);
       
-      // Filter lines that have quantity > 0
-      const validLines = Object.values(receivingLines).filter(line => line.quantity_received > 0);
+      // Process fabric and non-fabric lines differently
+      const allLines: CreateGoodsReceivedLine[] = [];
+      
+      Object.entries(receivingLines).forEach(([lineId, receivingLine]) => {
+        if (receivingLine.quantity_received <= 0) return;
+        
+        const poLine = selectedPO?.lines?.find(line => line.raw_material_id === receivingLine.raw_material_id);
+        const isFabric = poLine ? isFabricMaterial(poLine) : false;
+        
+        if (isFabric) {
+          // For fabric materials, create separate entries for each roll
+          const rolls = fabricRolls[lineId] || [];
+          rolls.forEach(roll => {
+            allLines.push({
+              ...receivingLine,
+              quantity_received: roll.weight,
+              roll_barcode: roll.barcode,
+              roll_weight: roll.weight,
+              roll_length: roll.length,
+              batch_number: roll.batch_number,
+            });
+          });
+        } else {
+          // For non-fabric materials, single entry
+          allLines.push(receivingLine);
+        }
+      });
+      
+      if (allLines.length === 0) {
+        toast({
+          title: 'Validation Error',
+          description: 'No valid items to receive',
+          variant: 'destructive'
+        });
+        return;
+      }
       
       const grnData: CreateGoodsReceived = {
         ...formData,
-        lines: validLines
+        lines: allLines
       };
 
       const newGRN = await goodsReceivedService.createGoodsReceived(grnData);
@@ -535,14 +680,24 @@ export const GoodsReceivedManager: React.FC = () => {
                       {selectedPO.lines?.map((line) => {
                         const pendingQty = line.quantity - line.received_quantity;
                         const receivingLine = receivingLines[line.id];
+                        const isFabric = isFabricMaterial(line);
+                        const fabricRollsForLine = fabricRolls[line.id] || [];
+                        const totalScannedWeight = fabricRollsForLine.reduce((sum, roll) => sum + roll.weight, 0);
                         
                         if (pendingQty <= 0) return null;
 
                         return (
-                          <TableRow key={line.id}>
+                          <TableRow key={line.id} className={isFabric ? 'bg-purple-50' : ''}>
                             <TableCell>
                               <div>
-                                <div className="font-medium">{line.raw_material?.name}</div>
+                                <div className="font-medium flex items-center space-x-2">
+                                  <span>{line.raw_material?.name}</span>
+                                  {isFabric && (
+                                    <Badge className="bg-purple-100 text-purple-800 text-xs">
+                                      FABRIC
+                                    </Badge>
+                                  )}
+                                </div>
                                 <div className="text-sm text-gray-500">{line.raw_material?.code}</div>
                               </div>
                             </TableCell>
@@ -550,44 +705,77 @@ export const GoodsReceivedManager: React.FC = () => {
                             <TableCell>{line.received_quantity}</TableCell>
                             <TableCell className="font-medium text-orange-600">{pendingQty}</TableCell>
                             <TableCell>
-                              <Input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                max={pendingQty}
-                                value={receivingLine?.quantity_received || 0}
-                                onChange={(e) => handleUpdateReceivingLine(
-                                  line.id, 
-                                  'quantity_received', 
-                                  parseFloat(e.target.value) || 0
-                                )}
-                                className="w-24"
-                              />
+                              {isFabric ? (
+                                <div className="flex items-center space-x-3">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    onClick={() => handleFabricScanClick(line.id)}
+                                    className="bg-purple-500 hover:bg-purple-600 text-white"
+                                  >
+                                    Scan Rolls
+                                  </Button>
+                                  <div className="text-right">
+                                    <div className="font-semibold text-green-700">
+                                      {totalScannedWeight.toFixed(2)} kg
+                                    </div>
+                                    <div className="text-xs text-gray-600">
+                                      {fabricRollsForLine.length} rolls
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <Input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  max={pendingQty}
+                                  value={receivingLine?.quantity_received || 0}
+                                  onChange={(e) => handleUpdateReceivingLine(
+                                    line.id, 
+                                    'quantity_received', 
+                                    parseFloat(e.target.value) || 0
+                                  )}
+                                  className="w-24"
+                                />
+                              )}
                             </TableCell>
                             <TableCell>
-                              <Input
-                                type="text"
-                                value={receivingLine?.batch_number || ''}
-                                onChange={(e) => handleUpdateReceivingLine(
-                                  line.id, 
-                                  'batch_number', 
-                                  e.target.value
-                                )}
-                                placeholder="Batch/Lot"
-                                className="w-28"
-                              />
+                              {isFabric ? (
+                                <span className="text-sm text-gray-400 italic">
+                                  Set via barcode scan
+                                </span>
+                              ) : (
+                                <Input
+                                  type="text"
+                                  value={receivingLine?.batch_number || ''}
+                                  onChange={(e) => handleUpdateReceivingLine(
+                                    line.id, 
+                                    'batch_number', 
+                                    e.target.value
+                                  )}
+                                  placeholder="Batch/Lot"
+                                  className="w-28"
+                                />
+                              )}
                             </TableCell>
                             <TableCell>
-                              <Input
-                                type="date"
-                                value={receivingLine?.expiry_date || ''}
-                                onChange={(e) => handleUpdateReceivingLine(
-                                  line.id, 
-                                  'expiry_date', 
-                                  e.target.value
-                                )}
-                                className="w-36"
-                              />
+                              {isFabric ? (
+                                <span className="text-sm text-gray-400 italic">
+                                  N/A for fabrics
+                                </span>
+                              ) : (
+                                <Input
+                                  type="date"
+                                  value={receivingLine?.expiry_date || ''}
+                                  onChange={(e) => handleUpdateReceivingLine(
+                                    line.id, 
+                                    'expiry_date', 
+                                    e.target.value
+                                  )}
+                                  className="w-36"
+                                />
+                              )}
                             </TableCell>
                           </TableRow>
                         );
@@ -775,6 +963,127 @@ export const GoodsReceivedManager: React.FC = () => {
               className="bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600"
             >
               Create GRN & Close Selected Lines
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Fabric Scanner Dialog */}
+      <Dialog open={showFabricScanner} onOpenChange={setShowFabricScanner}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center space-x-2">
+              <Package className="h-5 w-5 text-purple-600" />
+              <span>Scan Fabric Rolls</span>
+            </DialogTitle>
+            <DialogDescription>
+              Scan each fabric roll barcode and enter its weight. Each roll will be tracked individually.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-6">
+            {/* Current Material Info */}
+            {currentScanningLine && selectedPO && (
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <h4 className="font-medium">
+                  {selectedPO.lines?.find(l => l.id === currentScanningLine)?.raw_material?.name}
+                </h4>
+                <p className="text-sm text-gray-600">
+                  {selectedPO.lines?.find(l => l.id === currentScanningLine)?.raw_material?.code}
+                </p>
+              </div>
+            )}
+
+            {/* Barcode Input */}
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <Label htmlFor="barcode">Roll Barcode *</Label>
+                <Input
+                  id="barcode"
+                  value={scannedBarcode}
+                  onChange={(e) => setScannedBarcode(e.target.value)}
+                  placeholder="Scan or enter barcode"
+                  className="font-mono"
+                />
+              </div>
+              <div>
+                <Label htmlFor="weight">Weight (kg) *</Label>
+                <Input
+                  id="weight"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={rollWeight}
+                  onChange={(e) => setRollWeight(parseFloat(e.target.value) || 0)}
+                  placeholder="0.00"
+                />
+              </div>
+              <div>
+                <Label htmlFor="length">Length (m)</Label>
+                <Input
+                  id="length"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={rollLength}
+                  onChange={(e) => setRollLength(parseFloat(e.target.value) || 0)}
+                  placeholder="Optional"
+                />
+              </div>
+            </div>
+
+            <Button onClick={handleAddFabricRoll} className="w-full">
+              <Plus className="h-4 w-4 mr-2" />
+              Add Roll
+            </Button>
+
+            {/* Scanned Rolls List */}
+            {currentScanningLine && fabricRolls[currentScanningLine] && fabricRolls[currentScanningLine].length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">Scanned Rolls ({fabricRolls[currentScanningLine].length})</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Barcode</TableHead>
+                        <TableHead>Weight (kg)</TableHead>
+                        <TableHead>Length (m)</TableHead>
+                        <TableHead>Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {fabricRolls[currentScanningLine].map((roll) => (
+                        <TableRow key={roll.barcode}>
+                          <TableCell className="font-mono">{roll.barcode}</TableCell>
+                          <TableCell>{roll.weight}</TableCell>
+                          <TableCell>{roll.length || 'N/A'}</TableCell>
+                          <TableCell>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleRemoveFabricRoll(currentScanningLine!, roll.barcode)}
+                              className="text-red-600 hover:text-red-800"
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  <div className="mt-4 text-sm text-gray-600">
+                    Total Weight: {fabricRolls[currentScanningLine].reduce((sum, roll) => sum + roll.weight, 0).toFixed(2)} kg
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowFabricScanner(false)}>
+              Done
             </Button>
           </DialogFooter>
         </DialogContent>

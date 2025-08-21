@@ -35,6 +35,9 @@ export interface GoodsReceivedLine {
   batch_number?: string;
   expiry_date?: string;
   notes?: string;
+  roll_barcode?: string;
+  roll_weight?: number;
+  roll_length?: number;
   created_at: string;
   raw_material?: {
     id: string;
@@ -65,6 +68,16 @@ export interface CreateGoodsReceivedLine {
   batch_number?: string;
   expiry_date?: string;
   notes?: string;
+  roll_barcode?: string;
+  roll_weight?: number;
+  roll_length?: number;
+}
+
+export interface FabricRoll {
+  barcode: string;
+  weight: number;
+  length?: number;
+  batch_number?: string;
 }
 
 export interface UpdateGoodsReceived {
@@ -266,6 +279,9 @@ export class GoodsReceivedService {
           batch_number: line.batch_number || null,
           expiry_date: line.expiry_date || null,
           notes: line.notes,
+          roll_barcode: line.roll_barcode || null,
+          roll_weight: line.roll_weight || null,
+          roll_length: line.roll_length || null,
         }));
 
         console.log('Creating goods received lines:', linesData);

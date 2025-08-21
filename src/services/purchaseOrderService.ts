@@ -37,6 +37,7 @@ export interface PurchaseOrderLine {
     code?: string;
     base_unit: string;
     purchase_unit: string;
+    category_id?: number;
   };
 }
 
@@ -96,7 +97,7 @@ export class PurchaseOrderService {
           (linesData || []).map(async (line) => {
             const { data: materialData } = await supabase
               .from('raw_materials')
-              .select('id, name, code, base_unit, purchase_unit')
+              .select('id, name, code, base_unit, purchase_unit, category_id')
               .eq('id', line.raw_material_id)
               .single();
 
@@ -294,7 +295,7 @@ export class PurchaseOrderService {
           (linesData || []).map(async (line) => {
             const { data: materialData } = await supabase
               .from('raw_materials')
-              .select('id, name, code, base_unit, purchase_unit')
+              .select('id, name, code, base_unit, purchase_unit, category_id')
               .eq('id', line.raw_material_id)
               .single();
 
