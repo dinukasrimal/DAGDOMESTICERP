@@ -253,8 +253,9 @@ export const GoodsReceivedManager: React.FC = () => {
         return;
       }
 
-      // Check for lines that will exceed 75% completion
+      // Check for lines that will exceed 75% completion or auto-close due to over-receiving
       const linesToCloseCheck: {lineId: string, materialName: string, percentage: number}[] = [];
+      const autoCloseLines: string[] = [];
       
       validLines.forEach(receivingLine => {
         const poLine = selectedPO.lines?.find(line => line.id === receivingLine.purchase_order_line_id);
@@ -262,7 +263,11 @@ export const GoodsReceivedManager: React.FC = () => {
           const totalReceived = poLine.received_quantity + receivingLine.quantity_received;
           const percentage = (totalReceived / poLine.quantity) * 100;
           
-          if (percentage >= 75) {
+          if (totalReceived > poLine.quantity) {
+            // Auto-close lines that receive more than ordered
+            autoCloseLines.push(poLine.id);
+          } else if (percentage >= 75) {
+            // Ask for confirmation on lines reaching 75%
             const material = poLine.raw_material;
             linesToCloseCheck.push({
               lineId: poLine.id,
@@ -272,6 +277,22 @@ export const GoodsReceivedManager: React.FC = () => {
           }
         }
       });
+
+      // If there are over-received lines, auto-close them and proceed
+      if (autoCloseLines.length > 0) {
+        const overReceivedMaterials = autoCloseLines.map(lineId => {
+          const poLine = selectedPO.lines?.find(line => line.id === lineId);
+          return poLine?.raw_material?.name || 'Unknown Material';
+        });
+        
+        toast({
+          title: 'Over-Receiving Detected',
+          description: `Auto-closing lines for: ${overReceivedMaterials.join(', ')} (received more than ordered)`,
+        });
+        
+        await createGRNWithClosedLines(autoCloseLines);
+        return;
+      }
 
       // If lines exceed 75%, show confirmation dialog
       if (linesToCloseCheck.length > 0) {
@@ -340,14 +361,24 @@ export const GoodsReceivedManager: React.FC = () => {
 
       const newGRN = await goodsReceivedService.createGoodsReceived(grnData);
       
-      // Close selected lines by marking remaining quantity as received
+      // Close selected lines by setting received quantity to ordered quantity
       for (const lineId of linesToClose) {
         const poLine = selectedPO?.lines?.find(line => line.id === lineId);
         if (poLine) {
-          const remainingQty = poLine.quantity - poLine.received_quantity;
-          if (remainingQty > 0) {
-            // Update the received quantity to match the ordered quantity (close the line)
-            await purchaseOrderService.updatePurchaseOrderLineReceived(lineId, remainingQty);
+          const currentReceived = poLine.received_quantity;
+          const orderedQty = poLine.quantity;
+          
+          // Calculate how much we've already received in this GRN for this line
+          const receivedInThisGRN = allLines
+            .filter(line => line.purchase_order_line_id === lineId)
+            .reduce((sum, line) => sum + line.quantity_received, 0);
+          
+          // Set total received to ordered quantity (effectively closing the line)
+          const targetReceived = orderedQty;
+          const additionalToRecord = targetReceived - currentReceived - receivedInThisGRN;
+          
+          if (additionalToRecord > 0) {
+            await purchaseOrderService.updatePurchaseOrderLineReceived(lineId, additionalToRecord);
           }
         }
       }
@@ -729,7 +760,6 @@ export const GoodsReceivedManager: React.FC = () => {
                                   type="number"
                                   step="0.01"
                                   min="0"
-                                  max={pendingQty}
                                   value={receivingLine?.quantity_received || 0}
                                   onChange={(e) => handleUpdateReceivingLine(
                                     line.id, 
