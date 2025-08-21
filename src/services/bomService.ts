@@ -28,6 +28,40 @@ export interface BOMWithLines extends BOMHeader {
     name: string;
     default_code: string | null;
   };
+  products?: {
+    id: number;
+    name: string;
+    default_code: string | null;
+    colour: string | null;
+    size: string | null;
+  }[];
+}
+
+export interface BOMLineConsumption {
+  id: string;
+  bom_line_id: string;
+  attribute_type: 'size' | 'color' | 'general';
+  attribute_value: string;
+  quantity: number;
+  unit: string;
+  waste_percentage: number;
+}
+
+export interface BOMLineWithConsumptions extends BOMLineWithMaterial {
+  consumptions?: BOMLineConsumption[];
+}
+
+export interface MultiBOMWithLines extends Omit<BOMHeader, 'product_id'> {
+  lines: BOMLineWithConsumptions[];
+  products: {
+    id: number;
+    name: string;
+    default_code: string | null;
+    colour: string | null;
+    size: string | null;
+  }[];
+  product_ids: number[];
+  bom_type: 'single' | 'multi';
 }
 
 export interface MaterialRequirement {
@@ -37,6 +71,27 @@ export interface MaterialRequirement {
   unit: string;
   cost_per_unit: number | null;
   total_cost: number;
+}
+
+export interface MultiProductBOMCreate {
+  name: string;
+  version: string;
+  quantity: number;
+  unit: string;
+  description?: string;
+  product_ids: number[];
+  raw_materials: {
+    raw_material_id: number;
+    consumption_type: 'general' | 'size_wise' | 'color_wise';
+    consumptions: {
+      attribute_type: 'size' | 'color' | 'general';
+      attribute_value: string;
+      quantity: number;
+      unit: string;
+      waste_percentage: number;
+    }[];
+    notes?: string;
+  }[];
 }
 
 export class BOMService {
@@ -275,5 +330,175 @@ export class BOMService {
     }
 
     return Array.from(materialTotals.values());
+  }
+
+  // Multi-product BOM methods (simplified for current schema)
+  async createMultiProductBOM(bomData: MultiProductBOMCreate): Promise<MultiBOMWithLines> {
+    // For now, create a single BOM with aggregated information
+    // This is a temporary solution until the migration is applied
+    
+    // Get product names for enhanced name
+    const { data: products } = await supabase
+      .from('products')
+      .select('id, name, default_code, colour, size')
+      .in('id', bomData.product_ids);
+
+    const productNames = products?.map(p => p.name) || [];
+    const enhancedName = `${bomData.name} (${productNames.slice(0, 3).join(', ')}${productNames.length > 3 ? ` +${productNames.length - 3} more` : ''})`;
+    
+    const { data: bomHeader, error: bomError } = await supabase
+      .from('bom_headers')
+      .insert({
+        name: enhancedName,
+        version: bomData.version,
+        quantity: bomData.quantity,
+        unit: bomData.unit,
+        active: true
+      })
+      .select()
+      .single();
+
+    if (bomError) {
+      console.error('Error creating multi-product BOM:', bomError);
+      throw bomError;
+    }
+
+    // Create BOM lines with averaged/aggregated consumption data
+    const lines: BOMLineWithConsumptions[] = [];
+    for (const material of bomData.raw_materials) {
+      // Calculate average consumption values from all variants
+      const avgQuantity = material.consumptions.reduce((sum, c) => sum + c.quantity, 0) / material.consumptions.length;
+      const avgWaste = material.consumptions.reduce((sum, c) => sum + c.waste_percentage, 0) / material.consumptions.length;
+      
+      // Create detailed notes with variant consumption info
+      const variantDetails = material.consumptions.map(c => 
+        `${c.attribute_value}: ${c.quantity} ${c.unit} (${c.waste_percentage}% waste)`
+      ).join('; ');
+      
+      const detailedNotes = `${material.notes ? material.notes + '. ' : ''}Variant consumptions: ${variantDetails}`;
+
+      const { data: bomLine, error: lineError } = await supabase
+        .from('bom_lines')
+        .insert({
+          bom_header_id: bomHeader.id,
+          raw_material_id: material.raw_material_id,
+          quantity: avgQuantity,
+          unit: material.consumptions[0]?.unit || 'pieces',
+          waste_percentage: avgWaste,
+          notes: detailedNotes
+        })
+        .select()
+        .single();
+
+      if (lineError) {
+        console.error('Error creating BOM line:', lineError);
+        throw lineError;
+      }
+
+      // Map consumption data for return (even though not stored separately)
+      const consumptions: BOMLineConsumption[] = material.consumptions.map(c => ({
+        id: `temp-${Math.random()}`,
+        bom_line_id: bomLine.id,
+        attribute_type: c.attribute_type,
+        attribute_value: c.attribute_value,
+        quantity: c.quantity,
+        unit: c.unit,
+        waste_percentage: c.waste_percentage,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }));
+
+      lines.push({
+        ...bomLine,
+        consumptions
+      });
+    }
+
+    return {
+      ...bomHeader,
+      lines,
+      products: products || [],
+      product_ids: bomData.product_ids,
+      bom_type: 'multi'
+    } as MultiBOMWithLines;
+  }
+
+  async getUniqueColorsForProducts(productIds: number[]): Promise<string[]> {
+    const { data, error } = await supabase
+      .from('products')
+      .select('colour')
+      .in('id', productIds)
+      .not('colour', 'is', null)
+      .neq('colour', '');
+
+    if (error) {
+      console.error('Error fetching unique colors:', error);
+      return [];
+    }
+
+    // Extract unique colors
+    const uniqueColors = Array.from(new Set(data?.map(p => p.colour).filter(Boolean) || []));
+    return uniqueColors.sort();
+  }
+
+  async getUniqueSizesForProducts(productIds: number[]): Promise<string[]> {
+    const { data, error } = await supabase
+      .from('products')
+      .select('size')
+      .in('id', productIds)
+      .not('size', 'is', null)
+      .neq('size', '');
+
+    if (error) {
+      console.error('Error fetching unique sizes:', error);
+      return [];
+    }
+
+    // Extract unique sizes
+    const uniqueSizes = Array.from(new Set(data?.map(p => p.size).filter(Boolean) || []));
+    return uniqueSizes.sort();
+  }
+
+  async getProductsWithAttributes(productIds: number[]): Promise<{
+    id: number;
+    name: string;
+    default_code: string | null;
+    colour: string | null;
+    size: string | null;
+  }[]> {
+    const { data, error } = await supabase
+      .from('products')
+      .select('id, name, default_code, colour, size')
+      .in('id', productIds)
+      .eq('active', true)
+      .order('name');
+    
+    if (error) {
+      console.error('Error fetching products with attributes:', error);
+      throw error;
+    }
+    
+    return data || [];
+  }
+
+  async getAllProducts(): Promise<{
+    id: number;
+    name: string;
+    default_code: string | null;
+    colour: string | null;
+    size: string | null;
+  }[]> {
+    const { data, error } = await supabase
+      .from('products')
+      .select('id, name, default_code, colour, size')
+      .eq('active', true)
+      .order('name');
+    
+    if (error) {
+      console.error('Error fetching all products:', error);
+      throw error;
+    }
+    
+    return data || [];
   }
 }

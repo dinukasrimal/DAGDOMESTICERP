@@ -119,7 +119,7 @@ const DraggablePurchase: React.FC<DraggablePurchaseProps> = ({
                           <div key={line.id} className="text-xs">
                             <div className="font-medium">{line.product_name}</div>
                             <div className="text-gray-500">
-                              Qty: {line.quantity.toLocaleString()} | ${line.unit_price?.toFixed(2) || '0.00'}/unit
+                              Qty: {line.quantity.toLocaleString()} | LKR {line.unit_price?.toFixed(2) || '0.00'}/unit
                             </div>
                           </div>
                         ))}
@@ -204,9 +204,9 @@ const OrderLineItem: React.FC<OrderLineItemProps> = ({ orderLine }) => {
         )}
 
         <div className="flex items-center justify-between text-xs text-gray-500">
-          <span>Unit: ${orderLine.unit_price?.toFixed(2) || '0.00'}</span>
+          <span>Unit: LKR {orderLine.unit_price?.toFixed(2) || '0.00'}</span>
           <span className="font-medium">
-            Total: ${orderLine.total_price?.toFixed(2) || '0.00'}
+            Total: LKR {orderLine.total_price?.toFixed(2) || '0.00'}
           </span>
         </div>
       </div>

@@ -207,7 +207,7 @@ const MaterialForm: React.FC<MaterialFormProps> = React.memo(({
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <Label htmlFor="cost_per_unit">Cost per Purchase Unit</Label>
+          <Label htmlFor="cost_per_unit">Cost per Purchase Unit (LKR)</Label>
           <Input
             id="cost_per_unit"
             name="cost_per_unit"
@@ -215,7 +215,7 @@ const MaterialForm: React.FC<MaterialFormProps> = React.memo(({
             step="0.01"
             autoComplete="off"
             defaultValue={defaultValues.cost_per_unit}
-            placeholder="2.50"
+            placeholder="1500.00"
           />
         </div>
         <div>
@@ -966,7 +966,7 @@ export const RawMaterialsManager: React.FC = () => {
                       {material.cost_per_unit ? (
                         <div className="flex items-center gap-1 text-green-700">
                           <DollarSign className="h-3 w-3" />
-                          <span className="font-semibold">{material.cost_per_unit}</span>
+                          <span className="font-semibold">LKR {material.cost_per_unit}</span>
                           <span className="text-xs text-gray-500">/{material.purchase_unit}</span>
                         </div>
                       ) : (
