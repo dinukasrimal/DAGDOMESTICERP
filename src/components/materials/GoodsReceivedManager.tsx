@@ -55,6 +55,9 @@ export const GoodsReceivedManager: React.FC = () => {
   });
 
   const [receivingLines, setReceivingLines] = useState<{[key: string]: CreateGoodsReceivedLine}>({});
+  const [showCloseLineDialog, setShowCloseLineDialog] = useState(false);
+  const [linesToClose, setLinesToClose] = useState<{lineId: string, materialName: string, percentage: number}[]>([]);
+  const [selectedLinesToClose, setSelectedLinesToClose] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     loadInitialData();
@@ -118,7 +121,7 @@ export const GoodsReceivedManager: React.FC = () => {
 
   const handleCreateGRN = async () => {
     try {
-      if (!formData.purchase_order_id) {
+      if (!formData.purchase_order_id || !selectedPO) {
         toast({
           title: 'Validation Error',
           description: 'Please select a purchase order',
@@ -139,13 +142,71 @@ export const GoodsReceivedManager: React.FC = () => {
         return;
       }
 
+      // Check for lines that will exceed 75% completion
+      const linesToCloseCheck: {lineId: string, materialName: string, percentage: number}[] = [];
+      
+      validLines.forEach(receivingLine => {
+        const poLine = selectedPO.lines?.find(line => line.id === receivingLine.purchase_order_line_id);
+        if (poLine) {
+          const totalReceived = poLine.received_quantity + receivingLine.quantity_received;
+          const percentage = (totalReceived / poLine.quantity) * 100;
+          
+          if (percentage >= 75) {
+            const material = poLine.raw_material;
+            linesToCloseCheck.push({
+              lineId: poLine.id,
+              materialName: material?.name || 'Unknown Material',
+              percentage: Math.round(percentage)
+            });
+          }
+        }
+      });
+
+      // If lines exceed 75%, show confirmation dialog
+      if (linesToCloseCheck.length > 0) {
+        setLinesToClose(linesToCloseCheck);
+        setSelectedLinesToClose(new Set(linesToCloseCheck.map(l => l.lineId)));
+        setShowCloseLineDialog(true);
+        return;
+      }
+
+      // Otherwise proceed with creating GRN
+      await createGRNWithClosedLines([]);
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to create goods received note',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  const createGRNWithClosedLines = async (linesToClose: string[]) => {
+    try {
       setLoading(true);
+      
+      // Filter lines that have quantity > 0
+      const validLines = Object.values(receivingLines).filter(line => line.quantity_received > 0);
+      
       const grnData: CreateGoodsReceived = {
         ...formData,
         lines: validLines
       };
 
       const newGRN = await goodsReceivedService.createGoodsReceived(grnData);
+      
+      // Close selected lines by marking remaining quantity as received
+      for (const lineId of linesToClose) {
+        const poLine = selectedPO?.lines?.find(line => line.id === lineId);
+        if (poLine) {
+          const remainingQty = poLine.quantity - poLine.received_quantity;
+          if (remainingQty > 0) {
+            // Update the received quantity to match the ordered quantity (close the line)
+            await purchaseOrderService.updatePurchaseOrderLineReceived(lineId, remainingQty);
+          }
+        }
+      }
+      
       setGoodsReceived(prev => [newGRN, ...prev]);
       
       toast({
@@ -168,6 +229,25 @@ export const GoodsReceivedManager: React.FC = () => {
     }
   };
 
+  const handleToggleLineClose = (lineId: string) => {
+    setSelectedLinesToClose(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(lineId)) {
+        newSet.delete(lineId);
+      } else {
+        newSet.add(lineId);
+      }
+      return newSet;
+    });
+  };
+
+  const handleConfirmLineClosures = async () => {
+    await createGRNWithClosedLines(Array.from(selectedLinesToClose));
+    setShowCloseLineDialog(false);
+    setLinesToClose([]);
+    setSelectedLinesToClose(new Set());
+  };
+
   const handleCloseCreateDialog = () => {
     setIsCreateDialogOpen(false);
     setSelectedPO(null);
@@ -178,6 +258,9 @@ export const GoodsReceivedManager: React.FC = () => {
       lines: []
     });
     setReceivingLines({});
+    setShowCloseLineDialog(false);
+    setLinesToClose([]);
+    setSelectedLinesToClose(new Set());
   };
 
   const handleViewGRN = (grn: GoodsReceived) => {
@@ -627,6 +710,72 @@ export const GoodsReceivedManager: React.FC = () => {
                 Post to Inventory
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Close Lines Confirmation Dialog */}
+      <Dialog open={showCloseLineDialog} onOpenChange={setShowCloseLineDialog}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center space-x-2">
+              <AlertTriangle className="h-5 w-5 text-orange-600" />
+              <span>Close Purchase Order Lines?</span>
+            </DialogTitle>
+            <DialogDescription>
+              The following lines have reached or exceeded 75% of their ordered quantity. 
+              Would you like to close these lines to prevent further receiving?
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {linesToClose.map((line) => (
+              <div key={line.lineId} className="flex items-center justify-between p-3 border rounded-lg">
+                <div className="flex items-center space-x-3">
+                  <input
+                    type="checkbox"
+                    checked={selectedLinesToClose.has(line.lineId)}
+                    onChange={() => handleToggleLineClose(line.lineId)}
+                    className="rounded"
+                  />
+                  <div>
+                    <p className="font-medium">{line.materialName}</p>
+                    <p className="text-sm text-gray-600">
+                      {line.percentage}% received
+                    </p>
+                  </div>
+                </div>
+                <Badge className="bg-orange-100 text-orange-800 border-orange-200">
+                  {line.percentage}%
+                </Badge>
+              </div>
+            ))}
+          </div>
+
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription>
+              Closing a line will mark the remaining quantity as received and prevent further deliveries for that material on this PO.
+            </AlertDescription>
+          </Alert>
+
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => {
+                setShowCloseLineDialog(false);
+                setLinesToClose([]);
+                setSelectedLinesToClose(new Set());
+              }}
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleConfirmLineClosures}
+              className="bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600"
+            >
+              Create GRN & Close Selected Lines
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

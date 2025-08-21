@@ -31,23 +31,15 @@ import {
   CreatePurchaseOrder, 
   CreatePurchaseOrderLine 
 } from '../../services/purchaseOrderService';
-import { RawMaterialsService, RawMaterialWithInventory } from '../../services/rawMaterialsService';
+import { RawMaterialsService, RawMaterialWithInventory, MaterialSupplier } from '../../services/rawMaterialsService';
 import { ModernLayout } from '../layout/ModernLayout';
 
 const purchaseOrderService = new PurchaseOrderService();
 const rawMaterialsService = new RawMaterialsService();
 
-interface Supplier {
-  id: string;
-  name: string;
-  contact_person?: string;
-  email?: string;
-  phone?: string;
-}
-
 export const PurchaseOrderManager: React.FC = () => {
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [suppliers, setSuppliers] = useState<MaterialSupplier[]>([]);
   const [rawMaterials, setRawMaterials] = useState<RawMaterialWithInventory[]>([]);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [selectedPO, setSelectedPO] = useState<PurchaseOrder | null>(null);
@@ -58,7 +50,7 @@ export const PurchaseOrderManager: React.FC = () => {
 
   // Form states
   const [formData, setFormData] = useState<CreatePurchaseOrder>({
-    supplier_id: '',
+    supplier_id: 0,
     order_date: new Date().toISOString().split('T')[0],
     expected_delivery_date: '',
     notes: '',
@@ -66,9 +58,10 @@ export const PurchaseOrderManager: React.FC = () => {
   });
 
   const [currentLine, setCurrentLine] = useState<CreatePurchaseOrderLine>({
-    raw_material_id: '',
+    raw_material_id: 0,
     quantity: 0,
-    unit_price: 0
+    unit_price: 0,
+    reference: ''
   });
 
   useEffect(() => {
@@ -80,7 +73,7 @@ export const PurchaseOrderManager: React.FC = () => {
       setLoading(true);
       const [poData, suppliersData, materialsData] = await Promise.all([
         purchaseOrderService.getAllPurchaseOrders(),
-        loadSuppliers(),
+        rawMaterialsService.getSuppliers(),
         rawMaterialsService.getRawMaterials()
       ]);
       setPurchaseOrders(poData);
@@ -97,14 +90,6 @@ export const PurchaseOrderManager: React.FC = () => {
     }
   };
 
-  const loadSuppliers = async (): Promise<Supplier[]> => {
-    // This would typically come from a suppliers service
-    // For now, we'll use a mock or get from the existing suppliers table
-    return [
-      { id: '1', name: 'Supplier A', contact_person: 'John Doe', email: 'john@suppliera.com' },
-      { id: '2', name: 'Supplier B', contact_person: 'Jane Smith', email: 'jane@supplierb.com' },
-    ];
-  };
 
   const handleCreatePO = async () => {
     try {
@@ -148,7 +133,7 @@ export const PurchaseOrderManager: React.FC = () => {
       return;
     }
 
-    const material = rawMaterials.find(m => m.id.toString() === currentLine.raw_material_id);
+    const material = rawMaterials.find(m => m.id === currentLine.raw_material_id);
     if (!material) return;
 
     setFormData(prev => ({
@@ -157,9 +142,10 @@ export const PurchaseOrderManager: React.FC = () => {
     }));
 
     setCurrentLine({
-      raw_material_id: '',
+      raw_material_id: 0,
       quantity: 0,
-      unit_price: 0
+      unit_price: 0,
+      reference: ''
     });
   };
 
@@ -173,16 +159,17 @@ export const PurchaseOrderManager: React.FC = () => {
   const handleCloseCreateDialog = () => {
     setIsCreateDialogOpen(false);
     setFormData({
-      supplier_id: '',
+      supplier_id: 0,
       order_date: new Date().toISOString().split('T')[0],
       expected_delivery_date: '',
       notes: '',
       lines: []
     });
     setCurrentLine({
-      raw_material_id: '',
+      raw_material_id: 0,
       quantity: 0,
-      unit_price: 0
+      unit_price: 0,
+      reference: ''
     });
   };
 
@@ -252,6 +239,7 @@ export const PurchaseOrderManager: React.FC = () => {
   );
 
   const totalAmount = formData.lines.reduce((sum, line) => sum + (line.quantity * line.unit_price), 0);
+  const totalQuantity = formData.lines.reduce((sum, line) => sum + line.quantity, 0);
 
   return (
     <ModernLayout
@@ -373,7 +361,7 @@ export const PurchaseOrderManager: React.FC = () => {
                     }`}
                   >
                     <TableCell className="font-medium text-slate-800 py-4">{po.po_number}</TableCell>
-                    <TableCell className="text-slate-700">{po.supplier?.name || 'N/A'}</TableCell>
+                    <TableCell className="text-slate-700">{po.supplier?.name}</TableCell>
                     <TableCell className="text-slate-600">{new Date(po.order_date).toLocaleDateString()}</TableCell>
                     <TableCell className="text-slate-600">
                       {po.expected_delivery_date 
@@ -401,7 +389,7 @@ export const PurchaseOrderManager: React.FC = () => {
                         >
                           <FileText className="h-4 w-4" />
                         </Button>
-                        {po.status === 'pending' && (
+                        {(po.status === 'pending' || po.status === 'draft') && (
                           <>
                             <Button 
                               size="sm" 
@@ -420,6 +408,16 @@ export const PurchaseOrderManager: React.FC = () => {
                               <Trash2 className="h-4 w-4" />
                             </Button>
                           </>
+                        )}
+                        {(po.status === 'approved' || po.status === 'sent' || po.status === 'partial_received') && (
+                          <Button 
+                            size="sm" 
+                            variant="ghost"
+                            onClick={() => handleUpdatePOStatus(po.id, 'received')}
+                            className="h-8 w-8 rounded-lg text-green-600 hover:bg-green-50 hover:text-green-700 transition-colors"
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
                         )}
                       </div>
                     </TableCell>
@@ -446,19 +444,21 @@ export const PurchaseOrderManager: React.FC = () => {
 
           <div className="space-y-6">
             {/* Header Information */}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               <div>
                 <Label htmlFor="supplier">Supplier *</Label>
                 <Select 
-                  value={formData.supplier_id} 
-                  onValueChange={(value) => setFormData(prev => ({ ...prev, supplier_id: value }))}
+                  value={formData.supplier_id.toString()} 
+                  onValueChange={(value) => {
+                    setFormData(prev => ({ ...prev, supplier_id: parseInt(value) }));
+                  }}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Select supplier" />
                   </SelectTrigger>
                   <SelectContent>
                     {suppliers.map(supplier => (
-                      <SelectItem key={supplier.id} value={supplier.id}>
+                      <SelectItem key={supplier.id} value={supplier.id.toString()}>
                         {supplier.name}
                       </SelectItem>
                     ))}
@@ -480,6 +480,13 @@ export const PurchaseOrderManager: React.FC = () => {
                   value={formData.expected_delivery_date}
                   onChange={(e) => setFormData(prev => ({ ...prev, expected_delivery_date: e.target.value }))}
                 />
+              </div>
+              <div>
+                <Label>Total Quantity</Label>
+                <div className="flex items-center space-x-2">
+                  <Package className="h-4 w-4 text-blue-600" />
+                  <span className="font-semibold text-blue-700">{totalQuantity.toFixed(2)}</span>
+                </div>
               </div>
               <div>
                 <Label>Total Amount</Label>
@@ -507,12 +514,12 @@ export const PurchaseOrderManager: React.FC = () => {
                 <CardTitle className="text-sm">Add Line Item</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-4 gap-4">
+                <div className="grid grid-cols-5 gap-4">
                   <div>
                     <Label>Raw Material *</Label>
                     <Select
-                      value={currentLine.raw_material_id}
-                      onValueChange={(value) => setCurrentLine(prev => ({ ...prev, raw_material_id: value }))}
+                      value={currentLine.raw_material_id.toString()}
+                      onValueChange={(value) => setCurrentLine(prev => ({ ...prev, raw_material_id: parseInt(value) }))}
                     >
                       <SelectTrigger>
                         <SelectValue placeholder="Select material" />
@@ -548,6 +555,15 @@ export const PurchaseOrderManager: React.FC = () => {
                       placeholder="0.00"
                     />
                   </div>
+                  <div>
+                    <Label>Reference</Label>
+                    <Input
+                      type="text"
+                      value={currentLine.reference || ''}
+                      onChange={(e) => setCurrentLine(prev => ({ ...prev, reference: e.target.value }))}
+                      placeholder="Optional reference"
+                    />
+                  </div>
                   <div className="flex items-end">
                     <Button onClick={handleAddLine} className="w-full">
                       <Plus className="h-4 w-4 mr-2" />
@@ -571,18 +587,20 @@ export const PurchaseOrderManager: React.FC = () => {
                         <TableHead>Material</TableHead>
                         <TableHead>Quantity</TableHead>
                         <TableHead>Unit Price</TableHead>
+                        <TableHead>Reference</TableHead>
                         <TableHead>Total</TableHead>
                         <TableHead>Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {formData.lines.map((line, index) => {
-                        const material = rawMaterials.find(m => m.id.toString() === line.raw_material_id);
+                        const material = rawMaterials.find(m => m.id === line.raw_material_id);
                         return (
                           <TableRow key={index}>
                             <TableCell>{material?.name}</TableCell>
                             <TableCell>{line.quantity}</TableCell>
                             <TableCell>LKR {line.unit_price.toFixed(2)}</TableCell>
+                            <TableCell>{line.reference || '-'}</TableCell>
                             <TableCell className="font-semibold">
                               LKR {(line.quantity * line.unit_price).toFixed(2)}
                             </TableCell>
@@ -659,6 +677,12 @@ export const PurchaseOrderManager: React.FC = () => {
                   </p>
                 </div>
                 <div>
+                  <Label>Total Quantity</Label>
+                  <p className="font-semibold text-blue-700">
+                    {selectedPO.total_quantity?.toFixed(2) || '0.00'}
+                  </p>
+                </div>
+                <div>
                   <Label>Total Amount</Label>
                   <p className="font-semibold text-green-700">
                     LKR {selectedPO.total_amount?.toFixed(2) || '0.00'}
@@ -683,34 +707,44 @@ export const PurchaseOrderManager: React.FC = () => {
                       <TableHead>Material</TableHead>
                       <TableHead>Quantity</TableHead>
                       <TableHead>Unit Price</TableHead>
+                      <TableHead>Reference</TableHead>
                       <TableHead>Total</TableHead>
                       <TableHead>Received</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {selectedPO.lines?.map((line) => (
-                      <TableRow key={line.id}>
-                        <TableCell>
-                          <div>
-                            <div className="font-medium">{line.raw_material?.name}</div>
-                            <div className="text-sm text-gray-500">{line.raw_material?.code}</div>
-                          </div>
-                        </TableCell>
-                        <TableCell>{line.quantity} {line.raw_material?.purchase_unit}</TableCell>
-                        <TableCell>LKR {line.unit_price.toFixed(2)}</TableCell>
-                        <TableCell className="font-semibold">LKR {line.total_price.toFixed(2)}</TableCell>
-                        <TableCell>
-                          <div className="flex items-center space-x-2">
-                            <span>{line.received_quantity}</span>
-                            {line.received_quantity < line.quantity && (
-                              <Badge variant="outline" className="text-xs bg-yellow-50 text-yellow-700 border-yellow-200">
-                                Pending: {(line.quantity - line.received_quantity).toFixed(2)}
-                              </Badge>
-                            )}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {selectedPO.lines && selectedPO.lines.length > 0 ? 
+                      selectedPO.lines.map((line) => (
+                        <TableRow key={line.id}>
+                          <TableCell>
+                            <div>
+                              <div className="font-medium">{line.raw_material?.name}</div>
+                              <div className="text-sm text-gray-500">{line.raw_material?.code}</div>
+                            </div>
+                          </TableCell>
+                          <TableCell>{line.quantity} {line.raw_material?.purchase_unit}</TableCell>
+                          <TableCell>LKR {line.unit_price.toFixed(2)}</TableCell>
+                          <TableCell>{line.reference || '-'}</TableCell>
+                          <TableCell className="font-semibold">LKR {line.total_price.toFixed(2)}</TableCell>
+                          <TableCell>
+                            <div className="flex items-center space-x-2">
+                              <span>{line.received_quantity}</span>
+                              {line.received_quantity < line.quantity && (
+                                <Badge variant="outline" className="text-xs bg-yellow-50 text-yellow-700 border-yellow-200">
+                                  Pending: {(line.quantity - line.received_quantity).toFixed(2)}
+                                </Badge>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )) : (
+                        <TableRow>
+                          <TableCell colSpan={6} className="text-center text-gray-500">
+                            No line items available
+                          </TableCell>
+                        </TableRow>
+                      )
+                    }
                   </TableBody>
                 </Table>
               </div>

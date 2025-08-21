@@ -29,7 +29,7 @@ import {
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { BOMService, MultiProductBOMCreate } from '../../services/bomService';
-import { RawMaterialsService, RawMaterialWithInventory } from '../../services/rawMaterialsService';
+import { RawMaterialsService, RawMaterialWithInventory, MaterialCategory } from '../../services/rawMaterialsService';
 
 const bomService = new BOMService();
 const rawMaterialsService = new RawMaterialsService();
@@ -80,6 +80,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
   const [step, setStep] = useState(1);
   const [products, setProducts] = useState<Product[]>([]);
   const [rawMaterials, setRawMaterials] = useState<RawMaterialWithInventory[]>([]);
+  const [materialCategories, setMaterialCategories] = useState<MaterialCategory[]>([]);
   const [selectedProducts, setSelectedProducts] = useState<Product[]>([]);
   const [selectedRawMaterials, setSelectedRawMaterials] = useState<SelectedRawMaterial[]>([]);
   const [productVariants, setProductVariants] = useState<ProductVariant[]>([]);
@@ -94,6 +95,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
   
   // Material navigation state
   const [currentMaterialIndex, setCurrentMaterialIndex] = useState<number>(0);
+  const [showMaterialsByCategory, setShowMaterialsByCategory] = useState(false);
   const { toast } = useToast();
 
   // BOM Header Data
@@ -102,7 +104,10 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
   const [bomQuantity, setBomQuantity] = useState(1);
   const [bomUnit, setBomUnit] = useState('pieces');
   const [bomDescription, setBomDescription] = useState('');
-  const isCategoryWiseBOM = false;
+  const [isCategoryWiseBOM, setIsCategoryWiseBOM] = useState(false);
+  
+  // Selected categories for category-wise BOM
+  const [selectedCategories, setSelectedCategories] = useState<MaterialCategory[]>([]);
 
   useEffect(() => {
     if (open) {
@@ -127,18 +132,21 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
       setLoading(true);
       console.log('Loading initial data for Multi-Product BOM Creator...');
       
-      const [productsData, materialsData] = await Promise.all([
+      const [productsData, materialsData, categoriesData] = await Promise.all([
         bomService.getAllProducts(),
-        rawMaterialsService.getRawMaterials()
+        rawMaterialsService.getRawMaterials(),
+        rawMaterialsService.getCategories()
       ]);
       
       console.log('Loaded data:', {
         products: productsData.length,
-        materials: materialsData.length
+        materials: materialsData.length,
+        categories: categoriesData.length
       });
       
       setProducts(productsData);
       setRawMaterials(materialsData);
+      setMaterialCategories(categoriesData);
     } catch (error: any) {
       console.error('Error loading initial data:', error);
       toast({
@@ -190,6 +198,17 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
         return prev.filter(p => p.id !== product.id);
       } else {
         return [...prev, product];
+      }
+    });
+  };
+
+  const handleCategoryToggle = (category: MaterialCategory) => {
+    setSelectedCategories(prev => {
+      const exists = prev.find(c => c.id === category.id);
+      if (exists) {
+        return prev.filter(c => c.id !== category.id);
+      } else {
+        return [...prev, category];
       }
     });
   };
@@ -347,10 +366,12 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
 
   const handleCreateBOM = async () => {
     try {
-      if (!bomName || selectedProducts.length === 0 || selectedRawMaterials.length === 0) {
+      const hasSelectedItems = isCategoryWiseBOM ? selectedCategories.length > 0 : selectedRawMaterials.length > 0;
+      
+      if (!bomName || selectedProducts.length === 0 || !hasSelectedItems) {
         toast({
           title: 'Validation Error',
-          description: 'Please fill in all required fields and select products and materials',
+          description: `Please fill in all required fields and select products and ${isCategoryWiseBOM ? 'categories' : 'materials'}`,
           variant: 'destructive'
         });
         return;
@@ -365,7 +386,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
         unit: bomUnit,
         description: bomDescription,
         product_ids: selectedProducts.map(p => p.id),
-        is_category_wise: false,
+        is_category_wise: isCategoryWiseBOM,
         raw_materials: selectedRawMaterials.map(rm => ({
           raw_material_id: rm.raw_material_id,
           consumption_type: 'general',
@@ -404,12 +425,14 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
     setStep(1);
     setSelectedProducts([]);
     setSelectedRawMaterials([]);
+    setSelectedCategories([]);
     setProductVariants([]);
     setBomName('');
     setBomVersion('1.0');
     setBomQuantity(1);
     setBomUnit('pieces');
     setBomDescription('');
+    setIsCategoryWiseBOM(false);
     setUniqueColors([]);
     setUniqueSizes([]);
     setSearchTerm('');
@@ -430,6 +453,11 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
     material.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     material.code?.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  // Get materials for a specific category
+  const getMaterialsForCategory = (categoryId: number): RawMaterialWithInventory[] => {
+    return filteredRawMaterials.filter(material => material.category_id === categoryId);
+  };
 
   const renderStep1 = () => (
     <div className="space-y-6">
@@ -687,14 +715,32 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
               <ShoppingCart className="h-5 w-5 text-purple-600" />
               <span>Raw Materials Selection</span>
             </div>
-            <div className="relative w-64">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
-              <Input
-                placeholder="Search materials..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10"
-              />
+            <div className="flex items-center space-x-4">
+              <div className="flex items-center space-x-2">
+                <Checkbox
+                  id="categoryWiseBOM"
+                  checked={isCategoryWiseBOM}
+                  onCheckedChange={(checked) => {
+                    setIsCategoryWiseBOM(checked as boolean);
+                    // Clear selections when switching modes
+                    setSelectedRawMaterials([]);
+                    setSelectedCategories([]);
+                    setCurrentMaterialIndex(0);
+                  }}
+                />
+                <Label htmlFor="categoryWiseBOM" className="text-sm font-medium cursor-pointer">
+                  Category-based Consumption
+                </Label>
+              </div>
+              <div className="relative w-64">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+                <Input
+                  placeholder="Search materials..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10"
+                />
+              </div>
             </div>
           </CardTitle>
         </CardHeader>
@@ -702,86 +748,183 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Available Raw Materials */}
             <div>
-              <h4 className="font-medium mb-3">Available Raw Materials</h4>
+              <h4 className="font-medium mb-3">
+                {isCategoryWiseBOM ? 'Material Categories' : 'Available Raw Materials'}
+              </h4>
               <div className="max-h-64 overflow-y-auto space-y-2 border rounded-lg p-3">
-                {filteredRawMaterials.map((material) => {
-                  const isSelected = selectedRawMaterials.some(rm => rm.raw_material_id === material.id);
-                  return (
-                    <div
-                      key={material.id}
-                      className={`flex items-center justify-between p-3 rounded border transition-all ${
-                        isSelected ? 'bg-purple-50 border-purple-200' : 'bg-white border-gray-200 hover:bg-gray-50 cursor-pointer'
-                      }`}
-                      onClick={() => !isSelected && handleAddRawMaterial(material)}
-                    >
-                      <div>
-                        <div className="font-medium text-sm">{material.name}</div>
-                        <div className="text-xs text-gray-500 flex items-center space-x-3">
-                          <span>{material.code || 'No code'}</span>
-                          <span className="flex items-center space-x-1">
-                            <Package className="h-3 w-3" />
-                            <span>{material.base_unit}</span>
-                          </span>
-                          {material.cost_per_unit && (
-                            <span className="flex items-center space-x-1 text-green-600">
-                              <DollarSign className="h-3 w-3" />
-                              <span>LKR {material.cost_per_unit}</span>
-                            </span>
-                          )}
+                {isCategoryWiseBOM ? (
+                  // Show actual material categories for selection
+                  materialCategories.map((category) => {
+                    const isSelected = selectedCategories.some(c => c.id === category.id);
+                    const materialsInCategory = getMaterialsForCategory(category.id);
+                    return (
+                      <div
+                        key={category.id}
+                        className={`flex items-center justify-between p-3 rounded border transition-all cursor-pointer ${
+                          isSelected ? 'bg-purple-50 border-purple-200' : 'bg-white border-gray-200 hover:bg-gray-50'
+                        }`}
+                        onClick={() => handleCategoryToggle(category)}
+                      >
+                        <div className="flex items-center space-x-3">
+                          <Checkbox 
+                            checked={isSelected}
+                            onCheckedChange={() => handleCategoryToggle(category)}
+                          />
+                          <div>
+                            <div className="font-medium text-sm flex items-center space-x-2">
+                              <span>{category.name}</span>
+                              <div className="w-5 h-5 bg-purple-100 rounded-full flex items-center justify-center text-xs font-medium text-purple-700">
+                                {materialsInCategory.length}
+                              </div>
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">
+                              {materialsInCategory.slice(0, 2).map(m => m.name).join(', ')}
+                              {materialsInCategory.length > 2 && ` +${materialsInCategory.length - 2} more`}
+                            </div>
+                          </div>
                         </div>
                       </div>
-                      {!isSelected && (
-                        <Button size="sm" variant="ghost" onClick={(e) => {
-                          e.stopPropagation();
-                          handleAddRawMaterial(material);
-                        }}>
-                          <Plus className="h-4 w-4" />
-                        </Button>
-                      )}
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                ) : (
+                  // Show individual materials
+                  filteredRawMaterials.map((material) => {
+                    const isSelected = selectedRawMaterials.some(rm => rm.raw_material_id === material.id);
+                    return (
+                      <div
+                        key={material.id}
+                        className={`flex items-center justify-between p-3 rounded border transition-all ${
+                          isSelected ? 'bg-purple-50 border-purple-200' : 'bg-white border-gray-200 hover:bg-gray-50 cursor-pointer'
+                        }`}
+                        onClick={() => !isSelected && handleAddRawMaterial(material)}
+                      >
+                        <div>
+                          <div className="font-medium text-sm">{material.name}</div>
+                          <div className="text-xs text-gray-500 flex items-center space-x-3">
+                            <span>{material.code || 'No code'}</span>
+                            <span className="flex items-center space-x-1">
+                              <Package className="h-3 w-3" />
+                              <span>{material.base_unit}</span>
+                            </span>
+                            {material.cost_per_unit && (
+                              <span className="flex items-center space-x-1 text-green-600">
+                                <DollarSign className="h-3 w-3" />
+                                <span>LKR {material.cost_per_unit}</span>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        {!isSelected && (
+                          <Button size="sm" variant="ghost" onClick={(e) => {
+                            e.stopPropagation();
+                            handleAddRawMaterial(material);
+                          }}>
+                            <Plus className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
 
-            {/* Selected Raw Materials */}
+            {/* Selected Items */}
             <div>
-              <h4 className="font-medium mb-3">Selected Materials ({selectedRawMaterials.length})</h4>
+              <h4 className="font-medium mb-3">
+                {isCategoryWiseBOM ? `Selected Categories (${selectedCategories.length})` : `Selected Materials (${selectedRawMaterials.length})`}
+              </h4>
               <div className="max-h-64 overflow-y-auto space-y-2">
-                {selectedRawMaterials.map((rm, index) => (
-                  <div 
-                    key={rm.raw_material_id} 
-                    className={`border rounded-lg p-3 cursor-pointer transition-all ${
-                      index === currentMaterialIndex 
-                        ? 'bg-purple-100 border-purple-300 ring-2 ring-purple-200' 
-                        : 'bg-purple-50 border-purple-200 hover:bg-purple-75'
-                    }`}
-                    onClick={() => setCurrentMaterialIndex(index)}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex-1">
-                        <div className="font-medium text-sm flex items-center space-x-2">
-                          <span>{rm.raw_material.name}</span>
-                          {index === currentMaterialIndex && (
-                            <Badge variant="secondary" className="text-xs">Current</Badge>
-                          )}
-                        </div>
-                        <div className="text-xs text-gray-500">{rm.raw_material.code}</div>
-                      </div>
-                      <Button 
-                        size="sm" 
-                        variant="ghost" 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleRemoveRawMaterial(rm.raw_material_id);
-                        }}
-                        className="text-red-600 hover:bg-red-100"
+                {isCategoryWiseBOM ? (
+                  // Show selected categories
+                  selectedCategories.map((category, index) => {
+                    const materialsInCategory = getMaterialsForCategory(category.id);
+                    return (
+                      <div 
+                        key={category.id} 
+                        className={`border rounded-lg p-3 cursor-pointer transition-all ${
+                          index === currentMaterialIndex 
+                            ? 'bg-purple-100 border-purple-300 ring-2 ring-purple-200' 
+                            : 'bg-purple-50 border-purple-200 hover:bg-purple-75'
+                        }`}
+                        onClick={() => setCurrentMaterialIndex(index)}
                       >
-                        <X className="h-4 w-4" />
-                      </Button>
+                        <div className="flex items-center justify-between">
+                          <div className="flex-1">
+                            <div className="font-medium text-sm flex items-center space-x-2">
+                              <span>{category.name}</span>
+                              <div className="w-5 h-5 bg-purple-100 rounded-full flex items-center justify-center text-xs font-medium text-purple-700">
+                                {materialsInCategory.length}
+                              </div>
+                              {index === currentMaterialIndex && (
+                                <Badge variant="secondary" className="text-xs">Current</Badge>
+                              )}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {materialsInCategory.slice(0, 2).map(m => m.name).join(', ')}
+                              {materialsInCategory.length > 2 && ` +${materialsInCategory.length - 2} more`}
+                            </div>
+                          </div>
+                          <Button 
+                            size="sm" 
+                            variant="ghost" 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedCategories(prev => {
+                                const filtered = prev.filter(c => c.id !== category.id);
+                                if (filtered.length === 0) {
+                                  setCurrentMaterialIndex(0);
+                                } else if (currentMaterialIndex >= filtered.length) {
+                                  setCurrentMaterialIndex(filtered.length - 1);
+                                }
+                                return filtered;
+                              });
+                            }}
+                            className="text-red-600 hover:bg-red-100"
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  // Show selected materials
+                  selectedRawMaterials.map((rm, index) => (
+                    <div 
+                      key={rm.raw_material_id} 
+                      className={`border rounded-lg p-3 cursor-pointer transition-all ${
+                        index === currentMaterialIndex 
+                          ? 'bg-purple-100 border-purple-300 ring-2 ring-purple-200' 
+                          : 'bg-purple-50 border-purple-200 hover:bg-purple-75'
+                      }`}
+                      onClick={() => setCurrentMaterialIndex(index)}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <div className="font-medium text-sm flex items-center space-x-2">
+                            <span>{rm.raw_material.name}</span>
+                            {index === currentMaterialIndex && (
+                              <Badge variant="secondary" className="text-xs">Current</Badge>
+                            )}
+                          </div>
+                          <div className="text-xs text-gray-500">{rm.raw_material.code}</div>
+                        </div>
+                        <Button 
+                          size="sm" 
+                          variant="ghost" 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveRawMaterial(rm.raw_material_id);
+                          }}
+                          className="text-red-600 hover:bg-red-100"
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             </div>
           </div>
@@ -789,12 +932,12 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
       </Card>
 
       {/* Consumption Management */}
-      {selectedRawMaterials.length > 0 && (
+      {(isCategoryWiseBOM ? selectedCategories.length > 0 : selectedRawMaterials.length > 0) && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center justify-between text-lg">
               <span>Consumption Configuration</span>
-              {selectedRawMaterials.length > 1 && (
+              {(isCategoryWiseBOM ? selectedCategories.length > 1 : selectedRawMaterials.length > 1) && (
                 <div className="flex items-center space-x-2">
                   <Button
                     size="sm"
@@ -805,13 +948,13 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                     <ArrowLeft className="h-4 w-4" />
                   </Button>
                   <span className="text-sm text-gray-600">
-                    {currentMaterialIndex + 1} of {selectedRawMaterials.length}
+                    {currentMaterialIndex + 1} of {isCategoryWiseBOM ? selectedCategories.length : selectedRawMaterials.length}
                   </span>
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => setCurrentMaterialIndex(Math.min(selectedRawMaterials.length - 1, currentMaterialIndex + 1))}
-                    disabled={currentMaterialIndex === selectedRawMaterials.length - 1}
+                    onClick={() => setCurrentMaterialIndex(Math.min((isCategoryWiseBOM ? selectedCategories.length : selectedRawMaterials.length) - 1, currentMaterialIndex + 1))}
+                    disabled={currentMaterialIndex === (isCategoryWiseBOM ? selectedCategories.length : selectedRawMaterials.length) - 1}
                   >
                     <ArrowRight className="h-4 w-4" />
                   </Button>
@@ -819,16 +962,119 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
               )}
             </CardTitle>
             <CardDescription>
-              Set consumption quantities for each product variant. Use bulk apply to set multiple variants at once.
-              {selectedRawMaterials.length > 1 && " Use the navigation controls above to switch between materials."}
+              {isCategoryWiseBOM 
+                ? 'Set consumption quantities for each material category. Define how much of each category is needed per product variant.'
+                : 'Set consumption quantities for each product variant. Use bulk apply to set multiple variants at once.'
+              }
+              {(isCategoryWiseBOM ? selectedCategories.length > 1 : selectedRawMaterials.length > 1) && " Use the navigation controls above to switch between items."}
             </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-8">
-              {selectedRawMaterials.length > 0 && (() => {
-                const rm = selectedRawMaterials[currentMaterialIndex];
-                if (!rm) return null;
-                return (
+              {isCategoryWiseBOM ? (
+                // Category-based consumption
+                selectedCategories.length > 0 && (() => {
+                  const category = selectedCategories[currentMaterialIndex];
+                  if (!category) return null;
+                  const materialsInCategory = getMaterialsForCategory(category.id);
+                  return (
+                    <div key={category.id} className="border border-gray-200 rounded-xl p-6 bg-gray-50/30">
+                      <div className="flex items-center justify-between mb-6">
+                        <div>
+                          <h4 className="font-semibold text-lg flex items-center space-x-2">
+                            <div className="p-2 rounded-lg bg-purple-100">
+                              <Package className="h-4 w-4 text-purple-600" />
+                            </div>
+                            <span>{category.name} Category</span>
+                          </h4>
+                          <p className="text-sm text-gray-500 mt-1">
+                            {materialsInCategory.length} materials • Define consumption per product variant
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Category Consumption by Product Variants */}
+                      <div className="space-y-3">
+                        <h5 className="font-medium text-sm flex items-center space-x-2">
+                          <Factory className="h-4 w-4 text-gray-600" />
+                          <span>Consumption by Product Variant</span>
+                        </h5>
+                        <div className="grid gap-3">
+                          {productVariants.map((variant) => (
+                            <div key={variant.variant_key} className="bg-white p-4 rounded-lg border border-gray-200">
+                              <div className="flex items-center justify-between mb-3">
+                                <div className="flex-1 min-w-0">
+                                  <div className="font-medium text-sm">{variant.display_name}</div>
+                                  <div className="text-xs text-gray-500 flex items-center space-x-3 mt-1">
+                                    {variant.product.size && (
+                                      <div className="flex items-center space-x-1">
+                                        <Ruler className="h-3 w-3 text-blue-600" />
+                                        <span>{variant.product.size}</span>
+                                      </div>
+                                    )}
+                                    {variant.product.colour && (
+                                      <div className="flex items-center space-x-1">
+                                        <Palette className="h-3 w-3 text-purple-600" />
+                                        <span>{variant.product.colour}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                              
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                  <Label className="text-xs font-medium text-gray-600">Category Quantity</Label>
+                                  <div className="flex items-center space-x-2">
+                                    <Input
+                                      type="number"
+                                      min="0.01"
+                                      step="0.01"
+                                      placeholder="0.00"
+                                      className="w-20 h-8 text-sm"
+                                    />
+                                    <span className="text-xs text-gray-500 min-w-fit">units</span>
+                                  </div>
+                                </div>
+                                
+                                <div className="space-y-2">
+                                  <Label className="text-xs font-medium text-gray-600">Waste %</Label>
+                                  <div className="flex items-center space-x-2">
+                                    <Input
+                                      type="number"
+                                      min="0"
+                                      max="100"
+                                      step="0.1"
+                                      placeholder="0"
+                                      className="w-16 h-8 text-sm"
+                                    />
+                                    <span className="text-xs text-gray-500">%</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Category Notes */}
+                      <div className="mt-4">
+                        <Label className="text-sm font-medium">Category Notes</Label>
+                        <Textarea
+                          placeholder={`Notes for ${category.name} category consumption...`}
+                          className="mt-1 resize-none text-sm bg-white"
+                          rows={2}
+                        />
+                      </div>
+                    </div>
+                  );
+                })()
+              ) : (
+                // Material-based consumption
+                selectedRawMaterials.length > 0 && (() => {
+                  const rm = selectedRawMaterials[currentMaterialIndex];
+                  if (!rm) return null;
+                  return (
                 <div key={rm.raw_material_id} className="border border-gray-200 rounded-xl p-6 bg-gray-50/30">
                   <div className="flex items-center justify-between mb-6">
                     <div>
@@ -1106,7 +1352,8 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                   </div>
                 </div>
                 );
-              })()}
+                })()
+              )}
             </div>
           </CardContent>
         </Card>
@@ -1182,7 +1429,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
               ) : (
                 <Button 
                   onClick={handleCreateBOM}
-                  disabled={loading || selectedRawMaterials.length === 0}
+                  disabled={loading || (isCategoryWiseBOM ? selectedCategories.length === 0 : selectedRawMaterials.length === 0)}
                   className="bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600"
                 >
                   {loading ? 'Creating...' : 'Create BOM'}

@@ -77,44 +77,83 @@ export class GoodsReceivedService {
   async getAllGoodsReceived(): Promise<GoodsReceived[]> {
     const { data, error } = await supabase
       .from('goods_received')
-      .select(`
-        *,
-        purchase_order:purchase_orders(
-          id, po_number,
-          supplier:suppliers(id, name)
-        ),
-        received_by_user:auth.users(id, email),
-        lines:goods_received_lines(
-          *,
-          raw_material:raw_materials(id, name, code, base_unit, purchase_unit),
-          purchase_order_line:purchase_order_lines(id, quantity, received_quantity)
-        )
-      `)
+      .select('*')
       .order('created_at', { ascending: false });
 
     if (error) {
       throw new Error(`Failed to fetch goods received: ${error.message}`);
     }
 
-    return data || [];
+    // Manually fetch related data for each goods received record
+    const goodsReceivedWithDetails = await Promise.all(
+      (data || []).map(async (gr) => {
+        // Fetch purchase order with supplier
+        const { data: poData } = await supabase
+          .from('raw_material_purchase_orders')
+          .select(`
+            id, po_number,
+            supplier:material_suppliers(id, name)
+          `)
+          .eq('id', gr.purchase_order_id)
+          .single();
+
+        // Fetch received by user
+        const { data: userData } = await supabase
+          .from('auth.users')
+          .select('id, email')
+          .eq('id', gr.received_by)
+          .single();
+
+        // Fetch goods received lines
+        const { data: linesData } = await supabase
+          .from('goods_received_lines')
+          .select('*')
+          .eq('goods_received_id', gr.id);
+
+        // Fetch related data for each line
+        const linesWithDetails = await Promise.all(
+          (linesData || []).map(async (line) => {
+            // Fetch raw material
+            const { data: materialData } = await supabase
+              .from('raw_materials')
+              .select('id, name, code, base_unit, purchase_unit')
+              .eq('id', line.raw_material_id)
+              .single();
+
+            // Fetch purchase order line
+            const { data: poLineData } = await supabase
+              .from('raw_material_purchase_order_lines')
+              .select('id, quantity, received_quantity')
+              .eq('id', line.purchase_order_line_id)
+              .single();
+
+            return {
+              ...line,
+              raw_material: materialData,
+              purchase_order_line: poLineData
+            };
+          })
+        );
+
+        return {
+          ...gr,
+          purchase_order: {
+            ...poData,
+            supplier: Array.isArray(poData?.supplier) ? poData.supplier[0] : poData?.supplier
+          },
+          received_by_user: userData,
+          lines: linesWithDetails
+        };
+      })
+    );
+
+    return goodsReceivedWithDetails;
   }
 
   async getGoodsReceived(id: string): Promise<GoodsReceived> {
     const { data, error } = await supabase
       .from('goods_received')
-      .select(`
-        *,
-        purchase_order:purchase_orders(
-          id, po_number,
-          supplier:suppliers(id, name)
-        ),
-        received_by_user:auth.users(id, email),
-        lines:goods_received_lines(
-          *,
-          raw_material:raw_materials(id, name, code, base_unit, purchase_unit),
-          purchase_order_line:purchase_order_lines(id, quantity, received_quantity)
-        )
-      `)
+      .select('*')
       .eq('id', id)
       .single();
 
@@ -122,64 +161,135 @@ export class GoodsReceivedService {
       throw new Error(`Failed to fetch goods received: ${error.message}`);
     }
 
-    return data;
+    // Fetch purchase order with supplier
+    const { data: poData } = await supabase
+      .from('raw_material_purchase_orders')
+      .select(`
+        id, po_number,
+        supplier:material_suppliers(id, name)
+      `)
+      .eq('id', data.purchase_order_id)
+      .single();
+
+    // Fetch received by user
+    const { data: userData } = await supabase
+      .from('auth.users')
+      .select('id, email')
+      .eq('id', data.received_by)
+      .single();
+
+    // Fetch goods received lines
+    const { data: linesData } = await supabase
+      .from('goods_received_lines')
+      .select('*')
+      .eq('goods_received_id', data.id);
+
+    // Fetch related data for each line
+    const linesWithDetails = await Promise.all(
+      (linesData || []).map(async (line) => {
+        // Fetch raw material
+        const { data: materialData } = await supabase
+          .from('raw_materials')
+          .select('id, name, code, base_unit, purchase_unit')
+          .eq('id', line.raw_material_id)
+          .single();
+
+        // Fetch purchase order line
+        const { data: poLineData } = await supabase
+          .from('raw_material_purchase_order_lines')
+          .select('id, quantity, received_quantity')
+          .eq('id', line.purchase_order_line_id)
+          .single();
+
+        return {
+          ...line,
+          raw_material: materialData,
+          purchase_order_line: poLineData
+        };
+      })
+    );
+
+    return {
+      ...data,
+      purchase_order: {
+        ...poData,
+        supplier: Array.isArray(poData?.supplier) ? poData.supplier[0] : poData?.supplier
+      },
+      received_by_user: userData,
+      lines: linesWithDetails
+    };
   }
 
   async createGoodsReceived(goodsReceived: CreateGoodsReceived): Promise<GoodsReceived> {
-    // Generate GRN number
-    const { data: grnNumberData, error: grnNumberError } = await supabase
-      .rpc('generate_grn_number');
+    try {
+      console.log('Creating goods received with data:', goodsReceived);
 
-    if (grnNumberError) {
-      throw new Error(`Failed to generate GRN number: ${grnNumberError.message}`);
+      // Generate GRN number using timestamp and date
+      const currentDate = new Date();
+      const yearMonth = currentDate.getFullYear().toString() + (currentDate.getMonth() + 1).toString().padStart(2, '0');
+      const timestamp = currentDate.getTime().toString().slice(-4);
+      const grnNumber = `GRN-${yearMonth}-${timestamp}`;
+
+      console.log('Generated GRN number:', grnNumber);
+
+      // Get current user
+      const { data: { user } } = await supabase.auth.getUser();
+
+      // Create goods received record
+      const { data: grnData, error: grnError } = await supabase
+        .from('goods_received')
+        .insert({
+          grn_number: grnNumber,
+          purchase_order_id: goodsReceived.purchase_order_id,
+          received_date: goodsReceived.received_date,
+          received_by: user?.id,
+          notes: goodsReceived.notes,
+        })
+        .select()
+        .single();
+
+      if (grnError) {
+        console.error('Error creating goods received:', grnError);
+        throw new Error(`Failed to create goods received: ${grnError.message}`);
+      }
+
+      console.log('Created goods received:', grnData);
+
+      // Create goods received lines
+      if (goodsReceived.lines.length > 0) {
+        const linesData = goodsReceived.lines.map(line => ({
+          goods_received_id: grnData.id,
+          purchase_order_line_id: line.purchase_order_line_id,
+          raw_material_id: line.raw_material_id,
+          quantity_received: line.quantity_received,
+          unit_price: line.unit_price,
+          batch_number: line.batch_number || null,
+          expiry_date: line.expiry_date || null,
+          notes: line.notes,
+        }));
+
+        console.log('Creating goods received lines:', linesData);
+
+        const { error: linesError } = await supabase
+          .from('goods_received_lines')
+          .insert(linesData);
+
+        if (linesError) {
+          console.error('Error creating goods received lines:', linesError);
+          throw new Error(`Failed to create goods received lines: ${linesError.message}`);
+        }
+
+        // Update purchase order lines received quantities
+        for (const line of goodsReceived.lines) {
+          await this.updatePurchaseOrderLineReceived(line.purchase_order_line_id, line.quantity_received);
+        }
+      }
+
+      return this.getGoodsReceived(grnData.id);
+    } catch (error) {
+      console.error('Goods received creation failed:', error);
+      throw error;
     }
-
-    // Get current user
-    const { data: { user } } = await supabase.auth.getUser();
-
-    // Create goods received record
-    const { data: grnData, error: grnError } = await supabase
-      .from('goods_received')
-      .insert({
-        grn_number: grnNumberData,
-        purchase_order_id: goodsReceived.purchase_order_id,
-        received_date: goodsReceived.received_date,
-        received_by: user?.id,
-        notes: goodsReceived.notes,
-      })
-      .select()
-      .single();
-
-    if (grnError) {
-      throw new Error(`Failed to create goods received: ${grnError.message}`);
-    }
-
-    // Create goods received lines
-    const linesData = goodsReceived.lines.map(line => ({
-      goods_received_id: grnData.id,
-      purchase_order_line_id: line.purchase_order_line_id,
-      raw_material_id: line.raw_material_id,
-      quantity_received: line.quantity_received,
-      unit_price: line.unit_price,
-      batch_number: line.batch_number,
-      expiry_date: line.expiry_date,
-      notes: line.notes,
-    }));
-
-    const { error: linesError } = await supabase
-      .from('goods_received_lines')
-      .insert(linesData);
-
-    if (linesError) {
-      throw new Error(`Failed to create goods received lines: ${linesError.message}`);
-    }
-
-    // Update purchase order lines received quantities
-    for (const line of goodsReceived.lines) {
-      await this.updatePurchaseOrderLineReceived(line.purchase_order_line_id, line.quantity_received);
-    }
-
-    return this.getGoodsReceived(grnData.id);
   }
 
   async updateGoodsReceived(id: string, updates: UpdateGoodsReceived): Promise<GoodsReceived> {
@@ -261,7 +371,7 @@ export class GoodsReceivedService {
   private async updatePurchaseOrderLineReceived(poLineId: string, quantityChange: number): Promise<void> {
     // Get current received quantity
     const { data: lineData, error: fetchError } = await supabase
-      .from('purchase_order_lines')
+      .from('raw_material_purchase_order_lines')
       .select('received_quantity, quantity')
       .eq('id', poLineId)
       .single();
@@ -274,7 +384,7 @@ export class GoodsReceivedService {
 
     // Update received quantity
     const { error } = await supabase
-      .from('purchase_order_lines')
+      .from('raw_material_purchase_order_lines')
       .update({ received_quantity: newReceivedQuantity })
       .eq('id', poLineId);
 
@@ -287,24 +397,27 @@ export class GoodsReceivedService {
   }
 
   private async updatePurchaseOrderStatus(poLineId: string): Promise<void> {
-    // Get purchase order ID and check all lines
-    const { data: poData, error: fetchError } = await supabase
-      .from('purchase_order_lines')
-      .select(`
-        purchase_order_id,
-        purchase_order:purchase_orders!inner(
-          id,
-          lines:purchase_order_lines(quantity, received_quantity)
-        )
-      `)
+    // Get purchase order ID from the line
+    const { data: lineData, error: fetchError } = await supabase
+      .from('raw_material_purchase_order_lines')
+      .select('purchase_order_id')
       .eq('id', poLineId)
       .single();
 
     if (fetchError) {
-      throw new Error(`Failed to fetch purchase order for status update: ${fetchError.message}`);
+      throw new Error(`Failed to fetch purchase order line: ${fetchError.message}`);
     }
 
-    const allLines = poData.purchase_order.lines;
+    // Get all lines for this purchase order
+    const { data: allLines, error: linesError } = await supabase
+      .from('raw_material_purchase_order_lines')
+      .select('quantity, received_quantity')
+      .eq('purchase_order_id', lineData.purchase_order_id);
+
+    if (linesError) {
+      throw new Error(`Failed to fetch purchase order lines: ${linesError.message}`);
+    }
+
     const fullyReceived = allLines.every(line => line.received_quantity >= line.quantity);
     const partiallyReceived = allLines.some(line => line.received_quantity > 0);
 
@@ -316,9 +429,9 @@ export class GoodsReceivedService {
     }
 
     const { error } = await supabase
-      .from('purchase_orders')
+      .from('raw_material_purchase_orders')
       .update({ status: newStatus })
-      .eq('id', poData.purchase_order_id);
+      .eq('id', lineData.purchase_order_id);
 
     if (error) {
       throw new Error(`Failed to update purchase order status: ${error.message}`);
@@ -362,19 +475,7 @@ export class GoodsReceivedService {
   async getPendingGoodsReceived(): Promise<GoodsReceived[]> {
     const { data, error } = await supabase
       .from('goods_received')
-      .select(`
-        *,
-        purchase_order:purchase_orders(
-          id, po_number,
-          supplier:suppliers(id, name)
-        ),
-        received_by_user:auth.users(id, email),
-        lines:goods_received_lines(
-          *,
-          raw_material:raw_materials(id, name, code, base_unit, purchase_unit),
-          purchase_order_line:purchase_order_lines(id, quantity, received_quantity)
-        )
-      `)
+      .select('*')
       .in('status', ['pending', 'verified'])
       .order('received_date', { ascending: true });
 
@@ -382,6 +483,69 @@ export class GoodsReceivedService {
       throw new Error(`Failed to fetch pending goods received: ${error.message}`);
     }
 
-    return data || [];
+    // Manually fetch related data for each goods received record
+    const goodsReceivedWithDetails = await Promise.all(
+      (data || []).map(async (gr) => {
+        // Fetch purchase order with supplier
+        const { data: poData } = await supabase
+          .from('raw_material_purchase_orders')
+          .select(`
+            id, po_number,
+            supplier:material_suppliers(id, name)
+          `)
+          .eq('id', gr.purchase_order_id)
+          .single();
+
+        // Fetch received by user
+        const { data: userData } = await supabase
+          .from('auth.users')
+          .select('id, email')
+          .eq('id', gr.received_by)
+          .single();
+
+        // Fetch goods received lines
+        const { data: linesData } = await supabase
+          .from('goods_received_lines')
+          .select('*')
+          .eq('goods_received_id', gr.id);
+
+        // Fetch related data for each line
+        const linesWithDetails = await Promise.all(
+          (linesData || []).map(async (line) => {
+            // Fetch raw material
+            const { data: materialData } = await supabase
+              .from('raw_materials')
+              .select('id, name, code, base_unit, purchase_unit')
+              .eq('id', line.raw_material_id)
+              .single();
+
+            // Fetch purchase order line
+            const { data: poLineData } = await supabase
+              .from('raw_material_purchase_order_lines')
+              .select('id, quantity, received_quantity')
+              .eq('id', line.purchase_order_line_id)
+              .single();
+
+            return {
+              ...line,
+              raw_material: materialData,
+              purchase_order_line: poLineData
+            };
+          })
+        );
+
+        return {
+          ...gr,
+          purchase_order: {
+            ...poData,
+            supplier: Array.isArray(poData?.supplier) ? poData.supplier[0] : poData?.supplier
+          },
+          received_by_user: userData,
+          lines: linesWithDetails
+        };
+      })
+    );
+
+    return goodsReceivedWithDetails;
   }
 }
