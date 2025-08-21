@@ -13,6 +13,9 @@ import Reports from "./pages/Reports";
 import NotFound from "./pages/NotFound";
 import { RawMaterialsManager } from "./components/materials/RawMaterialsManager";
 import { BOMManager } from "./components/bom/BOMManager";
+import { PurchaseOrderManager } from "./components/materials/PurchaseOrderManager";
+import { GoodsReceivedManager } from "./components/materials/GoodsReceivedManager";
+import { GoodsIssueManager } from "./components/materials/GoodsIssueManager";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -55,6 +58,21 @@ const App: React.FC = () => {
             <Route path="/bom" element={
               <ProtectedRoute>
                 <BOMManager />
+              </ProtectedRoute>
+            } />
+            <Route path="/purchase-orders" element={
+              <ProtectedRoute>
+                <PurchaseOrderManager />
+              </ProtectedRoute>
+            } />
+            <Route path="/goods-received" element={
+              <ProtectedRoute>
+                <GoodsReceivedManager />
+              </ProtectedRoute>
+            } />
+            <Route path="/goods-issue" element={
+              <ProtectedRoute>
+                <GoodsIssueManager />
               </ProtectedRoute>
             } />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

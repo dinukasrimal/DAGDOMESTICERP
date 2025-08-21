@@ -4,7 +4,7 @@ import { ProductionScheduler } from '../components/ProductionScheduler';
 import { ProductionPlanner } from '../components/ProductionPlanner';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Calendar, BarChart3, Package, FileText, Settings, Home, Users, TrendingUp, Sparkles, ArrowRight, ClipboardList, Factory, ShoppingCart } from 'lucide-react';
+import { Calendar, BarChart3, Package, FileText, Settings, Home, Users, TrendingUp, Sparkles, ArrowRight, ClipboardList, Factory, ShoppingCart, Truck, Minus } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 const Index: React.FC = () => {
@@ -30,8 +30,10 @@ const Index: React.FC = () => {
     }},
     { id: 'materials', label: 'Raw Materials', icon: Package, onClick: () => navigate('/materials') },
     { id: 'bom', label: 'Bill of Materials', icon: Factory, onClick: () => navigate('/bom') },
+    { id: 'purchase-orders', label: 'Purchase Orders', icon: ShoppingCart, onClick: () => navigate('/purchase-orders') },
+    { id: 'goods-received', label: 'Goods Received', icon: Truck, onClick: () => navigate('/goods-received') },
+    { id: 'goods-issue', label: 'Goods Issue', icon: Minus, onClick: () => navigate('/goods-issue') },
     { id: 'reports', label: 'Reports & Analytics', icon: BarChart3, onClick: () => navigate('/reports') },
-    { id: 'inventory', label: 'Inventory', icon: ShoppingCart, onClick: () => {}, disabled: true },
     { id: 'customers', label: 'Customers', icon: Users, onClick: () => {}, disabled: true },
     { id: 'settings', label: 'Settings', icon: Settings, onClick: () => {}, disabled: true },
   ];
@@ -86,6 +88,30 @@ const Index: React.FC = () => {
       gradient: 'bg-gradient-to-br from-orange-500 via-orange-600 to-orange-700',
       accentColor: 'from-orange-500/20 to-orange-600/20',
       onClick: () => navigate('/bom')
+    },
+    {
+      title: 'Purchase Orders',
+      description: 'Create and manage purchase orders for raw materials',
+      icon: ShoppingCart,
+      gradient: 'bg-gradient-to-br from-blue-500 via-blue-600 to-blue-700',
+      accentColor: 'from-blue-500/20 to-blue-600/20',
+      onClick: () => navigate('/purchase-orders')
+    },
+    {
+      title: 'Goods Received',
+      description: 'Receive and track incoming raw materials',
+      icon: Truck,
+      gradient: 'bg-gradient-to-br from-green-500 via-green-600 to-green-700',
+      accentColor: 'from-green-500/20 to-green-600/20',
+      onClick: () => navigate('/goods-received')
+    },
+    {
+      title: 'Goods Issue',
+      description: 'Issue raw materials for production and other purposes',
+      icon: Minus,
+      gradient: 'bg-gradient-to-br from-red-500 via-red-600 to-red-700',
+      accentColor: 'from-red-500/20 to-red-600/20',
+      onClick: () => navigate('/goods-issue')
     }
   ];
 

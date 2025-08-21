@@ -102,6 +102,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
   const [bomQuantity, setBomQuantity] = useState(1);
   const [bomUnit, setBomUnit] = useState('pieces');
   const [bomDescription, setBomDescription] = useState('');
+  const isCategoryWiseBOM = false;
 
   useEffect(() => {
     if (open) {
@@ -124,16 +125,25 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
   const loadInitialData = async () => {
     try {
       setLoading(true);
+      console.log('Loading initial data for Multi-Product BOM Creator...');
+      
       const [productsData, materialsData] = await Promise.all([
         bomService.getAllProducts(),
         rawMaterialsService.getRawMaterials()
       ]);
+      
+      console.log('Loaded data:', {
+        products: productsData.length,
+        materials: materialsData.length
+      });
+      
       setProducts(productsData);
       setRawMaterials(materialsData);
-    } catch (error) {
+    } catch (error: any) {
+      console.error('Error loading initial data:', error);
       toast({
-        title: 'Error',
-        description: 'Failed to load data',
+        title: 'Error Loading Data',
+        description: error.message || 'Failed to load products and materials. Please try again.',
         variant: 'destructive'
       });
     } finally {
@@ -157,8 +167,9 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
   const generateProductVariants = () => {
     const variants: ProductVariant[] = [];
     
+    // Always generate product-based variants regardless of category-wise setting
+    // Category-wise only affects how consumption is defined, not which products are shown
     selectedProducts.forEach(product => {
-      // Create a variant for each product (even if no size/color specified)
       const variantKey = `${product.id}_${product.size || 'no-size'}_${product.colour || 'no-color'}`;
       const displayName = `${product.name}${product.size ? ` - ${product.size}` : ''}${product.colour ? ` - ${product.colour}` : ''}`;
       
@@ -183,12 +194,15 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
     });
   };
 
+
   const handleAddRawMaterial = (rawMaterial: RawMaterialWithInventory) => {
     const exists = selectedRawMaterials.find(rm => rm.raw_material_id === rawMaterial.id);
     if (exists) return;
 
+    let variantConsumptions: VariantConsumption[] = [];
+
     // Create consumption entries for all product variants
-    const variantConsumptions: VariantConsumption[] = productVariants.map(variant => ({
+    variantConsumptions = productVariants.map(variant => ({
       variant_key: variant.variant_key,
       product_id: variant.product.id,
       product_name: variant.product.name,
@@ -351,12 +365,13 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
         unit: bomUnit,
         description: bomDescription,
         product_ids: selectedProducts.map(p => p.id),
+        is_category_wise: false,
         raw_materials: selectedRawMaterials.map(rm => ({
           raw_material_id: rm.raw_material_id,
-          consumption_type: 'general', // We'll determine this based on variant consumptions
+          consumption_type: 'general',
           consumptions: rm.variant_consumptions.map(vc => ({
-            attribute_type: vc.size && vc.color ? 'general' : vc.size ? 'size' : vc.color ? 'color' : 'general',
-            attribute_value: vc.size && vc.color ? `${vc.size}-${vc.color}` : vc.size || vc.color || 'general',
+            attribute_type: (vc.size && vc.color ? 'general' : vc.size ? 'size' : vc.color ? 'color' : 'general'),
+            attribute_value: (vc.size && vc.color ? `${vc.size}-${vc.color}` : vc.size || vc.color || 'general'),
             quantity: vc.quantity,
             unit: vc.unit,
             waste_percentage: vc.waste_percentage
@@ -510,8 +525,47 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="max-h-96 overflow-y-auto space-y-2">
-            {filteredProducts.map((product) => {
+          {loading ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2"></div>
+                <p className="text-sm text-gray-500">Loading products...</p>
+              </div>
+            </div>
+          ) : filteredProducts.length === 0 ? (
+            <div className="text-center py-8">
+              <Package className="h-12 w-12 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500 mb-2">
+                {searchTerm ? 'No products found matching your search' : 'No products available'}
+              </p>
+              <p className="text-xs text-gray-400 mb-4">
+                Total products loaded: {products.length}
+              </p>
+              <div className="flex justify-center space-x-2">
+                {searchTerm && (
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => setSearchTerm('')}
+                    className="text-xs"
+                  >
+                    Clear search
+                  </Button>
+                )}
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={loadInitialData}
+                  className="text-xs"
+                  disabled={loading}
+                >
+                  {loading ? 'Loading...' : 'Refresh'}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="max-h-96 overflow-y-auto space-y-2">
+              {filteredProducts.map((product) => {
               const isSelected = selectedProducts.some(p => p.id === product.id);
               return (
                 <div
@@ -547,16 +601,19 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                   </div>
                 </div>
               );
-            })}
-          </div>
+              })}
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      {/* Selected Products Summary */}
+      {/* Selection Summary */}
       {selectedProducts.length > 0 && (
         <Card className="bg-blue-50/30 border-blue-200">
           <CardHeader>
-            <CardTitle className="text-sm">Selected Products Summary</CardTitle>
+            <CardTitle className="text-sm">
+              Selected Products Summary
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 gap-4 text-sm">

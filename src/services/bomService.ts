@@ -80,11 +80,12 @@ export interface MultiProductBOMCreate {
   unit: string;
   description?: string;
   product_ids: number[];
+  is_category_wise?: boolean;
   raw_materials: {
     raw_material_id: number;
-    consumption_type: 'general' | 'size_wise' | 'color_wise';
+    consumption_type: 'general' | 'size_wise' | 'color_wise' | 'category_wise';
     consumptions: {
-      attribute_type: 'size' | 'color' | 'general';
+      attribute_type: 'size' | 'color' | 'general' | 'category';
       attribute_value: string;
       quantity: number;
       unit: string;
@@ -337,14 +338,44 @@ export class BOMService {
     // For now, create a single BOM with aggregated information
     // This is a temporary solution until the migration is applied
     
-    // Get product names for enhanced name
-    const { data: products } = await supabase
-      .from('products')
-      .select('id, name, default_code, colour, size')
-      .in('id', bomData.product_ids);
+    let enhancedName: string;
+    let products: Array<{
+      id: number;
+      name: string;
+      default_code: string | null;
+      colour: string | null;
+      size: string | null;
+    }> = [];
 
-    const productNames = products?.map(p => p.name) || [];
-    const enhancedName = `${bomData.name} (${productNames.slice(0, 3).join(', ')}${productNames.length > 3 ? ` +${productNames.length - 3} more` : ''})`;
+    if (bomData.is_category_wise) {
+      // Get category names for enhanced name
+      const { data: categories } = await supabase
+        .from('product_categories')
+        .select('id, name')
+        .in('id', bomData.product_ids);
+
+      const categoryNames = categories?.map(c => c.name) || [];
+      enhancedName = `${bomData.name} (Categories: ${categoryNames.slice(0, 3).join(', ')}${categoryNames.length > 3 ? ` +${categoryNames.length - 3} more` : ''})`; 
+      
+      // For category-wise BOMs, we store category info as mock products
+      products = categories?.map(c => ({
+        id: c.id,
+        name: c.name,
+        default_code: `CAT-${c.id}`,
+        colour: null,
+        size: null
+      })) || [];
+    } else {
+      // Get product names for enhanced name
+      const { data: productData } = await supabase
+        .from('products')
+        .select('id, name, default_code, colour, size')
+        .in('id', bomData.product_ids);
+
+      const productNames = productData?.map(p => p.name) || [];
+      enhancedName = `${bomData.name} (${productNames.slice(0, 3).join(', ')}${productNames.length > 3 ? ` +${productNames.length - 3} more` : ''})`; 
+      products = productData || [];
+    }
     
     const { data: bomHeader, error: bomError } = await supabase
       .from('bom_headers')
@@ -353,6 +384,7 @@ export class BOMService {
         version: bomData.version,
         quantity: bomData.quantity,
         unit: bomData.unit,
+        is_category_wise: bomData.is_category_wise || false,
         active: true
       })
       .select()
@@ -372,10 +404,12 @@ export class BOMService {
       
       // Create detailed notes with variant consumption info
       const variantDetails = material.consumptions.map(c => 
-        `${c.attribute_value}: ${c.quantity} ${c.unit} (${c.waste_percentage}% waste)`
+        bomData.is_category_wise 
+          ? `Category ${c.attribute_value}: ${c.quantity} ${c.unit} (${c.waste_percentage}% waste)`
+          : `${c.attribute_value}: ${c.quantity} ${c.unit} (${c.waste_percentage}% waste)`
       ).join('; ');
       
-      const detailedNotes = `${material.notes ? material.notes + '. ' : ''}Variant consumptions: ${variantDetails}`;
+      const detailedNotes = `${material.notes ? material.notes + '. ' : ''}${bomData.is_category_wise ? 'Category' : 'Variant'} consumptions: ${variantDetails}`;
 
       const { data: bomLine, error: lineError } = await supabase
         .from('bom_lines')
@@ -500,5 +534,93 @@ export class BOMService {
     }
     
     return data || [];
+  }
+
+  async getProductCategories(): Promise<{
+    id: number;
+    name: string;
+    description?: string | null;
+  }[]> {
+    const { data, error } = await supabase
+      .from('product_categories')
+      .select('id, name, description')
+      .order('name');
+    
+    if (error) {
+      console.error('Error fetching product categories:', error);
+      throw error;
+    }
+    
+    return data || [];
+  }
+
+  async getProductsByCategory(categoryId: number): Promise<{
+    id: number;
+    name: string;
+    default_code: string | null;
+    colour: string | null;
+    size: string | null;
+    category_name?: string;
+  }[]> {
+    const { data, error } = await supabase
+      .from('products')
+      .select(`
+        id, name, default_code, colour, size,
+        category:product_categories(name)
+      `)
+      .eq('category_id', categoryId)
+      .eq('active', true)
+      .order('name');
+    
+    if (error) {
+      console.error('Error fetching products by category:', error);
+      throw error;
+    }
+    
+    return data?.map(product => ({
+      ...product,
+      category_name: product.category?.name
+    })) || [];
+  }
+
+  async getCategoryWiseBOMs(): Promise<BOMWithLines[]> {
+    const { data, error } = await supabase
+      .from('bom_headers')
+      .select(`
+        *,
+        lines:bom_lines(
+          *,
+          raw_material:raw_materials(id, name, code, base_unit, purchase_unit, conversion_factor, cost_per_unit)
+        )
+      `)
+      .eq('is_category_wise', true)
+      .eq('active', true)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching category-wise BOMs:', error);
+      throw error;
+    }
+    
+    return (data || []).map(bom => ({
+      ...bom,
+      lines: (bom.lines || []).sort((a, b) => a.sort_order - b.sort_order)
+    }));
+  }
+
+  async getBOMWithCategoryInfo(bomId: string): Promise<{
+    bom: BOMWithLines;
+    categories?: { id: number; name: string; }[];
+  } | null> {
+    const bom = await this.getBOMById(bomId);
+    if (!bom) return null;
+
+    if (bom.is_category_wise) {
+      // Get all categories for category-wise BOMs
+      const categories = await this.getProductCategories();
+      return { bom, categories };
+    }
+
+    return { bom };
   }
 }
