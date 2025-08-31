@@ -101,3 +101,16 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Barcode Scanner Overlay - Ensure it appears on top of everything */
+.barcode-scanner-overlay {
+  z-index: 2147483647 !important;
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  background: black !important;
+}

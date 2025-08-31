@@ -159,7 +159,7 @@ export const GoodsReceivedManager: React.FC = () => {
   const handleBarcodeScanned = (barcode: string) => {
     console.log('Barcode scanned:', barcode);
     setScannedBarcode(barcode);
-    setShowBarcodeCamera(false);
+    // Don't close the scanner immediately, just show weight entry overlay
     setShowWeightEntry(true);
     setIsManualEntry(false);
   };
@@ -171,22 +171,29 @@ export const GoodsReceivedManager: React.FC = () => {
         description: 'Please provide valid barcode and weight',
         variant: 'destructive'
       });
-      return;
+      return false;
     }
-
-    handleAddFabricRoll();
     
-    // Ask if user wants to scan another roll
-    if (confirm('Roll added successfully! Do you want to scan another roll?')) {
-      setShowBarcodeCamera(true);
+    // Store values before resetting state
+    const currentBarcode = scannedBarcode;
+    const currentWeight = rollWeight;
+    
+    const result = handleAddFabricRoll();
+    
+    if (result) {
+      // Reset for next scan but keep scanner open
       setShowWeightEntry(false);
       setScannedBarcode('');
       setRollWeight(0);
       setRollLength(0);
       setIsManualEntry(false);
-    } else {
-      setShowFabricScanner(false);
-      setCurrentScanningLine(null);
+      
+      // Show success message with stored values
+      toast({
+        title: 'Roll Added Successfully',
+        description: `Barcode: ${currentBarcode} | Weight: ${currentWeight}kg`,
+        variant: 'default'
+      });
     }
   };
 
@@ -197,7 +204,7 @@ export const GoodsReceivedManager: React.FC = () => {
         description: 'Please provide barcode and weight for the roll',
         variant: 'destructive'
       });
-      return;
+      return false;
     }
 
     // Check if barcode already exists for this line
@@ -208,7 +215,7 @@ export const GoodsReceivedManager: React.FC = () => {
         description: 'This barcode has already been scanned for this material',
         variant: 'destructive'
       });
-      return;
+      return false;
     }
 
     const newRoll: FabricRoll = {
@@ -226,15 +233,44 @@ export const GoodsReceivedManager: React.FC = () => {
     const totalWeight = [...existingRolls, newRoll].reduce((sum, roll) => sum + roll.weight, 0);
     handleUpdateReceivingLine(currentScanningLine, 'quantity_received', totalWeight);
 
-    // Clear form
-    setScannedBarcode('');
-    setRollWeight(0);
-    setRollLength(0);
+    return true;
+  };
 
-    toast({
-      title: 'Roll Added',
-      description: `Roll ${scannedBarcode} added successfully`
-    });
+  const handleCompleteReceiving = async () => {
+    if (!currentScanningLine || !selectedPO) return;
+
+    try {
+      // Update the receiving line with the total scanned weight
+      const scannedRolls = fabricRolls[currentScanningLine] || [];
+      const totalWeight = scannedRolls.reduce((sum, roll) => sum + roll.weight, 0);
+      
+      if (totalWeight > 0) {
+        handleUpdateReceivingLine(currentScanningLine, 'quantity_received', totalWeight);
+        
+        toast({
+          title: 'Receiving Completed',
+          description: `${scannedRolls.length} rolls (${totalWeight}kg) marked as received`,
+          variant: 'default'
+        });
+      }
+
+      // Close the scanner
+      setShowBarcodeCamera(false);
+      setIsManualEntry(false);
+      setShowWeightEntry(false);
+      setScannedBarcode('');
+      setRollWeight(0);
+      setRollLength(0);
+      setCurrentScanningLine(null);
+      setShowFabricScanner(false);
+
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to complete receiving',
+        variant: 'destructive'
+      });
+    }
   };
 
   const handleRemoveFabricRoll = (lineId: string, barcode: string) => {
@@ -260,7 +296,7 @@ export const GoodsReceivedManager: React.FC = () => {
           description: 'Please select a purchase order',
           variant: 'destructive'
         });
-        return;
+        return false;
       }
 
       // Filter lines that have quantity > 0
@@ -272,7 +308,7 @@ export const GoodsReceivedManager: React.FC = () => {
           description: 'Please specify quantities to receive for at least one line',
           variant: 'destructive'
         });
-        return;
+        return false;
       }
 
       // Validate fabric materials have scanned rolls
@@ -294,7 +330,7 @@ export const GoodsReceivedManager: React.FC = () => {
           description: `Please scan barcodes for: ${fabricLinesWithoutScans.join(', ')}`,
           variant: 'destructive'
         });
-        return;
+        return false;
       }
 
       // Check for lines that will exceed 75% completion or auto-close due to over-receiving
@@ -335,7 +371,7 @@ export const GoodsReceivedManager: React.FC = () => {
         });
         
         await createGRNWithClosedLines(autoCloseLines);
-        return;
+        return false;
       }
 
       // If lines exceed 75%, show confirmation dialog
@@ -343,7 +379,7 @@ export const GoodsReceivedManager: React.FC = () => {
         setLinesToClose(linesToCloseCheck);
         setSelectedLinesToClose(new Set(linesToCloseCheck.map(l => l.lineId)));
         setShowCloseLineDialog(true);
-        return;
+        return false;
       }
 
       // Otherwise proceed with creating GRN
@@ -395,7 +431,7 @@ export const GoodsReceivedManager: React.FC = () => {
           description: 'No valid items to receive',
           variant: 'destructive'
         });
-        return;
+        return false;
       }
       
       const grnData: CreateGoodsReceived = {
@@ -1072,43 +1108,6 @@ export const GoodsReceivedManager: React.FC = () => {
               </div>
             )}
 
-            {/* Weight Entry Form */}
-            {showWeightEntry && scannedBarcode && (
-              <Card className="bg-blue-50">
-                <CardHeader>
-                  <CardTitle className="text-sm">Enter Roll Details</CardTitle>
-                  <CardDescription>
-                    Barcode: {scannedBarcode}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label>Weight (kg) *</Label>
-                      <Input
-                        type="number"
-                        step="0.01"
-                        value={rollWeight}
-                        onChange={(e) => setRollWeight(parseFloat(e.target.value) || 0)}
-                        autoFocus
-                      />
-                    </div>
-                    <div>
-                      <Label>Length (m)</Label>
-                      <Input
-                        type="number"
-                        step="0.01"
-                        value={rollLength}
-                        onChange={(e) => setRollLength(parseFloat(e.target.value) || 0)}
-                      />
-                    </div>
-                  </div>
-                  <Button onClick={handleWeightConfirmed} className="w-full mt-4">
-                    Add Roll
-                  </Button>
-                </CardContent>
-              </Card>
-            )}
 
             {/* Scan Button */}
             {!showWeightEntry && (
@@ -1152,17 +1151,123 @@ export const GoodsReceivedManager: React.FC = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Simple Barcode Scanner */}
+      {/* Full-Screen Barcode Scanner with Weight Entry Overlay */}
       <BarcodeScanner
-        key={showBarcodeCamera ? Date.now() : 'closed'} // Force fresh component each time
         isOpen={showBarcodeCamera}
         onScan={handleBarcodeScanned}
-        onManualEntryChange={setIsManualEntry}
+        scannedRolls={currentScanningLine ? fabricRolls[currentScanningLine] || [] : []}
+        currentScanningLine={
+          currentScanningLine 
+            ? selectedPO?.lines?.find(line => line.id === currentScanningLine)?.raw_material?.name || 'Material'
+            : 'Material'
+        }
+        onRemoveRoll={(barcode) => {
+          if (currentScanningLine) {
+            handleRemoveFabricRoll(currentScanningLine, barcode);
+          }
+        }}
+        onDone={() => {
+          // Complete receiving and close scanner
+          handleCompleteReceiving();
+        }}
         onClose={() => {
           setShowBarcodeCamera(false);
           setIsManualEntry(false);
+          setShowWeightEntry(false);
+          setScannedBarcode('');
+          setRollWeight(0);
+          setRollLength(0);
+          setCurrentScanningLine(null);
+          setShowFabricScanner(false);
         }}
-      />
+      >
+        {/* Weight Entry Overlay */}
+        {showWeightEntry && scannedBarcode && (
+          <div 
+            className="absolute inset-0 flex items-center justify-center bg-black/50" 
+            style={{ 
+              zIndex: 2147483646,
+              pointerEvents: 'none' // Allow clicks to pass through background
+            }}
+            onClick={(e) => {
+              // Don't close overlay when clicking background
+            }}
+          >
+            <Card 
+              className="w-full max-w-md mx-4 bg-white" 
+              onClick={(e) => e.stopPropagation()}
+              style={{ position: 'relative', zIndex: 2147483647, pointerEvents: 'auto' }}
+            >
+              <CardHeader>
+                <CardTitle className="text-lg">Enter Roll Details</CardTitle>
+                <CardDescription>
+                  Barcode: <strong>{scannedBarcode}</strong>
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="weight">Weight (kg) *</Label>
+                    <Input
+                      id="weight"
+                      type="number"
+                      step="0.01"
+                      value={rollWeight || ''}
+                      onChange={(e) => setRollWeight(parseFloat(e.target.value) || 0)}
+                      placeholder="0.00"
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="length">Length (m)</Label>
+                    <Input
+                      id="length"
+                      type="number"
+                      step="0.01"
+                      value={rollLength || ''}
+                      onChange={(e) => setRollLength(parseFloat(e.target.value) || 0)}
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
+                
+                <div className="flex space-x-2">
+                  <Button 
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleWeightConfirmed();
+                    }} 
+                    className="flex-1 bg-green-600 hover:bg-green-700"
+                    style={{ 
+                      position: 'relative', 
+                      zIndex: 2147483647, 
+                      pointerEvents: 'auto',
+                      cursor: 'pointer'
+                    }}
+                    disabled={!rollWeight || rollWeight <= 0}
+                    type="button"
+                  >
+                    Add Roll
+                  </Button>
+                  <Button 
+                    onClick={() => {
+                      setShowWeightEntry(false);
+                      setScannedBarcode('');
+                      setRollWeight(0);
+                      setRollLength(0);
+                    }}
+                    variant="outline"
+                    className="flex-1"
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+      </BarcodeScanner>
     </div>
   );
 };

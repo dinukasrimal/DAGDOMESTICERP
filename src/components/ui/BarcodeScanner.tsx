@@ -1,483 +1,479 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { Button } from './button';
-import { Card, CardContent, CardHeader, CardTitle } from './card';
-import { Alert, AlertDescription } from './alert';
 import { Input } from './input';
-import { Label } from './label';
-import { Camera, X, RotateCcw, Keyboard, QrCode, Check } from 'lucide-react';
+import { X, Keyboard, QrCode, Flashlight, FlashlightOff, Trash2, CheckCircle } from 'lucide-react';
 
+interface FabricRoll {
+  barcode: string;
+  weight: number;
+  length?: number;
+}
 
 interface BarcodeScannerProps {
   onScan: (barcode: string) => void;
   onClose: () => void;
   isOpen: boolean;
-  onManualEntryChange?: (isManual: boolean) => void;
+  children?: React.ReactNode; // For overlay content like weight entry
+  scannedRolls?: FabricRoll[]; // List of scanned rolls to display
+  currentScanningLine?: string; // Current material line name
+  onRemoveRoll?: (barcode: string) => void; // Remove roll callback
+  onDone?: () => void; // Complete receiving callback
 }
 
-export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onScan, onClose, isOpen, onManualEntryChange }) => {
+export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ 
+  onScan, 
+  onClose, 
+  isOpen, 
+  children, 
+  scannedRolls = [], 
+  currentScanningLine = 'Material',
+  onRemoveRoll,
+  onDone
+}) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [showManualEntry, setShowManualEntry] = useState(false);
   const [manualBarcode, setManualBarcode] = useState('');
+  const [flashOn, setFlashOn] = useState(false);
+  const [hasFlash, setHasFlash] = useState(false);
 
+  // Start camera when scanner opens
   useEffect(() => {
-    if (isOpen) {
-      // Reset all states when scanner opens
-      setManualBarcode('');
-      setShowManualEntry(false);
-      setError(null);
-      startScanning();
+    if (isOpen && !showManualEntry) {
+      initializeScanner();
     } else {
-      stopScanning();
-      // Reset states when scanner closes
-      setManualBarcode('');
-      setShowManualEntry(false);
-      setError(null);
+      cleanup();
     }
 
-    return () => {
-      stopScanning();
-      // Clean up the portal container when component unmounts
-      const container = document.getElementById('barcode-scanner-portal');
-      if (container && !isOpen) {
-        container.remove();
+    return cleanup;
+  }, [isOpen, showManualEntry]);
+
+  const cleanup = () => {
+    console.log('Cleaning up scanner...');
+    
+    // Stop the reader
+    if (readerRef.current) {
+      try {
+        readerRef.current.reset();
+      } catch (err) {
+        console.warn('Error resetting reader:', err);
       }
-    };
-  }, [isOpen]);
-
-  // Force focus for manual entry with direct DOM manipulation
-  useEffect(() => {
-    if (showManualEntry && isOpen) {
-      console.log('Manual entry mode activated, forcing focus with DOM manipulation');
-      
-      const focusInput = () => {
-        // Use document.querySelector to find the input
-        const input = document.querySelector('#manual-barcode') as HTMLInputElement;
-        if (input) {
-          console.log('Found input via querySelector, forcing focus and enabling');
-          
-          // Remove any potential blocks
-          input.removeAttribute('readonly');
-          input.removeAttribute('disabled');
-          input.style.pointerEvents = 'auto';
-          input.style.userSelect = 'text';
-          input.tabIndex = 0;
-          
-          // Clear and focus
-          input.value = '';
-          input.focus();
-          input.click();
-          
-          console.log('Input focus attempt completed, activeElement:', document.activeElement);
-          console.log('Input has focus:', document.activeElement === input);
-        } else {
-          console.log('Input not found yet');
-        }
-      };
-      
-      // Try multiple times with increasing delays
-      setTimeout(focusInput, 100);
-      setTimeout(focusInput, 200);
-      setTimeout(focusInput, 400);
-      setTimeout(focusInput, 800);
+      readerRef.current = null;
     }
-  }, [showManualEntry, isOpen]);
 
-  const startScanning = async () => {
+    // Stop camera stream
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => {
+        track.stop();
+      });
+      streamRef.current = null;
+    }
+
+    setIsScanning(false);
+    setFlashOn(false);
+  };
+
+  const initializeScanner = async () => {
     try {
-      console.log('Starting camera scanning...');
+      console.log('Initializing scanner...');
       setError(null);
       setIsScanning(true);
-      setShowManualEntry(false);
 
-      // Check if getUserMedia is available
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('Camera access not supported by this browser');
+      // Check if camera is available
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Camera not supported');
       }
 
-      // Request camera permission with better constraints
-      console.log('Requesting camera permission...');
-      const stream = await navigator.mediaDevices.getUserMedia({ 
+      // Request camera permission and get stream
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: { 
-          facingMode: 'environment', // Prefer back camera
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        } 
+          facingMode: 'environment',
+          width: { ideal: 1920, min: 1280 },
+          height: { ideal: 1080, min: 720 }
+        }
       });
-      setHasPermission(true);
-      console.log('Camera permission granted');
-      
-      // Stop the stream immediately, ZXing will handle it
-      stream.getTracks().forEach(track => track.stop());
 
-      // Initialize barcode reader
-      if (!readerRef.current) {
-        console.log('Initializing barcode reader...');
-        readerRef.current = new BrowserMultiFormatReader();
-        // Set scanning hints for better performance
-        readerRef.current.timeBetweenDecodingAttempts = 300;
+      streamRef.current = stream;
+
+      // Check if flash is available
+      const track = stream.getVideoTracks()[0];
+      const capabilities = track.getCapabilities?.() as any;
+      if (capabilities?.torch) {
+        setHasFlash(true);
       }
 
+      // Set up video element
       if (videoRef.current) {
-        console.log('Starting video decoding...');
-        // Start decoding from video device
-        await readerRef.current.decodeFromVideoDevice(
-          undefined, // Use default camera
-          videoRef.current,
-          (result, error) => {
-            if (result) {
-              const barcode = result.getText().trim();
-              console.log('Scanned code:', barcode, 'Format:', result.getBarcodeFormat());
-              
-              // Vibrate on successful scan (if supported)
-              if ('vibrate' in navigator) {
-                navigator.vibrate(200);
-              }
-              
-              console.log('Calling onScan with scanned code');
-              onScan(barcode);
-              // Don't automatically stop scanning - let the parent component close the scanner
-              // This prevents the scanner from closing before parent can update state
-            }
-            // Only log non-NotFoundException errors to reduce console spam
-            if (error && !error.name?.includes('NotFoundException') && !error.message?.includes('NotFoundException')) {
-              console.warn('Scanning error:', error.name, error.message);
-            }
-          }
-        );
-        console.log('Video decoding started successfully');
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
       }
+
+      // Create barcode reader
+      readerRef.current = new BrowserMultiFormatReader();
+      
+      // Start continuous scanning
+      const scanResult = await readerRef.current.decodeFromVideoDevice(
+        undefined,
+        videoRef.current!,
+        (result, error) => {
+          if (result) {
+            const scannedCode = result.getText().trim();
+            console.log('Barcode detected:', scannedCode);
+            
+            // Vibrate on successful scan
+            if (navigator.vibrate) {
+              navigator.vibrate([100, 50, 100]);
+            }
+            
+            // Call the onScan callback but don't close the scanner
+            onScan(scannedCode);
+            
+            // Show visual feedback
+            showScanSuccess();
+          }
+        }
+      );
+
     } catch (err: any) {
-      console.error('Failed to start camera:', err);
-      setHasPermission(false);
-      setError(err.message || 'Failed to access camera');
+      console.error('Scanner initialization failed:', err);
+      setError(err.message || 'Failed to start camera');
       setIsScanning(false);
     }
   };
 
-  const stopScanning = () => {
-    console.log('Stopping camera scanning...');
-    if (readerRef.current) {
+  const showScanSuccess = () => {
+    // Add a brief visual feedback for successful scan
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 255, 0, 0.3);
+      z-index: 9999;
+      pointer-events: none;
+    `;
+    document.body.appendChild(overlay);
+    
+    setTimeout(() => {
+      document.body.removeChild(overlay);
+    }, 200);
+  };
+
+  const toggleFlash = async () => {
+    if (streamRef.current && hasFlash) {
+      const track = streamRef.current.getVideoTracks()[0];
       try {
-        // Try different methods to stop the scanner
-        if (typeof readerRef.current.reset === 'function') {
-          readerRef.current.reset();
-        } else if (typeof readerRef.current.stopAsyncDecode === 'function') {
-          readerRef.current.stopAsyncDecode();
-        } else if (typeof readerRef.current.stopContinuousDecode === 'function') {
-          readerRef.current.stopContinuousDecode();
-        }
-        console.log('Barcode reader stopped successfully');
+        await track.applyConstraints({
+          advanced: [{ torch: !flashOn } as any]
+        });
+        setFlashOn(!flashOn);
       } catch (err) {
-        console.warn('Error stopping barcode reader:', err);
+        console.warn('Flash toggle failed:', err);
       }
     }
-    setIsScanning(false);
   };
 
-  const handleRetry = () => {
-    setError(null);
-    setHasPermission(null);
-    setShowManualEntry(false);
-    startScanning();
-  };
-
-  const handleManualEntry = () => {
-    console.log('Manual entry clicked, barcode:', manualBarcode);
+  const handleManualSubmit = () => {
     if (manualBarcode.trim()) {
-      console.log('Calling onScan with:', manualBarcode.trim());
+      console.log('Manual barcode entered:', manualBarcode.trim());
       onScan(manualBarcode.trim());
       setManualBarcode('');
-      setShowManualEntry(false);
-      // Don't close the scanner here - let parent component handle it
     }
   };
 
   const switchToManual = () => {
-    console.log('Switching to manual entry');
-    stopScanning();
+    cleanup();
     setShowManualEntry(true);
-    onManualEntryChange?.(true);
   };
 
   const switchToCamera = () => {
-    console.log('Switching to camera');
     setShowManualEntry(false);
-    onManualEntryChange?.(false);
-    startScanning();
+    setManualBarcode('');
   };
-
-  const handleClose = () => {
-    console.log('Scanner close clicked');
-    stopScanning();
-    onManualEntryChange?.(false);
-    onClose();
-  };
-
-  const handleRetryClick = () => {
-    console.log('Retry clicked');
-    setError(null);
-    setHasPermission(null);
-    setShowManualEntry(false);
-    startScanning();
-  };
-
-
 
   if (!isOpen) return null;
 
-  const scannerContent = (
+  return (
     <div 
-      className="fixed inset-0 bg-black bg-opacity-90 flex items-center justify-center"
-      style={{ zIndex: 999999 }}
-      onClick={(e) => {
-        console.log('Backdrop clicked, target:', e.target, 'currentTarget:', e.currentTarget);
-        // Only close if clicking the backdrop, not the card
-        if (e.target === e.currentTarget) {
-          console.log('Closing scanner from backdrop click');
-          handleClose();
-        }
+      className="fixed inset-0 bg-black flex flex-col barcode-scanner-overlay" 
+      style={{ 
+        zIndex: 2147483647, // Maximum z-index value
+        position: 'fixed !important' as any,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        width: '100vw',
+        height: '100vh'
       }}
     >
-      <Card 
-        className="w-full max-w-md mx-4 shadow-2xl border-2"
-        onClick={(e) => {
-          // Only prevent event bubbling to parent, but allow normal form interactions
-          e.stopPropagation();
-        }}
-      >
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle className="flex items-center space-x-2">
-              <Camera className="h-5 w-5" />
-              <span>Scan Barcode</span>
-            </CardTitle>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={(e) => {
-                e.preventDefault();
-                console.log('Close button clicked');
-                handleClose();
-              }}
-              className="h-8 w-8 rounded-full"
-              type="button"
-            >
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Mode Toggle */}
-          <div className="flex space-x-2">
-            <Button
-              onClick={(e) => {
-                e.preventDefault();
-                console.log('Manual entry button clicked');
-                switchToManual();
-              }}
-              variant={showManualEntry ? "default" : "outline"}
-              className="flex-1"
-              type="button"
-            >
-              <Keyboard className="h-4 w-4 mr-2" />
-              Manual Entry
-            </Button>
-            <Button
-              onClick={(e) => {
-                e.preventDefault();
-                console.log('Camera scan button clicked');
-                switchToCamera();
-              }}
-              variant={!showManualEntry ? "default" : "outline"}
-              className="flex-1"
-              type="button"
-            >
-              <QrCode className="h-4 w-4 mr-2" />
-              Camera Scan
-            </Button>
-          </div>
+      {/* Header */}
+      <div className="flex items-center justify-between p-4 bg-black/80 text-white">
+        <h1 className="text-lg font-semibold">Scan Barcode</h1>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onClose}
+          className="text-white hover:bg-white/20"
+        >
+          <X className="h-6 w-6" />
+        </Button>
+      </div>
 
+      {/* Main Content - Split Screen */}
+      <div className="flex-1 relative flex">
+        {/* Left Side - Camera/Manual Entry */}
+        <div className="flex-1 relative">
           {showManualEntry ? (
-            /* Manual Entry Mode */
-            <div className="space-y-4">
-              <div>
-                <Label htmlFor="manual-barcode">Enter Barcode/QR Code</Label>
-                <Input
-                  key={`manual-input-${showManualEntry}-${isOpen}`} // Force remount each time
-                  id="manual-barcode"
-                  type="text"
-                  value={manualBarcode}
-                  onChange={(e) => {
-                    console.log('Input changed:', e.target.value);
-                    setManualBarcode(e.target.value);
-                  }}
-                  onKeyPress={(e) => {
-                    if (e.key === 'Enter' && manualBarcode.trim()) {
-                      e.preventDefault();
-                      handleManualEntry();
-                    }
-                  }}
-                  placeholder="Type or paste barcode/QR code here"
-                  className="font-mono text-lg p-3"
-                  autoFocus
-                />
+            // Manual Entry Mode
+            <div className="flex flex-col items-center justify-center h-full p-6 bg-gray-900">
+              <div className="w-full max-w-md space-y-6">
+                <div className="text-center">
+                  <h2 className="text-2xl font-bold text-white mb-2">Manual Entry</h2>
+                  <p className="text-gray-300">Type or paste your barcode below</p>
+                </div>
+                
+                <div className="space-y-4">
+                  <Input
+                    type="text"
+                    value={manualBarcode}
+                    onChange={(e) => setManualBarcode(e.target.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter') {
+                        handleManualSubmit();
+                      }
+                    }}
+                    placeholder="Enter barcode here..."
+                    className="text-lg p-4 bg-white/10 border-white/20 text-white placeholder:text-gray-400"
+                    autoFocus
+                  />
+                  
+                  <Button
+                    onClick={handleManualSubmit}
+                    disabled={!manualBarcode.trim()}
+                    className="w-full py-4 text-lg bg-blue-600 hover:bg-blue-700"
+                  >
+                    Submit Barcode
+                  </Button>
+                </div>
               </div>
-              <Button 
-                onClick={(e) => {
-                  e.preventDefault();
-                  console.log('Use This Code button clicked');
-                  handleManualEntry();
-                }}
-                className="w-full py-3 text-lg" 
-                disabled={!manualBarcode.trim()}
-                type="button"
-              >
-                <Check className="h-5 w-5 mr-2" />
-                Use This Code
-              </Button>
             </div>
           ) : (
-            /* Camera Scanning Mode */
-            <div className="space-y-4">
-              {hasPermission === false && (
-                <Alert>
-                  <AlertDescription>
-                    Camera permission is required to scan barcodes. Please allow camera access and try again.
-                  </AlertDescription>
-                </Alert>
-              )}
-
-              {error && (
-                <Alert>
-                  <AlertDescription className="flex items-center justify-between">
-                    <span>{error}</span>
-                    <Button 
-                      size="sm" 
-                      onClick={(e) => {
-                        e.preventDefault();
-                        console.log('Retry button clicked');
-                        handleRetryClick();
-                      }}
-                      variant="outline" 
-                      type="button"
+            // Camera Mode
+            <div className="relative h-full">
+              {error ? (
+                <div className="flex flex-col items-center justify-center h-full p-6 bg-gray-900">
+                  <div className="text-center">
+                    <p className="text-red-400 text-lg mb-4">{error}</p>
+                    <Button
+                      onClick={initializeScanner}
+                      className="bg-blue-600 hover:bg-blue-700"
                     >
-                      <RotateCcw className="h-4 w-4 mr-1" />
-                      Retry
+                      Try Again
                     </Button>
-                  </AlertDescription>
-                </Alert>
-              )}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Video Stream */}
+                  <video
+                    ref={videoRef}
+                    className="w-full h-full object-cover"
+                    playsInline
+                    muted
+                  />
 
-              <div className="relative bg-gray-900 rounded-lg overflow-hidden">
-                <video
-                  ref={videoRef}
-                  className="w-full h-64 object-cover"
-                  autoPlay
-                  playsInline
-                  muted
-                />
-                
-                {isScanning && (
-                  <>
+                  {/* Scanning Overlay */}
+                  {isScanning && (
                     <div className="absolute inset-0 flex items-center justify-center">
-                      <div 
-                        className="border-2 border-red-500 rounded-lg bg-transparent" 
-                        style={{
-                          width: '250px',
-                          height: '100px',
-                          animation: 'pulse 2s infinite'
-                        }}
-                      >
-                        <div className="w-full h-full border border-red-300 rounded-lg opacity-30"></div>
+                      {/* Scanning Frame */}
+                      <div className="relative">
+                        <div className="w-80 h-48 border-4 border-red-500 rounded-lg relative">
+                          {/* Corner indicators */}
+                          <div className="absolute -top-2 -left-2 w-8 h-8 border-t-4 border-l-4 border-white rounded-tl-lg"></div>
+                          <div className="absolute -top-2 -right-2 w-8 h-8 border-t-4 border-r-4 border-white rounded-tr-lg"></div>
+                          <div className="absolute -bottom-2 -left-2 w-8 h-8 border-b-4 border-l-4 border-white rounded-bl-lg"></div>
+                          <div className="absolute -bottom-2 -right-2 w-8 h-8 border-b-4 border-r-4 border-white rounded-br-lg"></div>
+                          
+                          {/* Scanning line animation */}
+                          <div className="absolute top-0 left-0 w-full h-1 bg-red-500 animate-pulse"></div>
+                        </div>
+                        
+                        <p className="text-white text-center mt-4 text-lg font-medium">
+                          Position barcode within the frame
+                        </p>
                       </div>
                     </div>
-                    <div className="absolute top-4 left-4 bg-black bg-opacity-50 text-white px-2 py-1 rounded text-sm">
-                      🔴 Scanning...
-                    </div>
-                  </>
-                )}
-                
-                {!isScanning && hasPermission && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
-                    <div className="text-white text-center">
-                      <Camera className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                      <p className="text-sm">Camera Loading...</p>
-                    </div>
-                  </div>
-                )}
-              </div>
+                  )}
 
-              <div className="text-center space-y-2">
-                <p className="text-sm text-gray-600">
-                  Position barcode/QR code within the red frame
-                </p>
-                <p className="text-xs text-gray-500">
-                  Supports: Code128, Code39, EAN, UPC, QR Codes
-                </p>
-                <p className="text-xs text-blue-500">
-                  💡 For testing: Try switching to "Manual Entry" mode
-                </p>
-              </div>
+                  {/* Status indicator */}
+                  {isScanning && (
+                    <div className="absolute top-4 left-4 bg-red-600 text-white px-3 py-1 rounded-full text-sm font-medium">
+                      🔴 SCANNING
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
+        </div>
 
-          <div className="flex space-x-2">
-            <Button 
-              onClick={(e) => {
-                e.preventDefault();
-                console.log('Cancel button clicked');
-                handleClose();
-              }}
-              variant="outline" 
-              className="flex-1" 
-              type="button"
-            >
-              <X className="h-4 w-4 mr-2" />
-              Cancel
-            </Button>
-            {!showManualEntry && (
-              <Button 
-                onClick={(e) => {
-                  e.preventDefault();
-                  console.log('Restart Camera button clicked');
-                  handleRetryClick();
-                }}
-                variant="outline" 
-                className="flex-1" 
-                type="button"
+        {/* Right Side - Scanned Rolls List */}
+        <div className="w-80 bg-gray-800 border-l border-gray-600 flex flex-col">
+          {/* Header */}
+          <div className="p-4 border-b border-gray-600">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-white">{currentScanningLine}</h3>
+                <p className="text-sm text-gray-300">Scanned Rolls</p>
+              </div>
+              {scannedRolls.length > 0 && onDone && (
+                <Button
+                  onClick={() => {
+                    if (confirm(`Complete receiving ${scannedRolls.length} rolls (${scannedRolls.reduce((sum, roll) => sum + roll.weight, 0).toFixed(1)}kg)?`)) {
+                      onDone();
+                    }
+                  }}
+                  className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 text-sm"
+                >
+                  <CheckCircle className="h-4 w-4 mr-1" />
+                  Done
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {/* Stats */}
+          <div className="p-4 border-b border-gray-600 bg-gray-750">
+            <div className="grid grid-cols-2 gap-4 text-center">
+              <div>
+                <div className="text-2xl font-bold text-green-400">{scannedRolls.length}</div>
+                <div className="text-xs text-gray-400">Total Rolls</div>
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-blue-400">
+                  {scannedRolls.reduce((sum, roll) => sum + roll.weight, 0).toFixed(1)}kg
+                </div>
+                <div className="text-xs text-gray-400">Total Weight</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Rolls List */}
+          <div className="flex-1 overflow-y-auto">
+            {scannedRolls.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-32 text-gray-400 text-sm">
+                <QrCode className="h-8 w-8 mb-2 opacity-50" />
+                <p>No rolls scanned yet</p>
+                <p className="text-xs mt-1">Scan barcodes to add rolls</p>
+              </div>
+            ) : (
+              <div className="p-2 space-y-2">
+                {scannedRolls.map((roll, index) => (
+                  <div key={roll.barcode} className="bg-gray-700 rounded-lg p-3 border border-gray-600">
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium text-white truncate">
+                          {roll.barcode}
+                        </div>
+                        <div className="text-xs text-gray-400">
+                          Roll #{index + 1}
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <div className="text-right">
+                          <div className="text-sm font-semibold text-green-400">
+                            {roll.weight}kg
+                          </div>
+                          {roll.length && (
+                            <div className="text-xs text-blue-400">
+                              {roll.length}m
+                            </div>
+                          )}
+                        </div>
+                        {onRemoveRoll && (
+                          <Button
+                            onClick={() => {
+                              if (confirm(`Remove roll ${roll.barcode} (${roll.weight}kg)?`)) {
+                                onRemoveRoll(roll.barcode);
+                              }
+                            }}
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0 text-red-400 hover:text-red-300 hover:bg-red-900/20"
+                            title="Remove this roll"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Overlay Content (e.g., weight entry) */}
+      {children}
+
+      {/* Bottom Controls */}
+      <div className="p-4 bg-black/80 space-y-4">
+        {/* Mode Toggle */}
+        <div className="flex space-x-2">
+          <Button
+            onClick={switchToCamera}
+            variant={!showManualEntry ? "default" : "outline"}
+            className="flex-1 py-3"
+          >
+            <QrCode className="h-5 w-5 mr-2" />
+            Camera
+          </Button>
+          <Button
+            onClick={switchToManual}
+            variant={showManualEntry ? "default" : "outline"}
+            className="flex-1 py-3"
+          >
+            <Keyboard className="h-5 w-5 mr-2" />
+            Manual
+          </Button>
+        </div>
+
+        {/* Additional Controls for Camera Mode */}
+        {!showManualEntry && (
+          <div className="flex justify-center space-x-4">
+            {hasFlash && (
+              <Button
+                onClick={toggleFlash}
+                variant="outline"
+                size="lg"
+                className="bg-white/10 border-white/20 text-white hover:bg-white/20"
               >
-                <RotateCcw className="h-4 w-4 mr-2" />
-                Restart Camera
+                {flashOn ? <FlashlightOff className="h-6 w-6" /> : <Flashlight className="h-6 w-6" />}
               </Button>
             )}
           </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
+        )}
 
-  // Render using portal directly to document.body with isolation
-  return createPortal(
-    <div
-      data-barcode-scanner="true"
-      style={{ 
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        width: '100%',
-        height: '100%',
-        zIndex: 999999,
-        pointerEvents: isOpen ? 'auto' : 'none'
-      }}
-    >
-      {scannerContent}
-    </div>,
-    document.body
+        {/* Instructions */}
+        <div className="text-center">
+          <p className="text-gray-300 text-sm">
+            {showManualEntry 
+              ? "Type your barcode manually or switch to camera mode"
+              : "Scanner stays open - scan multiple barcodes consecutively"
+            }
+          </p>
+        </div>
+      </div>
+    </div>
   );
 };
