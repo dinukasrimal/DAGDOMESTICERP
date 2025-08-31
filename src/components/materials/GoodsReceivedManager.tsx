@@ -32,9 +32,11 @@ import {
 } from '../../services/goodsReceivedService';
 import { PurchaseOrderService, PurchaseOrder } from '../../services/purchaseOrderService';
 import { ModernLayout } from '../layout/ModernLayout';
+import { BarcodeScanner } from '../ui/BarcodeScanner';
 
 const goodsReceivedService = new GoodsReceivedService();
 const purchaseOrderService = new PurchaseOrderService();
+
 
 export const GoodsReceivedManager: React.FC = () => {
   const [goodsReceived, setGoodsReceived] = useState<GoodsReceived[]>([]);
@@ -67,10 +69,14 @@ export const GoodsReceivedManager: React.FC = () => {
   const [scannedBarcode, setScannedBarcode] = useState('');
   const [rollWeight, setRollWeight] = useState<number>(0);
   const [rollLength, setRollLength] = useState<number>(0);
+  const [showBarcodeCamera, setShowBarcodeCamera] = useState(false);
+  const [showWeightEntry, setShowWeightEntry] = useState(false);
+  const [isManualEntry, setIsManualEntry] = useState(false);
 
   useEffect(() => {
     loadInitialData();
   }, []);
+
 
   const loadInitialData = async () => {
     try {
@@ -139,11 +145,49 @@ export const GoodsReceivedManager: React.FC = () => {
   };
 
   const handleFabricScanClick = (lineId: string) => {
+    console.log('Starting fabric scan for line:', lineId);
     setCurrentScanningLine(lineId);
     setShowFabricScanner(true);
+    setShowBarcodeCamera(true);
     setScannedBarcode('');
     setRollWeight(0);
     setRollLength(0);
+    setShowWeightEntry(false);
+    setIsManualEntry(false);
+  };
+
+  const handleBarcodeScanned = (barcode: string) => {
+    console.log('Barcode scanned:', barcode);
+    setScannedBarcode(barcode);
+    setShowBarcodeCamera(false);
+    setShowWeightEntry(true);
+    setIsManualEntry(false);
+  };
+
+  const handleWeightConfirmed = () => {
+    if (!scannedBarcode || rollWeight <= 0) {
+      toast({
+        title: 'Validation Error',
+        description: 'Please provide valid barcode and weight',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    handleAddFabricRoll();
+    
+    // Ask if user wants to scan another roll
+    if (confirm('Roll added successfully! Do you want to scan another roll?')) {
+      setShowBarcodeCamera(true);
+      setShowWeightEntry(false);
+      setScannedBarcode('');
+      setRollWeight(0);
+      setRollLength(0);
+      setIsManualEntry(false);
+    } else {
+      setShowFabricScanner(false);
+      setCurrentScanningLine(null);
+    }
   };
 
   const handleAddFabricRoll = () => {
@@ -480,7 +524,14 @@ export const GoodsReceivedManager: React.FC = () => {
   );
 
   return (
-    <ModernLayout
+    <div>
+      {/* Main Content */}
+      <div style={{ 
+        pointerEvents: showBarcodeCamera ? 'none' : 'auto',
+        opacity: showBarcodeCamera ? 0.3 : 1,
+        transition: 'opacity 0.2s'
+      }}>
+        <ModernLayout
       title="Goods Received"
       description="Receive and track incoming raw materials"
       icon={Truck}
@@ -627,8 +678,11 @@ export const GoodsReceivedManager: React.FC = () => {
           </Table>
         </CardContent>
       </Card>
+      </div>
+    </ModernLayout>
+    </div>
 
-      {/* Create Goods Received Dialog */}
+    {/* Create Goods Received Dialog */}
       <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
         <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
@@ -1000,114 +1054,93 @@ export const GoodsReceivedManager: React.FC = () => {
 
       {/* Fabric Scanner Dialog */}
       <Dialog open={showFabricScanner} onOpenChange={setShowFabricScanner}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle className="flex items-center space-x-2">
-              <Package className="h-5 w-5 text-purple-600" />
-              <span>Scan Fabric Rolls</span>
-            </DialogTitle>
+            <DialogTitle>Scan Fabric Rolls</DialogTitle>
             <DialogDescription>
-              Scan each fabric roll barcode and enter its weight. Each roll will be tracked individually.
+              Scan each fabric roll barcode and enter its weight
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-6">
-            {/* Current Material Info */}
+          <div className="space-y-4">
+            {/* Current Material */}
             {currentScanningLine && selectedPO && (
-              <div className="bg-gray-50 p-4 rounded-lg">
+              <div className="bg-gray-50 p-3 rounded">
                 <h4 className="font-medium">
                   {selectedPO.lines?.find(l => l.id === currentScanningLine)?.raw_material?.name}
                 </h4>
-                <p className="text-sm text-gray-600">
-                  {selectedPO.lines?.find(l => l.id === currentScanningLine)?.raw_material?.code}
-                </p>
               </div>
             )}
 
-            {/* Barcode Input */}
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <Label htmlFor="barcode">Roll Barcode *</Label>
-                <Input
-                  id="barcode"
-                  value={scannedBarcode}
-                  onChange={(e) => setScannedBarcode(e.target.value)}
-                  placeholder="Scan or enter barcode"
-                  className="font-mono"
-                />
-              </div>
-              <div>
-                <Label htmlFor="weight">Weight (kg) *</Label>
-                <Input
-                  id="weight"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={rollWeight}
-                  onChange={(e) => setRollWeight(parseFloat(e.target.value) || 0)}
-                  placeholder="0.00"
-                />
-              </div>
-              <div>
-                <Label htmlFor="length">Length (m)</Label>
-                <Input
-                  id="length"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={rollLength}
-                  onChange={(e) => setRollLength(parseFloat(e.target.value) || 0)}
-                  placeholder="Optional"
-                />
-              </div>
-            </div>
-
-            <Button onClick={handleAddFabricRoll} className="w-full">
-              <Plus className="h-4 w-4 mr-2" />
-              Add Roll
-            </Button>
-
-            {/* Scanned Rolls List */}
-            {currentScanningLine && fabricRolls[currentScanningLine] && fabricRolls[currentScanningLine].length > 0 && (
-              <Card>
+            {/* Weight Entry Form */}
+            {showWeightEntry && scannedBarcode && (
+              <Card className="bg-blue-50">
                 <CardHeader>
-                  <CardTitle className="text-sm">Scanned Rolls ({fabricRolls[currentScanningLine].length})</CardTitle>
+                  <CardTitle className="text-sm">Enter Roll Details</CardTitle>
+                  <CardDescription>
+                    Barcode: {scannedBarcode}
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Barcode</TableHead>
-                        <TableHead>Weight (kg)</TableHead>
-                        <TableHead>Length (m)</TableHead>
-                        <TableHead>Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {fabricRolls[currentScanningLine].map((roll) => (
-                        <TableRow key={roll.barcode}>
-                          <TableCell className="font-mono">{roll.barcode}</TableCell>
-                          <TableCell>{roll.weight}</TableCell>
-                          <TableCell>{roll.length || 'N/A'}</TableCell>
-                          <TableCell>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => handleRemoveFabricRoll(currentScanningLine!, roll.barcode)}
-                              className="text-red-600 hover:text-red-800"
-                            >
-                              <X className="h-4 w-4" />
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                  <div className="mt-4 text-sm text-gray-600">
-                    Total Weight: {fabricRolls[currentScanningLine].reduce((sum, roll) => sum + roll.weight, 0).toFixed(2)} kg
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label>Weight (kg) *</Label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        value={rollWeight}
+                        onChange={(e) => setRollWeight(parseFloat(e.target.value) || 0)}
+                        autoFocus
+                      />
+                    </div>
+                    <div>
+                      <Label>Length (m)</Label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        value={rollLength}
+                        onChange={(e) => setRollLength(parseFloat(e.target.value) || 0)}
+                      />
+                    </div>
                   </div>
+                  <Button onClick={handleWeightConfirmed} className="w-full mt-4">
+                    Add Roll
+                  </Button>
                 </CardContent>
               </Card>
+            )}
+
+            {/* Scan Button */}
+            {!showWeightEntry && (
+              <Button 
+                onClick={() => {
+                  setShowBarcodeCamera(true);
+                  setIsManualEntry(false);
+                }}
+                className="w-full"
+              >
+                Scan Another Roll
+              </Button>
+            )}
+
+            {/* Rolls List */}
+            {currentScanningLine && fabricRolls[currentScanningLine]?.length > 0 && (
+              <div className="mt-4">
+                <h4 className="font-medium mb-2">Scanned Rolls</h4>
+                {fabricRolls[currentScanningLine].map((roll, index) => (
+                  <div key={roll.barcode} className="flex justify-between items-center p-2 border rounded mb-2">
+                    <span className="font-mono">{roll.barcode}</span>
+                    <span>{roll.weight} kg</span>
+                    <Button 
+                      size="sm" 
+                      variant="ghost"
+                      onClick={() => handleRemoveFabricRoll(currentScanningLine!, roll.barcode)}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
 
@@ -1118,7 +1151,18 @@ export const GoodsReceivedManager: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      </div>
-    </ModernLayout>
+
+      {/* Simple Barcode Scanner */}
+      <BarcodeScanner
+        key={showBarcodeCamera ? Date.now() : 'closed'} // Force fresh component each time
+        isOpen={showBarcodeCamera}
+        onScan={handleBarcodeScanned}
+        onManualEntryChange={setIsManualEntry}
+        onClose={() => {
+          setShowBarcodeCamera(false);
+          setIsManualEntry(false);
+        }}
+      />
+    </div>
   );
 };
