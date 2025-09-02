@@ -129,7 +129,6 @@ export class BOMService {
       .from('bom_headers')
       .select(`
         *,
-        product:products(id, name, default_code),
         lines:bom_lines(
           *,
           raw_material:raw_materials(id, name, code, base_unit, purchase_unit, conversion_factor, cost_per_unit)
@@ -143,11 +142,29 @@ export class BOMService {
       throw error;
     }
     
-    return (data || []).map(bom => ({
-      ...bom,
-      product: Array.isArray(bom.product) ? bom.product[0] : bom.product,
-      lines: (bom.lines || []).sort((a, b) => a.sort_order - b.sort_order)
+    // For each BOM, check if it's category-wise and handle product relationships accordingly
+    const bomsWithProducts = await Promise.all((data || []).map(async (bom) => {
+      let product = null;
+      
+      // Only try to fetch product for single-product BOMs (non-category-wise with product_id)
+      if (!bom.is_category_wise && bom.product_id) {
+        const { data: productData } = await supabase
+          .from('products')
+          .select('id, name, default_code')
+          .eq('id', bom.product_id)
+          .single();
+        
+        product = productData;
+      }
+      
+      return {
+        ...bom,
+        product,
+        lines: (bom.lines || []).sort((a, b) => a.sort_order - b.sort_order)
+      };
     }));
+    
+    return bomsWithProducts;
   }
 
   async getBOMById(bomId: string): Promise<BOMWithLines | null> {
@@ -155,7 +172,6 @@ export class BOMService {
       .from('bom_headers')
       .select(`
         *,
-        product:products(id, name, default_code),
         lines:bom_lines(
           *,
           raw_material:raw_materials(id, name, code, base_unit, purchase_unit, conversion_factor, cost_per_unit)
@@ -169,11 +185,26 @@ export class BOMService {
       throw error;
     }
     
-    return data ? {
+    if (!data) return null;
+    
+    let product = null;
+    
+    // Only try to fetch product for single-product BOMs (non-category-wise with product_id)
+    if (!data.is_category_wise && data.product_id) {
+      const { data: productData } = await supabase
+        .from('products')
+        .select('id, name, default_code')
+        .eq('id', data.product_id)
+        .single();
+      
+      product = productData;
+    }
+    
+    return {
       ...data,
-      product: Array.isArray(data.product) ? data.product[0] : data.product,
+      product,
       lines: (data.lines || []).sort((a, b) => a.sort_order - b.sort_order)
-    } : null;
+    };
   }
 
   async createBOM(bom: BOMHeaderInsert): Promise<BOMHeader> {
@@ -405,17 +436,28 @@ export class BOMService {
       // Create detailed notes with variant consumption info
       const variantDetails = material.consumptions.map(c => 
         bomData.is_category_wise 
-          ? `Category ${c.attribute_value}: ${c.quantity} ${c.unit} (${c.waste_percentage}% waste)`
+          ? `${c.attribute_value}: ${c.quantity} ${c.unit} (${c.waste_percentage}% waste)`
           : `${c.attribute_value}: ${c.quantity} ${c.unit} (${c.waste_percentage}% waste)`
       ).join('; ');
       
-      const detailedNotes = `${material.notes ? material.notes + '. ' : ''}${bomData.is_category_wise ? 'Category' : 'Variant'} consumptions: ${variantDetails}`;
+      const detailedNotes = `${material.notes ? material.notes + '. ' : ''}Variant consumptions: ${variantDetails}`;
+
+      // For category-wise BOMs with negative raw_material_id, we need to handle this specially
+      let rawMaterialId = material.raw_material_id;
+      
+      // If it's a category entry (negative ID), we'll store it as a special entry
+      // but we need a valid raw_material_id for the database. We'll use the notes to identify categories.
+      if (bomData.is_category_wise && material.raw_material_id < 0) {
+        // For category entries, we'll create a placeholder entry
+        // The category information is stored in the notes
+        rawMaterialId = 1; // Use first available material as placeholder - this is just for database constraint
+      }
 
       const { data: bomLine, error: lineError } = await supabase
         .from('bom_lines')
         .insert({
           bom_header_id: bomHeader.id,
-          raw_material_id: material.raw_material_id,
+          raw_material_id: rawMaterialId,
           quantity: avgQuantity,
           unit: material.consumptions[0]?.unit || 'pieces',
           waste_percentage: avgWaste,

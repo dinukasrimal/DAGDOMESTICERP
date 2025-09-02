@@ -108,6 +108,20 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
   
   // Selected categories for category-wise BOM
   const [selectedCategories, setSelectedCategories] = useState<MaterialCategory[]>([]);
+  
+  // Category consumption data: category_id -> variant_key -> {quantity, waste_percentage, notes}
+  const [categoryConsumptions, setCategoryConsumptions] = useState<{
+    [category_id: number]: {
+      [variant_key: string]: {
+        quantity: number;
+        unit: string;
+        waste_percentage: number;
+      };
+    };
+  }>({});
+  
+  // Category notes
+  const [categoryNotes, setCategoryNotes] = useState<{[category_id: number]: string}>({});
 
   useEffect(() => {
     if (open) {
@@ -344,6 +358,36 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
     }));
   };
 
+  // Helper functions for category consumption management
+  const updateCategoryConsumption = (
+    categoryId: number,
+    variantKey: string,
+    field: 'quantity' | 'waste_percentage',
+    value: number
+  ) => {
+    setCategoryConsumptions(prev => ({
+      ...prev,
+      [categoryId]: {
+        ...(prev[categoryId] || {}),
+        [variantKey]: {
+          ...(prev[categoryId]?.[variantKey] || { quantity: 0, unit: 'units', waste_percentage: 0 }),
+          [field]: value
+        }
+      }
+    }));
+  };
+
+  const getCategoryConsumption = (categoryId: number, variantKey: string) => {
+    return categoryConsumptions[categoryId]?.[variantKey] || { quantity: 0, unit: 'units', waste_percentage: 0 };
+  };
+
+  const updateCategoryNotes = (categoryId: number, notes: string) => {
+    setCategoryNotes(prev => ({
+      ...prev,
+      [categoryId]: notes
+    }));
+  };
+
   const handleVariantConsumptionChange = (
     rawMaterialId: number, 
     variantKey: string, 
@@ -379,15 +423,44 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
 
       setLoading(true);
       
-      const bomData: MultiProductBOMCreate = {
-        name: bomName,
-        version: bomVersion,
-        quantity: bomQuantity,
-        unit: bomUnit,
-        description: bomDescription,
-        product_ids: selectedProducts.map(p => p.id),
-        is_category_wise: isCategoryWiseBOM,
-        raw_materials: selectedRawMaterials.map(rm => ({
+      // Prepare raw materials data based on BOM type
+      let rawMaterialsData;
+      
+      if (isCategoryWiseBOM) {
+        // For category-wise BOMs, create category-level entries
+        rawMaterialsData = [];
+        
+        for (const category of selectedCategories) {
+          const consumptions = [];
+          
+          // Create consumptions for each product variant at category level
+          for (const variant of productVariants) {
+            const consumption = getCategoryConsumption(category.id, variant.variant_key);
+            if (consumption.quantity > 0) {
+              consumptions.push({
+                attribute_type: 'category',
+                attribute_value: variant.variant_key,
+                quantity: consumption.quantity,
+                unit: consumption.unit,
+                waste_percentage: consumption.waste_percentage
+              });
+            }
+          }
+          
+          if (consumptions.length > 0) {
+            // Use the category ID as a special raw_material_id (negative to distinguish from real materials)
+            // This is a workaround since the schema expects raw_material_id
+            rawMaterialsData.push({
+              raw_material_id: -(category.id), // Negative ID to indicate category
+              consumption_type: 'category_wise',
+              consumptions,
+              notes: `CATEGORY:${category.id}:${category.name}:${categoryNotes[category.id] || ''}`
+            });
+          }
+        }
+      } else {
+        // For regular BOMs, use existing raw materials data
+        rawMaterialsData = selectedRawMaterials.map(rm => ({
           raw_material_id: rm.raw_material_id,
           consumption_type: 'general',
           consumptions: rm.variant_consumptions.map(vc => ({
@@ -398,7 +471,18 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
             waste_percentage: vc.waste_percentage
           })),
           notes: rm.notes
-        }))
+        }));
+      }
+
+      const bomData: MultiProductBOMCreate = {
+        name: bomName,
+        version: bomVersion,
+        quantity: bomQuantity,
+        unit: bomUnit,
+        description: bomDescription,
+        product_ids: selectedProducts.map(p => p.id),
+        is_category_wise: isCategoryWiseBOM,
+        raw_materials: rawMaterialsData
       };
 
       await bomService.createMultiProductBOM(bomData);
@@ -426,6 +510,8 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
     setSelectedProducts([]);
     setSelectedRawMaterials([]);
     setSelectedCategories([]);
+    setCategoryConsumptions({});
+    setCategoryNotes({});
     setProductVariants([]);
     setBomName('');
     setBomVersion('1.0');
@@ -725,6 +811,8 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                     // Clear selections when switching modes
                     setSelectedRawMaterials([]);
                     setSelectedCategories([]);
+                    setCategoryConsumptions({});
+                    setCategoryNotes({});
                     setCurrentMaterialIndex(0);
                   }}
                 />
@@ -1031,6 +1119,13 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                                       min="0.01"
                                       step="0.01"
                                       placeholder="0.00"
+                                      value={getCategoryConsumption(category.id, variant.variant_key).quantity || ''}
+                                      onChange={(e) => updateCategoryConsumption(
+                                        category.id,
+                                        variant.variant_key,
+                                        'quantity',
+                                        parseFloat(e.target.value) || 0
+                                      )}
                                       className="w-20 h-8 text-sm"
                                     />
                                     <span className="text-xs text-gray-500 min-w-fit">units</span>
@@ -1046,6 +1141,13 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                                       max="100"
                                       step="0.1"
                                       placeholder="0"
+                                      value={getCategoryConsumption(category.id, variant.variant_key).waste_percentage || ''}
+                                      onChange={(e) => updateCategoryConsumption(
+                                        category.id,
+                                        variant.variant_key,
+                                        'waste_percentage',
+                                        parseFloat(e.target.value) || 0
+                                      )}
                                       className="w-16 h-8 text-sm"
                                     />
                                     <span className="text-xs text-gray-500">%</span>
@@ -1062,6 +1164,8 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                         <Label className="text-sm font-medium">Category Notes</Label>
                         <Textarea
                           placeholder={`Notes for ${category.name} category consumption...`}
+                          value={categoryNotes[category.id] || ''}
+                          onChange={(e) => updateCategoryNotes(category.id, e.target.value)}
                           className="mt-1 resize-none text-sm bg-white"
                           rows={2}
                         />

@@ -249,20 +249,30 @@ export const GoodsReceivedManager: React.FC = () => {
         
         toast({
           title: 'Receiving Completed',
-          description: `${scannedRolls.length} rolls (${totalWeight}kg) marked as received`,
+          description: `${scannedRolls.length} rolls (${totalWeight}kg) marked as received. You can continue with other materials.`,
           variant: 'default'
         });
       }
 
-      // Close the scanner
+      // Close the scanner but keep the receive goods dialog open
       setShowBarcodeCamera(false);
       setIsManualEntry(false);
       setShowWeightEntry(false);
       setScannedBarcode('');
       setRollWeight(0);
       setRollLength(0);
+      
+      // Clear the fabric rolls for this line since they've been processed
+      if (currentScanningLine) {
+        setFabricRolls(prev => ({
+          ...prev,
+          [currentScanningLine]: []
+        }));
+      }
+      
       setCurrentScanningLine(null);
       setShowFabricScanner(false);
+      // Keep showGoodsReceived dialog open so user can continue with other materials
 
     } catch (error) {
       toast({

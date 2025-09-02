@@ -64,6 +64,7 @@ export type Database = {
           active: boolean | null
           created_at: string | null
           id: string
+          is_category_wise: boolean | null
           name: string
           product_id: number | null
           quantity: number
@@ -75,6 +76,7 @@ export type Database = {
           active?: boolean | null
           created_at?: string | null
           id?: string
+          is_category_wise?: boolean | null
           name: string
           product_id?: number | null
           quantity?: number
@@ -86,6 +88,7 @@ export type Database = {
           active?: boolean | null
           created_at?: string | null
           id?: string
+          is_category_wise?: boolean | null
           name?: string
           product_id?: number | null
           quantity?: number

@@ -440,12 +440,75 @@ const BOMContent: React.FC = () => {
       line.notes && line.notes.includes('Variant consumptions:')
     );
     
-    const isMultiProduct = hasProductIds || hasMultiProductName || hasVariantConsumptions;
+    const isMultiProduct = hasProductIds || hasMultiProductName || hasVariantConsumptions || bom.is_category_wise;
     
     // For multi-product BOMs, extract products from various sources
     let products: any[] = [];
     if (hasProductIds) {
       products = (bom as any).products || [];
+    } else if (bom.is_category_wise) {
+      // For category-wise BOMs, we need to extract the actual products from variant consumption data
+      // since the stored "products" are actually categories
+      const productSet = new Set<string>();
+      
+      // Parse variant consumption data to extract actual products
+      bom.lines.forEach(line => {
+        if (line.notes && line.notes.includes('Variant consumptions:')) {
+          try {
+            const variantSection = line.notes.split('Variant consumptions:')[1];
+            if (variantSection) {
+              const variants = variantSection.split(';').map(v => v.trim());
+              variants.forEach(variant => {
+                const match = variant.match(/^([^:]+):/);
+                if (match) {
+                  const variantKey = match[1].trim();
+                  productSet.add(variantKey);
+                }
+              });
+            }
+          } catch (error) {
+            console.error('Error parsing variant data:', error);
+          }
+        }
+      });
+      
+      // Convert to product objects with better parsing
+      const uniqueProducts = Array.from(productSet);
+      products = uniqueProducts.map((productKey, index) => {
+        const parts = productKey.split('-');
+        let size = null;
+        let colour = null;
+        let name = productKey;
+        
+        if (parts.length >= 2) {
+          const lastPart = parts[parts.length - 1];
+          const secondLastPart = parts[parts.length - 2];
+          
+          const colorWords = ['grey', 'gray', 'black', 'white', 'blue', 'red', 'green', 'yellow', 'beige', 'beigh'];
+          const isColor = colorWords.some(color => lastPart.toLowerCase().includes(color));
+          const isSize = /^\d+$/.test(secondLastPart) || /^(xs|s|m|l|xl|xxl)$/i.test(secondLastPart);
+          
+          if (isColor) {
+            colour = lastPart;
+            name = parts.slice(0, -1).join('-');
+            if (isSize) {
+              size = secondLastPart;
+              name = parts.slice(0, -2).join('-');
+            }
+          } else if (isSize) {
+            size = lastPart;
+            name = parts.slice(0, -1).join('-');
+          }
+        }
+        
+        return {
+          id: index + 1000, // Use high IDs to avoid conflicts
+          name: name || productKey,
+          default_code: productKey,
+          colour: colour,
+          size: size
+        };
+      });
     } else if (isMultiProduct) {
       // Extract products from variant consumption data in notes
       const productSet = new Set<string>();
@@ -648,8 +711,15 @@ const BOMContent: React.FC = () => {
                   <Users className="h-4 w-4 text-white" />
                 </div>
                 <div>
-                  <h4 className="font-semibold text-gray-800">Multi-Product BOM Navigation</h4>
-                  <p className="text-sm text-gray-600">Select a specific product to view its BOM requirements</p>
+                  <h4 className="font-semibold text-gray-800">
+                    {bom.is_category_wise ? 'Category-wise BOM Navigation' : 'Multi-Product BOM Navigation'}
+                  </h4>
+                  <p className="text-sm text-gray-600">
+                    {bom.is_category_wise 
+                      ? 'Navigate through products to view category-based material requirements' 
+                      : 'Select a specific product to view its BOM requirements'
+                    }
+                  </p>
                 </div>
               </div>
               <div className="flex items-center space-x-4">
@@ -758,8 +828,8 @@ const BOMContent: React.FC = () => {
                 <>
                   <div className="flex justify-between items-center">
                     <span className="text-gray-600">BOM Type:</span>
-                    <Badge className="bg-orange-100 text-orange-800 border-orange-200">
-                      Multi-Product
+                    <Badge className={bom.is_category_wise ? "bg-purple-100 text-purple-800 border-purple-200" : "bg-orange-100 text-orange-800 border-orange-200"}>
+                      {bom.is_category_wise ? 'Category-wise Multi-Product' : 'Multi-Product'}
                     </Badge>
                   </div>
                   <div className="flex justify-between items-center">
@@ -828,7 +898,7 @@ const BOMContent: React.FC = () => {
             </h4>
             <div className="text-sm space-y-3">
               <div className="flex justify-between items-center">
-                <span className="text-gray-600">Materials:</span>
+                <span className="text-gray-600">{bom.is_category_wise ? 'Categories:' : 'Materials:'}</span>
                 <span className="font-medium text-gray-900">{bom.lines.length} items</span>
               </div>
               <div className="flex justify-between items-center">
@@ -854,7 +924,7 @@ const BOMContent: React.FC = () => {
             <div className="flex items-center justify-between">
               <h4 className="font-semibold text-gray-800 flex items-center space-x-2">
                 <FileText className="h-4 w-4 text-gray-600" />
-                <span>Material Requirements</span>
+                <span>{bom.is_category_wise ? 'Category Requirements' : 'Material Requirements'}</span>
                 {isMultiProduct && currentProduct && (
                   <div className="flex items-center space-x-2 ml-3">
                     <span className="text-sm text-gray-500">for</span>
@@ -890,7 +960,9 @@ const BOMContent: React.FC = () => {
             <Table>
               <TableHeader>
                 <TableRow className="bg-gray-50/50">
-                  <TableHead className="font-semibold text-gray-700">Material Details</TableHead>
+                  <TableHead className="font-semibold text-gray-700">
+                    {bom.is_category_wise ? 'Category Details' : 'Material Details'}
+                  </TableHead>
                   <TableHead className="font-semibold text-gray-700">Base Quantity</TableHead>
                   <TableHead className="font-semibold text-gray-700">Waste Factor</TableHead>
                   <TableHead className="font-semibold text-gray-700">Effective Quantity</TableHead>
@@ -903,16 +975,50 @@ const BOMContent: React.FC = () => {
                   const effectiveQty = line.quantity * (1 + line.waste_percentage / 100);
                   const lineCost = line.raw_material?.cost_per_unit ? effectiveQty * line.raw_material.cost_per_unit : 0;
                   
+                  // Check if this is a category entry for category-wise BOMs
+                  const isCategoryEntry = bom.is_category_wise && line.notes && line.notes.startsWith('CATEGORY:');
+                  let categoryInfo = null;
+                  
+                  if (isCategoryEntry) {
+                    // Parse category information from notes: "CATEGORY:id:name:notes"
+                    const parts = line.notes.split(':');
+                    if (parts.length >= 3) {
+                      categoryInfo = {
+                        id: parseInt(parts[1]),
+                        name: parts[2],
+                        notes: parts.slice(3).join(':') || ''
+                      };
+                    }
+                  }
+                  
                   return (
                     <TableRow key={line.id} className={`transition-colors hover:bg-gray-50/30 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50/20'}`}>
                       <TableCell className="px-6 py-4">
                         <div className="flex items-center space-x-3">
-                          <div className="p-2 rounded-lg bg-gradient-to-r from-purple-100 to-blue-100">
-                            <Package className="h-3 w-3 text-purple-600" />
+                          <div className={`p-2 rounded-lg ${isCategoryEntry ? 'bg-gradient-to-r from-purple-100 to-pink-100' : 'bg-gradient-to-r from-purple-100 to-blue-100'}`}>
+                            {isCategoryEntry ? (
+                              <Factory className="h-3 w-3 text-purple-600" />
+                            ) : (
+                              <Package className="h-3 w-3 text-purple-600" />
+                            )}
                           </div>
                           <div>
-                            <div className="font-medium text-gray-900">{line.raw_material?.name}</div>
-                            <div className="text-sm text-gray-500 font-mono">{line.raw_material?.code || 'No code'}</div>
+                            {isCategoryEntry ? (
+                              <>
+                                <div className="font-medium text-gray-900 flex items-center space-x-2">
+                                  <span>{categoryInfo?.name || 'Category'}</span>
+                                  <Badge className="bg-purple-100 text-purple-800 border-purple-200 text-xs">
+                                    Category
+                                  </Badge>
+                                </div>
+                                <div className="text-sm text-gray-500">Material category consumption</div>
+                              </>
+                            ) : (
+                              <>
+                                <div className="font-medium text-gray-900">{line.raw_material?.name}</div>
+                                <div className="text-sm text-gray-500 font-mono">{line.raw_material?.code || 'No code'}</div>
+                              </>
+                            )}
                           </div>
                         </div>
                       </TableCell>

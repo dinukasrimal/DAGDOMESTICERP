@@ -33,10 +33,15 @@ import {
   CreateGoodsIssueLine 
 } from '../../services/goodsIssueService';
 import { RawMaterialsService, RawMaterialWithInventory } from '../../services/rawMaterialsService';
+import { PurchaseOrderService, PurchaseOrder } from '../../services/purchaseOrderService';
+import { supabase } from '@/integrations/supabase/client';
+import { BOMService, BOMWithLines } from '../../services/bomService';
 import { ModernLayout } from '../layout/ModernLayout';
 
 const goodsIssueService = new GoodsIssueService();
 const rawMaterialsService = new RawMaterialsService();
+const purchaseOrderService = new PurchaseOrderService();
+const bomService = new BOMService();
 
 const ISSUE_TYPES = [
   { value: 'production', label: 'Production', icon: Factory, color: 'blue' },
@@ -49,11 +54,18 @@ const ISSUE_TYPES = [
 export const GoodsIssueManager: React.FC = () => {
   const [goodsIssues, setGoodsIssues] = useState<GoodsIssue[]>([]);
   const [rawMaterials, setRawMaterials] = useState<RawMaterialWithInventory[]>([]);
+  const [productionOrders, setProductionOrders] = useState<any[]>([]);
+  const [purchaseOrders, setPurchaseOrders] = useState<any[]>([]);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<GoodsIssue | null>(null);
   const [isViewDialogOpen, setIsViewDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [issueMode, setIssueMode] = useState<'po' | 'general'>('po'); // New: Issue mode
+  const [selectedPO, setSelectedPO] = useState<PurchaseOrder | null>(null);
+  const [selectedProductionOrder, setSelectedProductionOrder] = useState<any | null>(null);
+  const [selectedPurchaseOrder, setSelectedPurchaseOrder] = useState<any | null>(null);
+  const [bomRequirements, setBomRequirements] = useState<{[key: string]: number}>({}); // Material requirements by PO
   const { toast } = useToast();
 
   // Form states
@@ -79,12 +91,14 @@ export const GoodsIssueManager: React.FC = () => {
   const loadInitialData = async () => {
     try {
       setLoading(true);
-      const [issuesData, materialsData] = await Promise.all([
+      const [issuesData, materialsData, purchaseOrdersData] = await Promise.all([
         goodsIssueService.getAllGoodsIssue(),
-        rawMaterialsService.getRawMaterials()
+        rawMaterialsService.getRawMaterials(),
+        loadPurchaseOrders()
       ]);
       setGoodsIssues(issuesData);
       setRawMaterials(materialsData);
+      setPurchaseOrders(purchaseOrdersData);
     } catch (error: any) {
       toast({
         title: 'Error',
@@ -93,6 +107,222 @@ export const GoodsIssueManager: React.FC = () => {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadPurchaseOrders = async (): Promise<any[]> => {
+    try {
+      console.log('Loading purchase orders from purchases table...');
+      
+      const { data, error } = await supabase
+        .from('purchases')
+        .select('*')
+        .not('state', 'eq', 'done') // Exclude completed orders
+        .not('state', 'eq', 'cancel') // Exclude cancelled orders
+        .order('date_order', { ascending: false })
+        .limit(200); // Load more orders to match the 171 count
+
+      if (error) {
+        console.error('Failed to load purchase orders:', error);
+        return [];
+      }
+
+      console.log(`Loaded ${data?.length || 0} purchase orders`);
+      
+      // Parse order_lines JSON to extract product information
+      const ordersWithProducts = (data || []).map(order => {
+        let products = [];
+        try {
+          if (order.order_lines) {
+            const orderLines = typeof order.order_lines === 'string' 
+              ? JSON.parse(order.order_lines) 
+              : order.order_lines;
+            
+            if (Array.isArray(orderLines)) {
+              products = orderLines.map(line => ({
+                id: line.product_id || line.id,
+                name: line.product_name || line.name || 'Unknown Product',
+                quantity: line.product_qty || line.qty || 0,
+                pending_qty: order.pending_qty || 0
+              }));
+            }
+          }
+        } catch (error) {
+          console.warn(`Failed to parse order_lines for PO ${order.name}:`, error);
+        }
+        
+        return {
+          ...order,
+          po_number: order.name,
+          products,
+          supplier_name: order.partner_name,
+          outstanding_qty: order.pending_qty || 0
+        };
+      });
+
+      return ordersWithProducts;
+    } catch (error) {
+      console.error('Failed to load purchase orders:', error);
+      return [];
+    }
+  };
+
+  const loadActiveProductionOrders = async (): Promise<any[]> => {
+    try {
+      // First, get the orders
+      const { data: ordersData, error: ordersError } = await supabase
+        .from('orders')
+        .select(`
+          *,
+          production_line:production_lines(id, name)
+        `)
+        .in('status', ['pending', 'scheduled', 'in_progress'])
+        .order('created_at', { ascending: false });
+
+      if (ordersError) {
+        console.error('Failed to load production orders:', ordersError);
+        return [];
+      }
+
+      if (!ordersData || ordersData.length === 0) {
+        return [];
+      }
+
+      // Get unique style_ids to fetch products
+      const styleIds = [...new Set(ordersData.map(order => order.style_id).filter(Boolean))];
+      
+      // Fetch products that match the style_ids (assuming style_id maps to product id or code)
+      let productsMap: {[key: string]: any} = {};
+      
+      if (styleIds.length > 0) {
+        // Try fetching by id first (assuming style_id is product id as string)
+        const numericStyleIds = styleIds.map(id => parseInt(id)).filter(id => !isNaN(id));
+        
+        if (numericStyleIds.length > 0) {
+          const { data: productsData, error: productsError } = await supabase
+            .from('products')
+            .select('id, name, default_code, colour, size')
+            .in('id', numericStyleIds);
+            
+          if (!productsError && productsData) {
+            productsData.forEach(product => {
+              productsMap[product.id.toString()] = product;
+            });
+          }
+        }
+        
+        // If no matches by id, try by default_code
+        if (Object.keys(productsMap).length === 0) {
+          const { data: productsByCodeData, error: productsByCodeError } = await supabase
+            .from('products')
+            .select('id, name, default_code, colour, size')
+            .in('default_code', styleIds);
+            
+          if (!productsByCodeError && productsByCodeData) {
+            productsByCodeData.forEach(product => {
+              if (product.default_code) {
+                productsMap[product.default_code] = { ...product, product_id: product.id };
+              }
+            });
+          }
+        }
+      }
+
+      // Combine orders with product/style information
+      const ordersWithStyles = ordersData.map(order => ({
+        ...order,
+        style: productsMap[order.style_id] || { id: null, name: order.style_id, product_id: null }
+      }));
+
+      return ordersWithStyles;
+    } catch (error) {
+      console.error('Failed to load production orders:', error);
+      return [];
+    }
+  };
+
+  const calculateBOMRequirements = async (purchaseOrder: any) => {
+    try {
+      const requirements: {[key: string]: number} = {};
+      
+      if (!purchaseOrder.products || purchaseOrder.products.length === 0) {
+        console.warn(`No products found in purchase order ${purchaseOrder.po_number}`);
+        return requirements;
+      }
+
+      // Calculate BOM requirements for each product in the purchase order
+      for (const product of purchaseOrder.products) {
+        if (!product.id) continue;
+        
+        try {
+          // Get BOM for this product
+          const bomList = await bomService.getBOMsByProduct(product.id);
+          
+          if (bomList.length === 0) {
+            console.warn(`No BOM found for product ${product.id} (${product.name})`);
+            continue;
+          }
+
+          // Use the first active BOM
+          const productBom = bomList[0];
+          const productionQuantity = product.pending_qty || product.quantity || 0;
+
+          if (productBom && productBom.lines && productionQuantity > 0) {
+            for (const bomLine of productBom.lines) {
+              if (bomLine.raw_material) {
+                const materialId = bomLine.raw_material.id.toString();
+                // Calculate required quantity with waste percentage
+                const quantityWithWaste = bomLine.quantity * (1 + (bomLine.waste_percentage || 0) / 100);
+                const requiredQty = (quantityWithWaste / productBom.quantity) * productionQuantity;
+                
+                if (requirements[materialId]) {
+                  requirements[materialId] += requiredQty;
+                } else {
+                  requirements[materialId] = requiredQty;
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.warn(`Failed to process BOM for product ${product.id}:`, error);
+        }
+      }
+
+      return requirements;
+    } catch (error) {
+      console.error('Failed to calculate BOM requirements:', error);
+      return {};
+    }
+  };
+
+  const handlePOSelection = async (orderId: string) => {
+    const order = purchaseOrders.find(o => o.id === orderId);
+    if (order) {
+      setSelectedPurchaseOrder(order);
+      setFormData(prev => ({
+        ...prev,
+        reference_number: order.po_number,
+        issue_type: 'production'
+      }));
+
+      // Calculate BOM requirements
+      const requirements = await calculateBOMRequirements(order);
+      setBomRequirements(requirements);
+
+      // Auto-populate lines based on BOM requirements
+      const autoLines: CreateGoodsIssueLine[] = [];
+      Object.entries(requirements).forEach(([materialId, quantity]) => {
+        if (quantity > 0) {
+          autoLines.push({
+            raw_material_id: materialId,
+            quantity_issued: quantity,
+            batch_number: '',
+            notes: `Required for Purchase Order: ${order.po_number} (${order.products?.length || 0} products)`
+          });
+        }
+      });
+
+      setFormData(prev => ({ ...prev, lines: autoLines }));
     }
   };
 
@@ -107,13 +337,36 @@ export const GoodsIssueManager: React.FC = () => {
         return;
       }
 
+      // For general issues, require approval
+      if (issueMode === 'general') {
+        const confirmed = confirm(
+          'General goods issues require approval. Do you want to proceed?\n\n' +
+          'This issue will be created in pending status and require supervisor approval before execution.'
+        );
+        if (!confirmed) return;
+      }
+
+      // Validate PO-based issues
+      if (issueMode === 'po' && !selectedPurchaseOrder) {
+        toast({
+          title: 'Validation Error',
+          description: 'Please select a Purchase Order for PO-based issues',
+          variant: 'destructive'
+        });
+        return;
+      }
+
       setLoading(true);
       const newIssue = await goodsIssueService.createGoodsIssue(formData);
       setGoodsIssues(prev => [newIssue, ...prev]);
       
+      const successMessage = issueMode === 'po' 
+        ? `Goods Issue ${newIssue.issue_number} created for Purchase Order ${selectedPurchaseOrder?.po_number}`
+        : `Goods Issue ${newIssue.issue_number} created (pending approval)`;
+      
       toast({
         title: 'Success',
-        description: `Goods Issue ${newIssue.issue_number} created successfully`
+        description: successMessage
       });
 
       handleCloseCreateDialog();
@@ -190,6 +443,11 @@ export const GoodsIssueManager: React.FC = () => {
 
   const handleCloseCreateDialog = () => {
     setIsCreateDialogOpen(false);
+    setIssueMode('po'); // Reset to PO mode
+    setSelectedPO(null);
+    setSelectedProductionOrder(null);
+    setSelectedPurchaseOrder(null);
+    setBomRequirements({});
     setFormData({
       issue_date: new Date().toISOString().split('T')[0],
       issue_type: 'production',
@@ -428,6 +686,99 @@ export const GoodsIssueManager: React.FC = () => {
           </DialogHeader>
 
           <div className="space-y-6">
+            {/* Issue Mode Selection */}
+            <Card className="bg-blue-50/30 border-blue-200">
+              <CardHeader>
+                <CardTitle className="text-sm">Issue Mode</CardTitle>
+                <CardDescription>Select whether this is a Purchase Order-based issue or general issue</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex space-x-4">
+                  <Button
+                    type="button"
+                    variant={issueMode === 'po' ? 'default' : 'outline'}
+                    onClick={() => {
+                      setIssueMode('po');
+                      setFormData(prev => ({ ...prev, issue_type: 'production' }));
+                    }}
+                    className="flex-1"
+                  >
+                    <Factory className="h-4 w-4 mr-2" />
+                    Purchase Order Issue
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={issueMode === 'general' ? 'default' : 'outline'}
+                    onClick={() => {
+                      setIssueMode('general');
+                      setSelectedPO(null);
+                      setSelectedProductionOrder(null);
+                      setSelectedPurchaseOrder(null);
+                      setBomRequirements({});
+                      setFormData(prev => ({ ...prev, lines: [] }));
+                    }}
+                    className="flex-1"
+                  >
+                    <Settings className="h-4 w-4 mr-2" />
+                    General Issue
+                  </Button>
+                </div>
+                
+                {/* Purchase Order Selection */}
+                {issueMode === 'po' && (
+                  <div className="mt-4">
+                    <Label>Purchase Order *</Label>
+                    <Select 
+                      value={selectedPurchaseOrder?.id || ''} 
+                      onValueChange={handlePOSelection}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select Purchase Order" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {purchaseOrders.map(order => {
+                          const productCount = order.products?.length || 0;
+                          const outstandingQty = order.outstanding_qty || order.pending_qty || 0;
+                          return (
+                            <SelectItem key={order.id} value={order.id}>
+                              <div className="flex justify-between items-center w-full">
+                                <span>{order.po_number}</span>
+                                <span className="text-sm text-gray-500 ml-2">
+                                  {productCount} products • Pending: {outstandingQty}
+                                </span>
+                              </div>
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
+                    
+                    {selectedPurchaseOrder && (
+                      <div className="mt-2 p-3 bg-green-50 rounded-lg border border-green-200">
+                        <p className="text-sm text-green-800">
+                          <strong>Selected PO:</strong> {selectedPurchaseOrder.po_number} 
+                          {selectedPurchaseOrder.supplier_name && ` • ${selectedPurchaseOrder.supplier_name}`}
+                        </p>
+                        <p className="text-xs text-green-600 mt-1">
+                          Material requirements calculated from BOMs for {selectedPurchaseOrder.products?.length || 0} products • Pending Qty: {selectedPurchaseOrder.outstanding_qty || selectedPurchaseOrder.pending_qty || 0}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* General Issue Warning */}
+                {issueMode === 'general' && (
+                  <Alert className="mt-4">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertDescription>
+                      General issues require supervisor approval and will be created in pending status.
+                    </AlertDescription>
+                  </Alert>
+                )}
+              </CardContent>
+            </Card>
+
             {/* Header Information */}
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -628,11 +979,14 @@ export const GoodsIssueManager: React.FC = () => {
             </Button>
             <Button 
               onClick={handleCreateIssue} 
-              disabled={loading || formData.lines.length === 0 || 
+              disabled={loading || 
+                formData.lines.length === 0 || 
+                (issueMode === 'po' && !selectedPurchaseOrder) ||
                 formData.lines.some(line => line.quantity_issued > getAvailableQuantity(line.raw_material_id))}
               className="bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600"
             >
-              {loading ? 'Creating...' : 'Create Goods Issue'}
+              {loading ? 'Creating...' : 
+               issueMode === 'po' ? 'Create Purchase Order Issue' : 'Create General Issue (Requires Approval)'}
             </Button>
           </DialogFooter>
         </DialogContent>
