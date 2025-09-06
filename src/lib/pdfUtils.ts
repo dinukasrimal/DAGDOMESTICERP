@@ -2,6 +2,7 @@
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import 'jspdf-autotable';
+import type { GoodsIssue } from '@/services/goodsIssueService';
 
 export const downloadElementAsPdf = async (elementId: string, fileName: string): Promise<void> => {
   const input = document.getElementById(elementId);
@@ -264,4 +265,88 @@ export const generatePlanningReportPdf = async (
     console.error('Error generating planning report PDF:', error);
     throw error; // Re-throw so calling code can handle it
   }
+};
+
+export const generateGoodsIssuePdf = (issue: GoodsIssue) => {
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const margin = 15;
+  let y = margin;
+
+  // Header band
+  pdf.setFillColor(239, 68, 68); // red
+  pdf.rect(0, 0, pageWidth, 28, 'F');
+  pdf.setTextColor(255, 255, 255);
+  pdf.setFontSize(18);
+  pdf.setFont(undefined, 'bold');
+  pdf.text('GOODS ISSUE NOTE', margin, 18);
+
+  // Reset
+  pdf.setTextColor(0, 0, 0);
+  y = 35;
+
+  // Header details
+  const addRow = (label: string, value: string) => {
+    pdf.setFontSize(11);
+    pdf.setFont(undefined, 'bold');
+    pdf.text(`${label}:`, margin, y);
+    pdf.setFont(undefined, 'normal');
+    pdf.text(value || '—', margin + 35, y);
+    y += 7;
+  };
+
+  addRow('Issue No', issue.issue_number || '—');
+  addRow('Issue Date', new Date(issue.issue_date).toLocaleDateString());
+  addRow('Type', (issue.issue_type || '').toString());
+  if (issue.notes) addRow('Notes', issue.notes);
+
+  y += 3;
+  // Lines table
+  const head = [['Material', 'Quantity', 'Unit', 'Unit Cost', 'Total', 'Batch']];
+  const body = (issue.lines || []).map((l) => [
+    l.raw_material?.name || l.raw_material_id,
+    String(l.quantity_issued ?? ''),
+    l.raw_material?.base_unit || '',
+    l.unit_cost != null ? `LKR ${Number(l.unit_cost).toFixed(2)}` : '-',
+    l.unit_cost != null ? `LKR ${(Number(l.unit_cost) * Number(l.quantity_issued || 0)).toFixed(2)}` : '-',
+    l.batch_number || '-'
+  ]);
+
+  (pdf as any).autoTable({
+    startY: y,
+    head,
+    body,
+    theme: 'grid',
+    styles: { fontSize: 9, cellPadding: 3 },
+    headStyles: { fillColor: [239, 68, 68], textColor: [255, 255, 255] },
+    columnStyles: {
+      0: { cellWidth: 64 },
+      1: { halign: 'right', cellWidth: 20 },
+      2: { cellWidth: 18 },
+      3: { halign: 'right', cellWidth: 30 },
+      4: { halign: 'right', cellWidth: 30 },
+      5: { cellWidth: 24 },
+    },
+    margin: { left: margin, right: margin },
+  });
+
+  const afterTableY = (pdf as any).lastAutoTable.finalY || y + 10;
+
+  // Signature area
+  const sigTop = afterTableY + 15;
+  pdf.setFontSize(11);
+  pdf.text('Authorized Signature:', margin, sigTop);
+  pdf.line(margin + 45, sigTop, pageWidth - margin, sigTop);
+
+  pdf.text('Name:', margin, sigTop + 12);
+  pdf.line(margin + 15, sigTop + 12, pageWidth / 2, sigTop + 12);
+
+  pdf.text('Date:', margin, sigTop + 24);
+  pdf.line(margin + 15, sigTop + 24, pageWidth / 2, sigTop + 24);
+
+  // Footer
+  pdf.setFontSize(8);
+  pdf.text(`Generated on ${new Date().toLocaleString()}`, margin, 290);
+
+  pdf.save(`${issue.issue_number || 'Goods_Issue'}.pdf`);
 };

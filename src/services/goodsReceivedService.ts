@@ -321,6 +321,37 @@ export class GoodsReceivedService {
     return this.getGoodsReceived(id);
   }
 
+  async verifyGoodsReceived(id: string): Promise<void> {
+    // Auto-post to inventory on verification (no separate post step)
+    const { data: grnData, error: updateError } = await supabase
+      .from('goods_received')
+      .update({ status: 'posted' })
+      .eq('id', id)
+      .select(`
+        lines:goods_received_lines(
+          raw_material_id,
+          quantity_received,
+          unit_price,
+          batch_number,
+          expiry_date
+        )
+      `)
+      .single();
+
+    if (updateError) {
+      throw new Error(`Failed to verify/post goods received: ${updateError.message}`);
+    }
+
+    // Update raw materials inventory (FIFO layers not tracked yet; aggregate quantities are updated)
+    for (const line of grnData.lines || []) {
+      await this.updateRawMaterialInventory(
+        line.raw_material_id,
+        line.quantity_received,
+        line.unit_price
+      );
+    }
+  }
+
   async deleteGoodsReceived(id: string): Promise<void> {
     // Get the GRN lines to reverse the received quantities
     const { data: grnData, error: fetchError } = await supabase
@@ -454,32 +485,29 @@ export class GoodsReceivedService {
     }
   }
 
-  private async updateRawMaterialInventory(materialId: string, quantity: number, unitCost: number): Promise<void> {
-    // Get current inventory
+  private async updateRawMaterialInventory(materialId: string, quantityChange: number, unitCost: number): Promise<void> {
+    // Schema with quantity_on_hand/quantity_available/quantity_reserved
     const { data: inventoryData, error: fetchError } = await supabase
       .from('raw_material_inventory')
-      .select('quantity, total_cost')
+      .select('quantity_on_hand, quantity_reserved, quantity_available')
       .eq('raw_material_id', materialId)
-      .single();
+      .maybeSingle();
 
-    if (fetchError && fetchError.code !== 'PGRST116') { // PGRST116 = no rows returned
+    if (fetchError && fetchError.code !== 'PGRST116') {
       throw new Error(`Failed to fetch inventory: ${fetchError.message}`);
     }
 
-    const currentQuantity = inventoryData?.quantity || 0;
-    const currentTotalCost = inventoryData?.total_cost || 0;
-    const newQuantity = currentQuantity + quantity;
-    const newTotalCost = currentTotalCost + (quantity * unitCost);
-    const newAverageCost = newQuantity > 0 ? newTotalCost / newQuantity : 0;
+    const currentOnHand = inventoryData?.quantity_on_hand || 0;
+    const currentReserved = inventoryData?.quantity_reserved || 0;
+    const newOnHand = currentOnHand + quantityChange;
+    const newAvailable = Math.max(0, newOnHand - currentReserved);
 
-    // Upsert inventory record
     const { error } = await supabase
       .from('raw_material_inventory')
       .upsert({
         raw_material_id: materialId,
-        quantity: newQuantity,
-        total_cost: newTotalCost,
-        average_cost: newAverageCost,
+        quantity_on_hand: newOnHand,
+        quantity_available: newAvailable,
         last_updated: new Date().toISOString(),
       });
 

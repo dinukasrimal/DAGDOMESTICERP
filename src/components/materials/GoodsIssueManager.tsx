@@ -18,6 +18,7 @@ import {
   X,
   Search,
   FileText,
+  FileDown,
   AlertTriangle,
   Factory,
   Wrench,
@@ -39,6 +40,8 @@ import { supabase } from '@/integrations/supabase/client';
 import { BOMService, BOMWithLines } from '../../services/bomService';
 import { ModernLayout } from '../layout/ModernLayout';
 import { BarcodeScanner } from '@/components/ui/BarcodeScanner';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { generateGoodsIssuePdf } from '@/lib/pdfUtils';
 
 const goodsIssueService = new GoodsIssueService();
 const rawMaterialsService = new RawMaterialsService();
@@ -63,7 +66,8 @@ export const GoodsIssueManager: React.FC = () => {
   const [isViewDialogOpen, setIsViewDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [issueMode, setIssueMode] = useState<'po' | 'general'>('po'); // New: Issue mode
+  const [issueMode, setIssueMode] = useState<'po' | 'general'>('po'); // deprecated
+  const [issueTab, setIssueTab] = useState<'fabric' | 'trims'>('fabric');
   const [selectedPO, setSelectedPO] = useState<PurchaseOrder | null>(null);
   const [selectedProductionOrder, setSelectedProductionOrder] = useState<any | null>(null);
   const [selectedPurchaseOrder, setSelectedPurchaseOrder] = useState<any | null>(null);
@@ -86,6 +90,8 @@ export const GoodsIssueManager: React.FC = () => {
   const [showBOMSelection, setShowBOMSelection] = useState(false);
   const [categorySelections, setCategorySelections] = useState<{[categoryId: string]: {materialId: number, quantity: number}[]}>({});
   const { toast } = useToast();
+  const [suppliers, setSuppliers] = useState<string[]>([]);
+  const [selectedSupplier, setSelectedSupplier] = useState<string>('');
 
   // Fabric scanning state for Goods Issue (per raw material)
   const [giFabricRolls, setGiFabricRolls] = useState<{[materialId: string]: { barcode: string; weight: number; length?: number }[]}>({});
@@ -101,8 +107,8 @@ export const GoodsIssueManager: React.FC = () => {
   const [formData, setFormData] = useState<CreateGoodsIssue>({
     issue_date: new Date().toISOString().split('T')[0],
     issue_type: 'production',
-    reference_number: '',
-    notes: '',
+    reference_number: undefined,
+    notes: undefined,
     lines: []
   });
 
@@ -128,6 +134,8 @@ export const GoodsIssueManager: React.FC = () => {
       setGoodsIssues(issuesData);
       setRawMaterials(materialsData);
       setPurchaseOrders(purchaseOrdersData);
+      const uniqSuppliers = Array.from(new Set((purchaseOrdersData || []).map(o => o.partner_name).filter(Boolean)));
+      setSuppliers(uniqSuppliers as string[]);
     } catch (error: any) {
       toast({
         title: 'Error',
@@ -649,7 +657,13 @@ export const GoodsIssueManager: React.FC = () => {
         }
       }
 
-      setBomMaterialRequirements(materialRequirements);
+      // Filter based on tab
+      const filterFn = (req: typeof materialRequirements[number]) => {
+        const isFab = req.category_id ? isFabricCategory(req.category_id, req.material_name) : isFabricMaterialId(req.material_id);
+        return issueTab === 'fabric' ? isFab : !isFab;
+      };
+      const filtered = materialRequirements.filter(filterFn);
+      setBomMaterialRequirements(filtered);
 
       if (materialRequirements.length === 0) {
         toast({
@@ -660,12 +674,14 @@ export const GoodsIssueManager: React.FC = () => {
       }
       
       // Auto-populate form lines based on BOM requirements
-      const autoLines: CreateGoodsIssueLine[] = materialRequirements.map(req => ({
-        raw_material_id: req.material_id,
-        quantity_issued: req.issuing_quantity,
-        batch_number: '',
-        notes: `BOM-based requirement for ${bom.name} • Total required: ${req.required_quantity} ${req.unit}`
-      }));
+      const autoLines: CreateGoodsIssueLine[] = filtered
+        .filter(req => !req.category_id) // do not auto-add category placeholder rows
+        .map(req => ({
+          raw_material_id: req.material_id,
+          quantity_issued: req.issuing_quantity,
+          batch_number: '',
+          notes: `BOM-based requirement for ${bom.name} • Total required: ${req.required_quantity} ${req.unit}`
+        }));
       
       setFormData(prev => ({
         ...prev,
@@ -698,14 +714,17 @@ export const GoodsIssueManager: React.FC = () => {
     );
     
     // Update form lines
-    setFormData(prev => ({
-      ...prev,
-      lines: prev.lines.map(line => 
-        line.raw_material_id === materialId 
-          ? { ...line, quantity_issued: Math.max(0, quantity) }
-          : line
-      )
-    }));
+    setFormData(prev => {
+      const exists = prev.lines.some(l => l.raw_material_id === materialId);
+      const newLines = exists
+        ? prev.lines.map(line => line.raw_material_id === materialId
+            ? { ...line, quantity_issued: Math.max(0, quantity) }
+            : line)
+        : (quantity > 0
+            ? [...prev.lines, { raw_material_id: materialId, quantity_issued: Math.max(0, quantity), batch_number: '', notes: '' }]
+            : prev.lines);
+      return { ...prev, lines: newLines };
+    });
   };
 
   // Fabric scan handlers (Goods Issue)
@@ -721,9 +740,14 @@ export const GoodsIssueManager: React.FC = () => {
     setGiShowBarcodeCamera(true);
   };
 
+  const startScanForCategory = (categoryId: number) => {
+    setGiCurrentMaterialId(null);
+    setGiCurrentCategoryKey(`category-${categoryId}`);
+    setGiShowBarcodeCamera(true);
+  };
+
   const handleBarcodeScannedGI = async (barcode: string) => {
     try {
-      if (!giCurrentMaterialId) return;
       // Look up barcode from Goods Received lines
       const { data: lines, error } = await supabase
         .from('goods_received_lines')
@@ -746,7 +770,6 @@ export const GoodsIssueManager: React.FC = () => {
         .single();
 
       // Validate Fabric category and target
-      const expectedMaterialId = giCurrentMaterialId;
       const isFabric = material?.category_id === 1 || (material?.name || '').toLowerCase().includes('fabric');
       if (!isFabric) {
         toast({ title: 'Not Fabric Category', description: 'Scanned roll is not in the Fabric category.', variant: 'destructive' });
@@ -762,13 +785,18 @@ export const GoodsIssueManager: React.FC = () => {
         }
       }
 
+      // If we are scanning at category level (no material selected), adopt the detected material
+      if (!giCurrentMaterialId && giCurrentCategoryKey) {
+        setGiCurrentMaterialId(String(material?.id));
+      }
+
+      const expectedMaterialId = giCurrentMaterialId || String(material?.id);
+
       // If scanning under a specific material row, ensure it matches
-      if (String(material?.id) !== String(expectedMaterialId)) {
+      if (giCurrentMaterialId && String(material?.id) !== String(expectedMaterialId)) {
         // If scanning under category mode, allow only if the selected category matches Fabric; otherwise block
-        if (!giCurrentCategoryKey) {
-          toast({ title: 'Different Material', description: 'This roll belongs to a different material.', variant: 'destructive' });
-          return;
-        }
+        toast({ title: 'Different Material', description: 'This roll belongs to a different material.', variant: 'destructive' });
+        return;
       }
 
       const weight = Number(line.roll_weight) || 0;
@@ -863,7 +891,7 @@ export const GoodsIssueManager: React.FC = () => {
       setSelectedPurchaseOrder(order);
       setFormData(prev => ({
         ...prev,
-        reference_number: order.po_number,
+        reference_number: undefined,
         issue_type: 'production',
         lines: [] // Clear existing lines
       }));
@@ -889,17 +917,8 @@ export const GoodsIssueManager: React.FC = () => {
         return;
       }
 
-      // For general issues, require approval
-      if (issueMode === 'general') {
-        const confirmed = confirm(
-          'General goods issues require approval. Do you want to proceed?\n\n' +
-          'This issue will be created in pending status and require supervisor approval before execution.'
-        );
-        if (!confirmed) return;
-      }
-
-      // Validate PO-based issues
-      if (issueMode === 'po' && !selectedPurchaseOrder) {
+      // Validate selections
+      if (!selectedPurchaseOrder) {
         toast({
           title: 'Validation Error',
           description: 'Please select a Purchase Order for PO-based issues',
@@ -907,9 +926,28 @@ export const GoodsIssueManager: React.FC = () => {
         });
         return;
       }
+      if (!selectedBOM) {
+        toast({ title: 'Validation Error', description: 'Please select a BOM', variant: 'destructive' });
+        return;
+      }
+      if (issueTab === 'trims' && !selectedSupplier) {
+        toast({ title: 'Validation Error', description: 'Please select a supplier for trims issue', variant: 'destructive' });
+        return;
+      }
+
+      // Sanitize lines: only numeric material ids and positive quantities
+      const cleanedLines = formData.lines.filter(l => Number(l.quantity_issued) > 0 && /^\d+$/.test(String(l.raw_material_id)));
+      if (cleanedLines.length === 0) {
+        toast({ title: 'Validation Error', description: 'No valid line items to issue.', variant: 'destructive' });
+        return;
+      }
 
       setLoading(true);
-      const newIssue = await goodsIssueService.createGoodsIssue(formData);
+      const newIssue = await goodsIssueService.createGoodsIssue({
+        ...formData,
+        lines: cleanedLines,
+        notes: issueTab === 'trims' && selectedSupplier ? `Supplier: ${selectedSupplier}` : undefined,
+      });
       setGoodsIssues(prev => [newIssue, ...prev]);
       
       const successMessage = issueMode === 'po' 
@@ -1003,8 +1041,8 @@ export const GoodsIssueManager: React.FC = () => {
     setFormData({
       issue_date: new Date().toISOString().split('T')[0],
       issue_type: 'production',
-      reference_number: '',
-      notes: '',
+      reference_number: undefined,
+      notes: undefined,
       lines: []
     });
     setCurrentLine({
@@ -1194,6 +1232,14 @@ export const GoodsIssueManager: React.FC = () => {
                         >
                           <FileText className="h-4 w-4" />
                         </Button>
+                        <Button 
+                          size="sm" 
+                          variant="ghost"
+                          onClick={() => generateGoodsIssuePdf(issue)}
+                          title="Export PDF"
+                        >
+                          <FileDown className="h-4 w-4" />
+                        </Button>
                         {issue.status === 'pending' && (
                           <>
                             <Button 
@@ -1238,44 +1284,34 @@ export const GoodsIssueManager: React.FC = () => {
           </DialogHeader>
 
           <div className="space-y-6">
-            {/* Issue Mode Selection */}
+            {/* Tabs: Fabric vs Trims */}
             <Card className="bg-blue-50/30 border-blue-200">
               <CardHeader>
-                <CardTitle className="text-sm">Issue Mode</CardTitle>
-                <CardDescription>Select whether this is a Purchase Order-based issue or general issue</CardDescription>
+                <CardTitle className="text-sm">Issue Type</CardTitle>
+                <CardDescription>Select material group to issue</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="flex space-x-4">
-                  <Button
-                    type="button"
-                    variant={issueMode === 'po' ? 'default' : 'outline'}
-                    onClick={() => {
-                      setIssueMode('po');
-                      setFormData(prev => ({ ...prev, issue_type: 'production' }));
-                    }}
-                    className="flex-1"
-                  >
-                    <Factory className="h-4 w-4 mr-2" />
-                    Purchase Order Issue
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={issueMode === 'general' ? 'default' : 'outline'}
-                    onClick={() => {
-                      setIssueMode('general');
-                      setSelectedPO(null);
-                      setSelectedProductionOrder(null);
-                      setSelectedPurchaseOrder(null);
-                      setBomRequirements({});
-                      setFormData(prev => ({ ...prev, lines: [] }));
-                    }}
-                    className="flex-1"
-                  >
-                    <Settings className="h-4 w-4 mr-2" />
-                    General Issue
-                  </Button>
-                </div>
-                
+                <Tabs value={issueTab} onValueChange={(v: any) => {
+                  setIssueTab(v);
+                  // Re-filter current requirements into form lines
+                  setBomMaterialRequirements(prev => prev.filter(req => {
+                    const isFab = req.category_id ? isFabricCategory(req.category_id, req.material_name) : isFabricMaterialId(req.material_id);
+                    return v === 'fabric' ? isFab : !isFab;
+                  }));
+                  setFormData(prev => ({
+                    ...prev,
+                    lines: prev.lines.filter(line => {
+                      const isFab = isFabricMaterialId(line.raw_material_id);
+                      return v === 'fabric' ? isFab : !isFab;
+                    })
+                  }));
+                }}>
+                  <TabsList>
+                    <TabsTrigger value="fabric">Fabric Issue</TabsTrigger>
+                    <TabsTrigger value="trims">Trims Issue</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+
                 {/* Purchase Order Selection */}
                 {issueMode === 'po' && (
                   <div className="mt-4">
@@ -1304,6 +1340,22 @@ export const GoodsIssueManager: React.FC = () => {
                         })}
                       </SelectContent>
                     </Select>
+
+                    {issueTab === 'trims' && (
+                      <div className="mt-4">
+                        <Label>Supplier *</Label>
+                        <Select value={selectedSupplier} onValueChange={setSelectedSupplier}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select supplier" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {suppliers.map(name => (
+                              <SelectItem key={name} value={name}>{name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
                     
                     {selectedPurchaseOrder && (
                       <div className="mt-2 p-3 bg-green-50 rounded-lg border border-green-200">
@@ -1365,7 +1417,7 @@ export const GoodsIssueManager: React.FC = () => {
                   <div className="mt-6">
                     <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center space-x-2">
                       <FileText className="h-5 w-5 text-blue-600" />
-                      <span>Material Requirements - {selectedBOM.name}</span>
+                      <span>Material Requirements - {selectedBOM.name} ({issueTab === 'fabric' ? 'Fabric' : 'Trims'})</span>
                     </h3>
                     
                     <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
@@ -1403,21 +1455,35 @@ export const GoodsIssueManager: React.FC = () => {
                                             <div className="text-sm text-gray-500">
                                               Category-based • {req.category_materials?.length || 0} materials available
                                             </div>
-                                            <Button 
-                                              size="sm" 
-                                              variant="outline" 
-                                              className="mt-2 text-xs h-6"
-                                              onClick={() => {
-                                                // Toggle category selection view
-                                                const categoryKey = `category-${req.category_id}`;
-                                                setCategorySelections(prev => ({
-                                                  ...prev,
-                                                  [categoryKey]: prev[categoryKey] ? undefined : []
-                                                }));
-                                              }}
-                                            >
-                                              {categorySelections[`category-${req.category_id}`] ? 'Hide Materials' : 'Select Materials'}
-                                            </Button>
+                                            <div className="flex items-center space-x-2 mt-2">
+                                              <Button 
+                                                size="sm" 
+                                                variant="outline" 
+                                                className="text-xs h-6"
+                                                onClick={() => {
+                                                  // Toggle category selection view
+                                                  const categoryKey = `category-${req.category_id}`;
+                                                  setCategorySelections(prev => ({
+                                                    ...prev,
+                                                    [categoryKey]: prev[categoryKey] ? undefined : []
+                                                  }));
+                                                }}
+                                              >
+                                                {categorySelections[`category-${req.category_id}`] ? 'Hide Materials' : 'Select Materials'}
+                                              </Button>
+                                              {isFabricCategory(req.category_id, req.material_name) && (
+                                                <Button 
+                                                  size="sm" 
+                                                  variant="outline" 
+                                                  className="text-xs h-6"
+                                                  onClick={() => startScanForCategory(req.category_id!)}
+                                                  title="Scan rolls and auto-detect materials"
+                                                >
+                                                  <QrCode className="h-3 w-3 mr-1" />
+                                                  Scan Rolls
+                                                </Button>
+                                              )}
+                                            </div>
                                           </div>
                                         </div>
                                       ) : (
@@ -1589,15 +1655,7 @@ export const GoodsIssueManager: React.FC = () => {
                   </div>
                 )}
 
-                {/* General Issue Warning */}
-                {issueMode === 'general' && (
-                  <Alert className="mt-4">
-                    <AlertTriangle className="h-4 w-4" />
-                    <AlertDescription>
-                      General issues require supervisor approval and will be created in pending status.
-                    </AlertDescription>
-                  </Alert>
-                )}
+                {/* General Issue removed */}
               </CardContent>
             </Card>
 
@@ -1636,153 +1694,16 @@ export const GoodsIssueManager: React.FC = () => {
                 />
               </div>
               <div>
-                <Label htmlFor="reference_number">Reference Number</Label>
-                <Input
-                  value={formData.reference_number}
-                  onChange={(e) => setFormData(prev => ({ ...prev, reference_number: e.target.value }))}
-                  placeholder="Production order, work order, etc."
-                />
+                <Label>Issue Number</Label>
+                <Input value={"Assigned on create"} disabled />
               </div>
             </div>
 
-            {/* Notes */}
-            <div>
-              <Label htmlFor="notes">Notes</Label>
-              <Textarea
-                value={formData.notes}
-                onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
-                placeholder="Additional notes for this goods issue..."
-                rows={2}
-              />
-            </div>
+            {/* Notes removed per requirements */}
 
-            {/* Add Line Item */}
-            <Card className="bg-red-50/30 border-red-200">
-              <CardHeader>
-                <CardTitle className="text-sm">Add Line Item</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-4 gap-4">
-                  <div>
-                    <Label>Raw Material *</Label>
-                    <Select
-                      value={currentLine.raw_material_id}
-                      onValueChange={(value) => setCurrentLine(prev => ({ ...prev, raw_material_id: value }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select material" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {rawMaterials.map(material => (
-                          <SelectItem key={material.id} value={material.id.toString()}>
-                            <div className="flex justify-between items-center w-full">
-                              <span>{material.name} ({material.code})</span>
-                              <span className="text-sm text-gray-500 ml-2">
-                                Avail: {material.inventory_quantity || 0}
-                              </span>
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <Label>Quantity *</Label>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      min="0.01"
-                      max={getAvailableQuantity(currentLine.raw_material_id)}
-                      value={currentLine.quantity_issued}
-                      onChange={(e) => setCurrentLine(prev => ({ ...prev, quantity_issued: parseFloat(e.target.value) || 0 }))}
-                      placeholder="0.00"
-                    />
-                    {currentLine.raw_material_id && (
-                      <p className="text-xs text-gray-500 mt-1">
-                        Available: {getAvailableQuantity(currentLine.raw_material_id)}
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    <Label>Batch/Lot</Label>
-                    <Input
-                      value={currentLine.batch_number}
-                      onChange={(e) => setCurrentLine(prev => ({ ...prev, batch_number: e.target.value }))}
-                      placeholder="Batch number"
-                    />
-                  </div>
-                  <div className="flex items-end">
-                    <Button onClick={handleAddLine} className="w-full">
-                      <Plus className="h-4 w-4 mr-2" />
-                      Add
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            {/* Manual Add Line removed per requirements */}
 
-            {/* Line Items List */}
-            {formData.lines.length > 0 && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm">Line Items ({formData.lines.length})</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Material</TableHead>
-                        <TableHead>Quantity</TableHead>
-                        <TableHead>Available</TableHead>
-                        <TableHead>Batch/Lot</TableHead>
-                        <TableHead>Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {formData.lines.map((line, index) => {
-                        const material = rawMaterials.find(m => m.id.toString() === line.raw_material_id);
-                        const available = getAvailableQuantity(line.raw_material_id);
-                        const isOverAvailable = line.quantity_issued > available;
-                        
-                        return (
-                          <TableRow key={index} className={isOverAvailable ? 'bg-red-50' : ''}>
-                            <TableCell>{material?.name}</TableCell>
-                            <TableCell>
-                              <Input
-                                type="number"
-                                step="0.01"
-                                min="0.01"
-                                max={available}
-                                value={line.quantity_issued}
-                                onChange={(e) => handleUpdateLineQuantity(index, parseFloat(e.target.value) || 0)}
-                                className={`w-24 ${isOverAvailable ? 'border-red-300' : ''}`}
-                              />
-                            </TableCell>
-                            <TableCell className={isOverAvailable ? 'text-red-600 font-medium' : ''}>
-                              {available}
-                              {isOverAvailable && (
-                                <AlertTriangle className="h-4 w-4 inline ml-1" />
-                              )}
-                            </TableCell>
-                            <TableCell>{line.batch_number || 'N/A'}</TableCell>
-                            <TableCell>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => handleRemoveLine(index)}
-                                className="text-red-600 hover:text-red-800"
-                              >
-                                <X className="h-4 w-4" />
-                              </Button>
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            )}
+            {/* Line Items table removed per requirements (BOM table controls quantities) */}
 
             {/* Validation Alerts */}
             {formData.lines.some(line => line.quantity_issued > getAvailableQuantity(line.raw_material_id)) && (
@@ -1801,15 +1722,14 @@ export const GoodsIssueManager: React.FC = () => {
             </Button>
             <Button 
               onClick={handleCreateIssue} 
-              disabled={loading || 
-                formData.lines.length === 0 || 
-                (issueMode === 'po' && !selectedPurchaseOrder) ||
-                (issueMode === 'po' && !selectedBOM) ||
+              disabled={loading ||
+                formData.lines.length === 0 ||
+                !selectedPurchaseOrder ||
+                !selectedBOM ||
                 formData.lines.some(line => line.quantity_issued > getAvailableQuantity(line.raw_material_id))}
               className="bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600"
             >
-              {loading ? 'Creating...' : 
-               issueMode === 'po' ? 'Create Purchase Order Issue' : 'Create General Issue (Requires Approval)'}
+              {loading ? 'Creating...' : 'Create Goods Issue'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1904,6 +1824,11 @@ export const GoodsIssueManager: React.FC = () => {
             <DialogTitle className="flex items-center space-x-2">
               <Minus className="h-5 w-5 text-red-600" />
               <span>Goods Issue {selectedIssue?.issue_number}</span>
+              {selectedIssue && (
+                <Button size="sm" variant="outline" className="ml-2" onClick={() => generateGoodsIssuePdf(selectedIssue)}>
+                  <FileText className="h-4 w-4 mr-1" /> PDF
+                </Button>
+              )}
             </DialogTitle>
           </DialogHeader>
 

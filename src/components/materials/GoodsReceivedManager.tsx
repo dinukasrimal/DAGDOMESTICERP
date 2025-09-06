@@ -554,6 +554,18 @@ export const GoodsReceivedManager: React.FC = () => {
     }
   };
 
+  const handleVerifyGRN = async (id: string) => {
+    try {
+      await goodsReceivedService.verifyGoodsReceived(id);
+      setGoodsReceived(prev => prev.map(grn =>
+        grn.id === id ? { ...grn, status: 'verified' } : grn
+      ));
+      toast({ title: 'Verified', description: 'GRN verified successfully.' });
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message || 'Failed to verify GRN', variant: 'destructive' });
+    }
+  };
+
   const getStatusColor = (status: GoodsReceived['status']) => {
     switch (status) {
       case 'pending': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
@@ -630,7 +642,7 @@ export const GoodsReceivedManager: React.FC = () => {
               <div>
                 <p className="text-sm text-blue-600 font-semibold tracking-wide">Verified</p>
                 <p className="text-3xl font-bold text-blue-800 mt-2">
-                  {goodsReceived.filter(grn => grn.status === 'verified').length}
+                  0
                 </p>
               </div>
               <div className="p-3 rounded-xl bg-blue-100/50 shadow-inner">
@@ -706,16 +718,17 @@ export const GoodsReceivedManager: React.FC = () => {
                       >
                         <FileText className="h-4 w-4" />
                       </Button>
-                      {grn.status === 'verified' && (
-                        <Button 
-                          size="sm" 
+                      {grn.status === 'pending' && (
+                        <Button
+                          size="sm"
                           variant="ghost"
-                          onClick={() => handlePostGRN(grn.id)}
-                          className="text-green-600 hover:text-green-800"
+                          onClick={() => handleVerifyGRN(grn.id)}
+                          className="text-blue-600 hover:text-blue-800"
                         >
-                          <Check className="h-4 w-4" />
+                          <CheckCircle className="h-4 w-4" />
                         </Button>
                       )}
+                      {/* Auto-post on verify; no separate post button */}
                     </div>
                   </TableCell>
                 </TableRow>
@@ -1017,6 +1030,17 @@ export const GoodsReceivedManager: React.FC = () => {
             <Button variant="outline" onClick={() => setIsViewDialogOpen(false)}>
               Close
             </Button>
+            {selectedGRN?.status === 'pending' && (
+              <Button
+                onClick={() => {
+                  handleVerifyGRN(selectedGRN.id);
+                  setIsViewDialogOpen(false);
+                }}
+                className="bg-blue-600 hover:bg-blue-700 text-white"
+              >
+                Verify
+              </Button>
+            )}
             {selectedGRN?.status === 'verified' && (
               <Button 
                 onClick={() => {

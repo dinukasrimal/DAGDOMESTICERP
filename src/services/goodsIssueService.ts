@@ -330,7 +330,7 @@ export class GoodsIssueService {
   private async validateInventoryAvailability(materialId: string, requiredQuantity: number): Promise<void> {
     const { data: inventoryData, error } = await supabase
       .from('raw_material_inventory')
-      .select('quantity, quantity_available')
+      .select('quantity_on_hand, quantity_reserved, quantity_available')
       .eq('raw_material_id', materialId)
       .maybeSingle();
 
@@ -338,7 +338,9 @@ export class GoodsIssueService {
       throw new Error(`Failed to check inventory: ${error.message}`);
     }
 
-    const availableQuantity = inventoryData?.quantity ?? inventoryData?.quantity_available ?? 0;
+    const availableQuantity = (inventoryData?.quantity_available != null)
+      ? inventoryData.quantity_available
+      : Math.max(0, (inventoryData?.quantity_on_hand || 0) - (inventoryData?.quantity_reserved || 0));
     if (availableQuantity < requiredQuantity) {
       // Get material name for better error message
       const { data: materialData } = await supabase
@@ -355,16 +357,16 @@ export class GoodsIssueService {
   }
 
   private async getAverageCost(materialId: string): Promise<number> {
-    const { data: inventoryData } = await supabase
+    // Cost not tracked in this schema variant; return 0 to avoid errors
+    const { error } = await supabase
       .from('raw_material_inventory')
-      .select('average_cost, total_cost, quantity')
+      .select('raw_material_id')
       .eq('raw_material_id', materialId)
       .maybeSingle();
-    if (!inventoryData) return 0;
-    if (inventoryData.average_cost != null) return inventoryData.average_cost as number;
-    const qty = (inventoryData as any).quantity || 0;
-    const total = (inventoryData as any).total_cost || 0;
-    return qty > 0 ? total / qty : 0;
+    if (error && error.code !== 'PGRST116') {
+      // Ignore; treat as zero
+    }
+    return 0;
   }
 
   private async updateRawMaterialInventory(
@@ -372,45 +374,18 @@ export class GoodsIssueService {
     quantityChange: number,
     unitCost: number
   ): Promise<void> {
-    // Get current inventory, supporting both schema variants
+    // Use quantity_on_hand/available schema
     const { data: inventoryData, error: fetchError } = await supabase
       .from('raw_material_inventory')
-      .select('quantity, total_cost, average_cost, quantity_on_hand, quantity_reserved, quantity_available')
+      .select('quantity_on_hand, quantity_reserved, quantity_available')
       .eq('raw_material_id', materialId)
       .maybeSingle();
     if (fetchError && fetchError.code !== 'PGRST116') {
       throw new Error(`Failed to fetch inventory: ${fetchError.message}`);
     }
 
-    // Variant A (costed): quantity/total_cost/average_cost
-    if (inventoryData && (inventoryData as any).quantity != null) {
-      const currentQuantity = (inventoryData as any).quantity || 0;
-      const currentTotalCost = (inventoryData as any).total_cost || 0;
-      const newQuantity = currentQuantity + quantityChange;
-      let newTotalCost: number;
-      if (quantityChange < 0) {
-        const avgCost = (inventoryData as any).average_cost || 0;
-        newTotalCost = currentTotalCost + (quantityChange * avgCost);
-      } else {
-        newTotalCost = currentTotalCost + (quantityChange * unitCost);
-      }
-      const newAverageCost = newQuantity > 0 ? newTotalCost / newQuantity : 0;
-      const { error } = await supabase
-        .from('raw_material_inventory')
-        .upsert({
-          raw_material_id: materialId,
-          quantity: newQuantity,
-          total_cost: newTotalCost,
-          average_cost: newAverageCost,
-          last_updated: new Date().toISOString(),
-        });
-      if (error) throw new Error(`Failed to update inventory: ${error.message}`);
-      return;
-    }
-
-    // Variant B (available/reserved): quantity_on_hand/quantity_available
-    const currentOnHand = (inventoryData as any)?.quantity_on_hand || 0;
-    const currentReserved = (inventoryData as any)?.quantity_reserved || 0;
+    const currentOnHand = inventoryData?.quantity_on_hand || 0;
+    const currentReserved = inventoryData?.quantity_reserved || 0;
     const newOnHand = currentOnHand + quantityChange;
     const newAvailable = Math.max(0, newOnHand - currentReserved);
     const { error } = await supabase
