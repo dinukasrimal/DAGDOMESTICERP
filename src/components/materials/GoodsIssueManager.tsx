@@ -23,7 +23,8 @@ import {
   Wrench,
   TestTube,
   Trash2,
-  Settings
+  Settings,
+  QrCode
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { 
@@ -37,6 +38,7 @@ import { PurchaseOrderService, PurchaseOrder } from '../../services/purchaseOrde
 import { supabase } from '@/integrations/supabase/client';
 import { BOMService, BOMWithLines } from '../../services/bomService';
 import { ModernLayout } from '../layout/ModernLayout';
+import { BarcodeScanner } from '@/components/ui/BarcodeScanner';
 
 const goodsIssueService = new GoodsIssueService();
 const rawMaterialsService = new RawMaterialsService();
@@ -84,6 +86,16 @@ export const GoodsIssueManager: React.FC = () => {
   const [showBOMSelection, setShowBOMSelection] = useState(false);
   const [categorySelections, setCategorySelections] = useState<{[categoryId: string]: {materialId: number, quantity: number}[]}>({});
   const { toast } = useToast();
+
+  // Fabric scanning state for Goods Issue (per raw material)
+  const [giFabricRolls, setGiFabricRolls] = useState<{[materialId: string]: { barcode: string; weight: number; length?: number }[]}>({});
+  const [giShowBarcodeCamera, setGiShowBarcodeCamera] = useState(false);
+  const [giCurrentMaterialId, setGiCurrentMaterialId] = useState<string | null>(null);
+  const [giScannedBarcode, setGiScannedBarcode] = useState('');
+  const [giRollWeight, setGiRollWeight] = useState<number>(0);
+  const [giRollLength, setGiRollLength] = useState<number>(0);
+  const [giShowWeightEntry, setGiShowWeightEntry] = useState(false);
+  const [giCurrentCategoryKey, setGiCurrentCategoryKey] = useState<string | null>(null);
 
   // Form states
   const [formData, setFormData] = useState<CreateGoodsIssue>({
@@ -489,6 +501,63 @@ export const GoodsIssueManager: React.FC = () => {
         return { id: Number(match[1]), name: match[2] };
       };
 
+      // Helpers for size-aware fabric calculation
+      const normalizeSize = (s: string): string => {
+        const t = (s || '').toString().trim().toLowerCase();
+        if (!t) return '';
+        if (t === 'xxl' || t === '2xl') return '2xl';
+        if (t === 'xl') return 'xl';
+        if (t === 'l') return 'l';
+        if (t === 'm') return 'm';
+        if (t === 's') return 's';
+        return t;
+      };
+      const extractSizeFromProductName = (name?: string): string => {
+        if (!name) return '';
+        // Try patterns like "CREDO- XL" (after dash)
+        const dashIdx = name.lastIndexOf('-');
+        if (dashIdx !== -1) {
+          const candidate = normalizeSize(name.slice(dashIdx + 1).replace(/\W+/g, ''));
+          if (candidate) return candidate;
+        }
+        // Try bracket default code like [CRXL]
+        const bracket = name.match(/\[(.*?)\]/);
+        if (bracket) {
+          const code = bracket[1];
+          if (/xl$/i.test(code)) return 'xl';
+          if (/^crxl$/i.test(code)) return 'xl';
+          if (/l$/i.test(code)) return 'l';
+          if (/m$/i.test(code)) return 'm';
+          if (/s$/i.test(code)) return 's';
+          if (/2xl$/i.test(code) || /xxl$/i.test(code)) return '2xl';
+        }
+        // Fallback: look for size tokens
+        const token = name.match(/\b(2xl|xxl|xl|l|m|s)\b/i);
+        return normalizeSize(token?.[1] || '');
+      };
+      const parseSizeConsumptionsFromNotes = (notes?: string): Record<string, number> => {
+        const map: Record<string, number> = {};
+        if (!notes) return map;
+        const text = notes.toString();
+        // Pattern A: entries like "CRXL|XL|multicolour: 0.03 units (0% waste)"
+        const pipeRe = /[^;\n]*\|(2xl|xxl|xl|l|m|s)\|[^:]*:\s*(\d+(?:\.\d+)?)/gi;
+        let matchA: RegExpExecArray | null;
+        while ((matchA = pipeRe.exec(text)) !== null) {
+          const size = normalizeSize(matchA[1]);
+          const val = parseFloat(matchA[2]);
+          if (!isNaN(val)) map[size] = val;
+        }
+        // Pattern B: entries like "XL: 0.03" or "XL = 0.03"
+        const directRe = /(2xl|xxl|xl|l|m|s)\s*[:=]\s*(\d+(?:\.\d+)?)/gi;
+        let matchB: RegExpExecArray | null;
+        while ((matchB = directRe.exec(text)) !== null) {
+          const size = normalizeSize(matchB[1]);
+          const val = parseFloat(matchB[2]);
+          if (!isNaN(val)) map[size] = val;
+        }
+        return map;
+      };
+
       if (bom.is_category_wise) {
         // For category-wise BOMs, show categories instead of specific materials
         for (const bomLine of bom.lines) {
@@ -500,10 +569,17 @@ export const GoodsIssueManager: React.FC = () => {
           let totalRequired = 0;
           
           const bomBaseQty = bom.quantity && bom.quantity > 0 ? bom.quantity : 1;
+          const sizeMap = parseSizeConsumptionsFromNotes(bomLine.notes);
           for (const product of purchaseOrder.products || []) {
-            // Requirement reflects each item's quantity on the PO (with fallbacks)
             const productQty = (Number(product.quantity) || Number(product.pending_qty) || Number(product.outstanding_qty) || 0);
-            const perUnitConsumption = (bomLine.quantity * (1 + (bomLine.waste_percentage || 0) / 100)) / bomBaseQty;
+            const sizeKey = extractSizeFromProductName(product.name);
+            let perUnitConsumption: number;
+            if (sizeKey && sizeMap[sizeKey] != null) {
+              perUnitConsumption = (sizeMap[sizeKey] * (1 + (bomLine.waste_percentage || 0) / 100)) / bomBaseQty;
+            } else {
+              // Fallback to generic line quantity if size-specific not present
+              perUnitConsumption = (bomLine.quantity * (1 + (bomLine.waste_percentage || 0) / 100)) / bomBaseQty;
+            }
             totalRequired += perUnitConsumption * productQty;
           }
 
@@ -536,10 +612,22 @@ export const GoodsIssueManager: React.FC = () => {
           let totalRequired = 0;
           
           const bomBaseQty = bom.quantity && bom.quantity > 0 ? bom.quantity : 1;
+          const isFabricLine = (bomLine.raw_material?.name || '').toLowerCase().includes('fabric');
+          const sizeMap = isFabricLine ? parseSizeConsumptionsFromNotes(bomLine.notes) : {};
           for (const product of purchaseOrder.products || []) {
-            // Multiply per-unit consumption by each item's quantity on the PO (with fallbacks)
             const productQty = (Number(product.quantity) || Number(product.pending_qty) || Number(product.outstanding_qty) || 0);
-            const perUnitConsumption = (bomLine.quantity * (1 + (bomLine.waste_percentage || 0) / 100)) / bomBaseQty;
+            let perUnitConsumption: number;
+            if (isFabricLine) {
+              const sizeKey = extractSizeFromProductName(product.name);
+              if (sizeKey && sizeMap[sizeKey] != null) {
+                perUnitConsumption = (sizeMap[sizeKey] * (1 + (bomLine.waste_percentage || 0) / 100)) / bomBaseQty;
+              } else {
+                // Fallback to generic quantity
+                perUnitConsumption = (bomLine.quantity * (1 + (bomLine.waste_percentage || 0) / 100)) / bomBaseQty;
+              }
+            } else {
+              perUnitConsumption = (bomLine.quantity * (1 + (bomLine.waste_percentage || 0) / 100)) / bomBaseQty;
+            }
             totalRequired += perUnitConsumption * productQty;
           }
 
@@ -618,6 +706,155 @@ export const GoodsIssueManager: React.FC = () => {
           : line
       )
     }));
+  };
+
+  // Fabric scan handlers (Goods Issue)
+  const startScanForMaterial = (materialId: string) => {
+    setGiCurrentMaterialId(materialId);
+    setGiShowBarcodeCamera(true);
+    setGiCurrentCategoryKey(null);
+  };
+
+  const startScanForCategoryMaterial = (categoryId: number, materialId: number) => {
+    setGiCurrentMaterialId(materialId.toString());
+    setGiCurrentCategoryKey(`category-${categoryId}`);
+    setGiShowBarcodeCamera(true);
+  };
+
+  const handleBarcodeScannedGI = async (barcode: string) => {
+    try {
+      if (!giCurrentMaterialId) return;
+      // Look up barcode from Goods Received lines
+      const { data: lines, error } = await supabase
+        .from('goods_received_lines')
+        .select('raw_material_id, roll_barcode, roll_weight')
+        .eq('roll_barcode', barcode)
+        .limit(1);
+      if (error) throw error;
+
+      if (!lines || lines.length === 0) {
+        toast({ title: 'Roll Not Found', description: 'This barcode has not been received in Goods Received.', variant: 'destructive' });
+        return;
+      }
+
+      const line = lines[0];
+      // Fetch material to validate category and identity
+      const { data: material } = await supabase
+        .from('raw_materials')
+        .select('id, name, category_id')
+        .eq('id', line.raw_material_id)
+        .single();
+
+      // Validate Fabric category and target
+      const expectedMaterialId = giCurrentMaterialId;
+      const isFabric = material?.category_id === 1 || (material?.name || '').toLowerCase().includes('fabric');
+      if (!isFabric) {
+        toast({ title: 'Not Fabric Category', description: 'Scanned roll is not in the Fabric category.', variant: 'destructive' });
+        return;
+      }
+
+      // If scanning under a category row, ensure the scanned roll's material belongs to that category
+      if (giCurrentCategoryKey) {
+        const expectedCategoryId = Number(giCurrentCategoryKey.replace('category-', '')) || null;
+        if (expectedCategoryId && material?.category_id !== expectedCategoryId) {
+          toast({ title: 'Wrong Category', description: 'Scanned roll does not belong to the selected category.', variant: 'destructive' });
+          return;
+        }
+      }
+
+      // If scanning under a specific material row, ensure it matches
+      if (String(material?.id) !== String(expectedMaterialId)) {
+        // If scanning under category mode, allow only if the selected category matches Fabric; otherwise block
+        if (!giCurrentCategoryKey) {
+          toast({ title: 'Different Material', description: 'This roll belongs to a different material.', variant: 'destructive' });
+          return;
+        }
+      }
+
+      const weight = Number(line.roll_weight) || 0;
+      if (weight <= 0) {
+        toast({ title: 'Invalid Roll Weight', description: 'This roll has no recorded weight. Cannot issue.', variant: 'destructive' });
+        return;
+      }
+
+      // Accept and add the roll with recorded weight
+      setGiScannedBarcode(barcode);
+      setGiRollWeight(weight);
+      setGiRollLength(0);
+      handleAddScannedRollGI();
+    } catch (err: any) {
+      toast({ title: 'Scan Error', description: err?.message || 'Failed to validate scanned roll.', variant: 'destructive' });
+    }
+  };
+
+  const handleAddScannedRollGI = () => {
+    if (!giCurrentMaterialId || !giScannedBarcode || giRollWeight <= 0) return;
+
+    setGiFabricRolls(prev => {
+      const existing = prev[giCurrentMaterialId] || [];
+      if (existing.some(r => r.barcode === giScannedBarcode)) {
+        toast({ title: 'Duplicate Barcode', description: 'This roll is already scanned for this material.', variant: 'destructive' });
+        return prev;
+      }
+      const updated = {
+        ...prev,
+        [giCurrentMaterialId]: [...existing, { barcode: giScannedBarcode, weight: giRollWeight, length: giRollLength }]
+      };
+      // Update issuing quantity to total scanned weight
+      const total = updated[giCurrentMaterialId].reduce((s, r) => s + r.weight, 0);
+      updateIssuingQuantity(giCurrentMaterialId, total);
+      // If scanning under a category selection, mirror into categorySelections to reflect in UI input
+      if (giCurrentCategoryKey) {
+        setCategorySelections(prev => ({
+          ...prev,
+          [giCurrentCategoryKey]: (prev[giCurrentCategoryKey]?.filter(i => i.materialId !== Number(giCurrentMaterialId)) || [])
+            .concat(total > 0 ? [{ materialId: Number(giCurrentMaterialId), quantity: total }] : [])
+        }));
+      }
+      return updated;
+    });
+
+    // Reset for next scan but keep scanner open
+    setGiScannedBarcode('');
+    setGiRollWeight(0);
+    setGiRollLength(0);
+    setGiShowWeightEntry(false);
+  };
+
+  const handleRemoveScannedRollGI = (barcode: string) => {
+    if (!giCurrentMaterialId) return;
+    setGiFabricRolls(prev => {
+      const updatedList = (prev[giCurrentMaterialId] || []).filter(r => r.barcode !== barcode);
+      const total = updatedList.reduce((s, r) => s + r.weight, 0);
+      updateIssuingQuantity(giCurrentMaterialId, total);
+      return { ...prev, [giCurrentMaterialId]: updatedList };
+    });
+  };
+
+  const handleFinishScanningGI = () => {
+    setGiShowBarcodeCamera(false);
+    setGiShowWeightEntry(false);
+    setGiScannedBarcode('');
+    setGiRollWeight(0);
+    setGiRollLength(0);
+    setGiCurrentMaterialId(null);
+    setGiCurrentCategoryKey(null);
+    // Ensure the Goods Issue dialog remains open after closing scanner
+    setIsCreateDialogOpen(true);
+  };
+
+  // Restrict scanning to Fabric only (category_id === 1, or name contains 'fabric')
+  const isFabricMaterialId = (materialId: string): boolean => {
+    const mat = rawMaterials.find(m => m.id.toString() === materialId);
+    if (!mat) return false;
+    if ((mat as any).category_id === 1 || mat.category?.id === 1) return true;
+    const name = (mat.name || '').toLowerCase();
+    return name.includes('fabric');
+  };
+
+  const isFabricCategory = (categoryId?: number, categoryName?: string): boolean => {
+    if (categoryId === 1) return true;
+    return (categoryName || '').toLowerCase().includes('fabric');
   };
 
   const handlePOSelection = async (orderId: string) => {
@@ -1204,14 +1441,27 @@ export const GoodsIssueManager: React.FC = () => {
                                   {isCategoryBased ? (
                                     <span className="text-sm text-gray-500 italic">Select materials below</span>
                                   ) : (
-                                    <Input
-                                      type="number"
-                                      min="0"
-                                      step="0.001"
-                                      value={req.issuing_quantity}
-                                      onChange={(e) => updateIssuingQuantity(req.material_id, parseFloat(e.target.value) || 0)}
-                                      className={`w-24 ${isOverIssuing ? 'border-yellow-400 bg-yellow-50' : ''} ${isInsufficientStock ? 'border-red-400 bg-red-50' : ''}`}
-                                    />
+                                    <div className="flex items-center space-x-2">
+                                      <Input
+                                        type="number"
+                                        min="0"
+                                        step="0.001"
+                                        value={req.issuing_quantity}
+                                        onChange={(e) => updateIssuingQuantity(req.material_id, parseFloat(e.target.value) || 0)}
+                                        className={`w-24 ${isOverIssuing ? 'border-yellow-400 bg-yellow-50' : ''} ${isInsufficientStock ? 'border-red-400 bg-red-50' : ''}`}
+                                      />
+                                      {isFabricMaterialId(req.material_id) && (
+                                        <Button 
+                                          variant="outline" 
+                                          size="sm" 
+                                          className="h-8 px-2"
+                                          onClick={() => startScanForMaterial(req.material_id)}
+                                          title="Scan rolls to set quantity"
+                                        >
+                                          <QrCode className="h-4 w-4" />
+                                        </Button>
+                                      )}
+                                    </div>
                                   )}
                                 </TableCell>
                                 <TableCell>
@@ -1280,6 +1530,7 @@ export const GoodsIssueManager: React.FC = () => {
                                                 step="0.001"
                                                 placeholder="Qty"
                                                 className="w-20 h-8 text-sm"
+                                                value={(categorySelections[`category-${req.category_id}`]?.find(i => i.materialId === material.id)?.quantity ?? '') as any}
                                                 onChange={(e) => {
                                                   const qty = parseFloat(e.target.value) || 0;
                                                   const categoryKey = `category-${req.category_id}`;
@@ -1291,6 +1542,17 @@ export const GoodsIssueManager: React.FC = () => {
                                                   }));
                                                 }}
                                               />
+                                              {isFabricCategory(req.category_id, req.material_name) && (
+                                                <Button 
+                                                  variant="outline" 
+                                                  size="sm" 
+                                                  className="h-8 px-2"
+                                                  onClick={() => startScanForCategoryMaterial(req.category_id!, material.id)}
+                                                  title="Scan rolls to set quantity"
+                                                >
+                                                  <QrCode className="h-4 w-4" />
+                                                </Button>
+                                              )}
                                             </div>
                                           </div>
                                         ))}
@@ -1552,6 +1814,88 @@ export const GoodsIssueManager: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Full-Screen Barcode Scanner for Goods Issue */}
+      <BarcodeScanner
+        isOpen={giShowBarcodeCamera}
+        onScan={handleBarcodeScannedGI}
+        scannedRolls={giCurrentMaterialId ? giFabricRolls[giCurrentMaterialId] || [] : []}
+        currentScanningLine={
+          giCurrentMaterialId 
+            ? (rawMaterials.find(m => m.id.toString() === giCurrentMaterialId)?.name || 'Material')
+            : 'Material'
+        }
+        onRemoveRoll={(barcode) => handleRemoveScannedRollGI(barcode)}
+        onDone={handleFinishScanningGI}
+        onClose={handleFinishScanningGI}
+      >
+        {giShowWeightEntry && giScannedBarcode && (
+          <div 
+            className="absolute inset-0 flex items-center justify-center bg-black/50"
+            style={{ zIndex: 2147483646, pointerEvents: 'none' }}
+          >
+            <Card 
+              className="w-full max-w-md mx-4 bg-white"
+              onClick={(e) => e.stopPropagation()}
+              style={{ position: 'relative', zIndex: 2147483647, pointerEvents: 'auto' }}
+            >
+              <CardHeader>
+                <CardTitle className="text-lg">Enter Roll Details</CardTitle>
+                <CardDescription>
+                  Barcode: <strong>{giScannedBarcode}</strong>
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label>Weight (kg) *</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={giRollWeight || ''}
+                      onChange={(e) => setGiRollWeight(parseFloat(e.target.value) || 0)}
+                      placeholder="0.00"
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <Label>Length (m)</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={giRollLength || ''}
+                      onChange={(e) => setGiRollLength(parseFloat(e.target.value) || 0)}
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
+                <div className="flex space-x-2">
+                  <Button 
+                    onClick={handleAddScannedRollGI}
+                    className="flex-1 bg-green-600 hover:bg-green-700"
+                    disabled={!giRollWeight || giRollWeight <= 0}
+                    type="button"
+                  >
+                    Add Roll
+                  </Button>
+                  <Button 
+                    onClick={() => {
+                      setGiShowWeightEntry(false);
+                      setGiScannedBarcode('');
+                      setGiRollWeight(0);
+                      setGiRollLength(0);
+                    }}
+                    variant="outline"
+                    className="flex-1"
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+      </BarcodeScanner>
 
       {/* View Goods Issue Dialog */}
       <Dialog open={isViewDialogOpen} onOpenChange={setIsViewDialogOpen}>

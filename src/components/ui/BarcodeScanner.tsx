@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { Button } from './button';
 import { Input } from './input';
@@ -200,12 +201,12 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
 
   if (!isOpen) return null;
 
-  return (
+  const overlay = (
     <div 
       className="fixed inset-0 bg-black flex flex-col barcode-scanner-overlay" 
       style={{ 
         zIndex: 2147483647, // Maximum z-index value
-        position: 'fixed !important' as any,
+        position: 'fixed',
         top: 0,
         left: 0,
         right: 0,
@@ -476,4 +477,6 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
       </div>
     </div>
   );
+
+  return createPortal(overlay, document.body);
 };
