@@ -156,12 +156,21 @@ export const GoodsIssueManager: React.FC = () => {
               : order.order_lines;
             
             if (Array.isArray(orderLines)) {
-              products = orderLines.map(line => ({
-                id: line.product_id || line.id,
-                name: line.product_name || line.name || 'Unknown Product',
-                quantity: line.product_qty || line.qty || 0,
-                pending_qty: order.pending_qty || 0
-              }));
+              products = orderLines.map(line => {
+                const qty = 
+                  line.product_uom_qty ??
+                  line.product_qty ??
+                  line.qty ??
+                  line.quantity ??
+                  line.order_qty ??
+                  0;
+                return ({
+                  id: line.product_id || line.id,
+                  name: line.product_name || line.name || 'Unknown Product',
+                  quantity: Number(qty) || 0,
+                  pending_qty: order.pending_qty || 0,
+                });
+              });
             }
           }
         } catch (error) {
@@ -472,37 +481,49 @@ export const GoodsIssueManager: React.FC = () => {
         : new Map<string, number>();
 
       // Check if this is a category-wise BOM
+      // Helper to parse category info from legacy/hacky notes format: CATEGORY:{id}:{name}:[...]
+      const parseCategoryFromNotes = (notes?: string): { id: number; name: string } | null => {
+        if (!notes) return null;
+        const match = notes.match(/CATEGORY:(\d+):([^:]+)(?::|$)/);
+        if (!match) return null;
+        return { id: Number(match[1]), name: match[2] };
+      };
+
       if (bom.is_category_wise) {
         // For category-wise BOMs, show categories instead of specific materials
         for (const bomLine of bom.lines) {
-          if (!bomLine.material_category) continue;
+          // Prefer explicit material_category; otherwise try to parse from notes
+          const categoryInfo = bomLine.material_category || parseCategoryFromNotes(bomLine.notes || '');
+          if (!categoryInfo) continue;
 
           // Calculate total quantity needed based on PO quantities
           let totalRequired = 0;
           
+          const bomBaseQty = bom.quantity && bom.quantity > 0 ? bom.quantity : 1;
           for (const product of purchaseOrder.products || []) {
-            const productQty = product.pending_qty || product.outstanding_qty || product.quantity || 0;
-            const materialQtyPerUnit = bomLine.quantity * (1 + (bomLine.waste_percentage || 0) / 100);
-            totalRequired += materialQtyPerUnit * productQty;
+            // Requirement reflects each item's quantity on the PO (with fallbacks)
+            const productQty = (Number(product.quantity) || Number(product.pending_qty) || Number(product.outstanding_qty) || 0);
+            const perUnitConsumption = (bomLine.quantity * (1 + (bomLine.waste_percentage || 0) / 100)) / bomBaseQty;
+            totalRequired += perUnitConsumption * productQty;
           }
 
           // Get available inventory for this category
           const { data: categoryMaterials } = await supabase
             .from('raw_materials')
             .select('id, name, base_unit')
-            .eq('category_id', bomLine.material_category.id)
+            .eq('category_id', categoryInfo.id)
             .eq('active', true);
 
           // Add category as a requirement entry
           materialRequirements.push({
-            material_id: `category-${bomLine.material_category.id}`,
-            material_name: `📁 ${bomLine.material_category.name} (Category)`,
+            material_id: `category-${categoryInfo.id}`,
+            material_name: `📁 ${categoryInfo.name} (Category)`,
             required_quantity: totalRequired,
             issued_so_far: 0, // TODO: Get actual issued quantities
             issuing_quantity: 0,
             unit: bomLine.unit,
             available_quantity: 999999, // Categories don't have stock limits
-            category_id: bomLine.material_category.id,
+            category_id: categoryInfo.id,
             category_materials: categoryMaterials || []
           });
         }
@@ -514,11 +535,12 @@ export const GoodsIssueManager: React.FC = () => {
           // Calculate total quantity needed based on PO quantities
           let totalRequired = 0;
           
+          const bomBaseQty = bom.quantity && bom.quantity > 0 ? bom.quantity : 1;
           for (const product of purchaseOrder.products || []) {
-            // For now, use pending/outstanding quantity
-            const productQty = product.pending_qty || product.outstanding_qty || product.quantity || 0;
-            const materialQtyPerUnit = bomLine.quantity * (1 + (bomLine.waste_percentage || 0) / 100);
-            totalRequired += materialQtyPerUnit * productQty;
+            // Multiply per-unit consumption by each item's quantity on the PO (with fallbacks)
+            const productQty = (Number(product.quantity) || Number(product.pending_qty) || Number(product.outstanding_qty) || 0);
+            const perUnitConsumption = (bomLine.quantity * (1 + (bomLine.waste_percentage || 0) / 100)) / bomBaseQty;
+            totalRequired += perUnitConsumption * productQty;
           }
 
           if (totalRequired > 0) {
@@ -540,6 +562,14 @@ export const GoodsIssueManager: React.FC = () => {
       }
 
       setBomMaterialRequirements(materialRequirements);
+
+      if (materialRequirements.length === 0) {
+        toast({
+          title: 'No Requirements Calculated',
+          description: 'Could not derive quantities from PO items. Please verify PO line quantities and BOM base quantity.',
+          variant: 'destructive'
+        });
+      }
       
       // Auto-populate form lines based on BOM requirements
       const autoLines: CreateGoodsIssueLine[] = materialRequirements.map(req => ({
@@ -562,7 +592,7 @@ export const GoodsIssueManager: React.FC = () => {
 
   // Handle BOM selection
   const handleBOMSelection = async (bomId: string) => {
-    const bom = availableBOMs.find(b => b.id === bomId);
+    const bom = availableBOMs.find(b => String(b.id) === String(bomId));
     if (bom && selectedPurchaseOrder) {
       setSelectedBOM(bom);
       await calculateBOMBasedRequirements(bom, selectedPurchaseOrder);
@@ -1055,7 +1085,7 @@ export const GoodsIssueManager: React.FC = () => {
                       <div className="mt-4">
                         <Label>Select BOM for Material Requirements *</Label>
                         <Select 
-                          value={selectedBOM?.id || ''} 
+                          value={selectedBOM?.id ? String(selectedBOM.id) : ''} 
                           onValueChange={handleBOMSelection}
                         >
                           <SelectTrigger>
@@ -1063,7 +1093,7 @@ export const GoodsIssueManager: React.FC = () => {
                           </SelectTrigger>
                           <SelectContent>
                             {availableBOMs.map((bom) => (
-                              <SelectItem key={bom.id} value={bom.id}>
+                              <SelectItem key={bom.id} value={String(bom.id)}>
                                 <div className="flex items-center space-x-2">
                                   <Package className="h-3 w-3 text-blue-600" />
                                   <div>

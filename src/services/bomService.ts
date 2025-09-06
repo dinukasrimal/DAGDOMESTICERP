@@ -392,23 +392,14 @@ export class BOMService {
     }> = [];
 
     if (bomData.is_category_wise) {
-      // Get category names for enhanced name
-      const { data: categories } = await supabase
-        .from('product_categories')
-        .select('id, name')
+      // Category-wise: still tied to selected products; reflect product names in BOM name
+      const { data: productData } = await supabase
+        .from('products')
+        .select('id, name, default_code, colour, size')
         .in('id', bomData.product_ids);
-
-      const categoryNames = categories?.map(c => c.name) || [];
-      enhancedName = `${bomData.name} (Categories: ${categoryNames.slice(0, 3).join(', ')}${categoryNames.length > 3 ? ` +${categoryNames.length - 3} more` : ''})`; 
-      
-      // For category-wise BOMs, we store category info as mock products
-      products = categories?.map(c => ({
-        id: c.id,
-        name: c.name,
-        default_code: `CAT-${c.id}`,
-        colour: null,
-        size: null
-      })) || [];
+      const productNames = productData?.map(p => p.name) || [];
+      enhancedName = `${bomData.name} (${productNames.slice(0, 3).join(', ')}${productNames.length > 3 ? ` +${productNames.length - 3} more` : ''})`;
+      products = productData || [];
     } else {
       // Get product names for enhanced name
       const { data: productData } = await supabase
