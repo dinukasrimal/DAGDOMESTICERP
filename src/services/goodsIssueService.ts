@@ -77,44 +77,162 @@ export interface UpdateGoodsIssue {
 }
 
 export class GoodsIssueService {
+  private async attachLinesAndMaterials(issues: GoodsIssue[]): Promise<GoodsIssue[]> {
+    if (!issues.length) return issues;
+
+    const issueIds = issues.map(i => i.id);
+    const { data: lines, error: linesErr } = await supabase
+      .from('goods_issue_lines')
+      .select('*')
+      .in('goods_issue_id', issueIds);
+    if (linesErr) throw new Error(`Failed to fetch goods issue lines: ${linesErr.message}`);
+
+    const materialIds = Array.from(new Set((lines || []).map(l => l.raw_material_id).filter(Boolean)));
+    let materialsMap = new Map<string, any>();
+    if (materialIds.length) {
+      const { data: materials, error: matErr } = await supabase
+        .from('raw_materials')
+        .select('id, name, code, base_unit')
+        .in('id', materialIds);
+      if (matErr) throw new Error(`Failed to fetch raw materials: ${matErr.message}`);
+      materialsMap = new Map((materials || []).map(m => [m.id, m]));
+    }
+
+    const linesByIssue = new Map<string, GoodsIssueLine[]>();
+    for (const l of lines || []) {
+      const arr = linesByIssue.get(l.goods_issue_id) || [];
+      const rawMat = materialsMap.get(l.raw_material_id);
+      arr.push({
+        ...l,
+        raw_material: rawMat ? {
+          id: rawMat.id,
+          name: rawMat.name,
+          code: rawMat.code,
+          base_unit: rawMat.base_unit,
+        } : undefined,
+      } as GoodsIssueLine);
+      linesByIssue.set(l.goods_issue_id, arr);
+    }
+
+    return issues.map(i => ({ ...i, lines: linesByIssue.get(i.id) || [] }));
+  }
+
   async getAllGoodsIssue(): Promise<GoodsIssue[]> {
-    // For now, return empty array since goods issue tables may not be created yet
-    // This allows the UI to work without database errors
-    console.log('Goods issue tables not yet implemented - returning empty array');
-    return [];
+    try {
+      const { data, error } = await supabase
+        .from('goods_issue')
+        .select('*')
+        .order('issue_date', { ascending: false })
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return this.attachLinesAndMaterials((data || []) as unknown as GoodsIssue[]);
+    } catch (err: any) {
+      if (typeof err?.message === 'string' && err.message.toLowerCase().includes('relation')) {
+        console.warn('Goods Issue tables not found. Returning empty list. Apply migrations in supabase/migrations/20250821000002-create-purchase-goods-management.sql');
+        return [];
+      }
+      throw new Error(`Failed to fetch goods issues: ${err?.message || err}`);
+    }
   }
 
   async getGoodsIssue(id: string): Promise<GoodsIssue> {
-    // Placeholder - goods issue tables not yet implemented
-    throw new Error('Goods issue feature not yet implemented');
+    try {
+      const { data, error } = await supabase
+        .from('goods_issue')
+        .select('*')
+        .eq('id', id)
+        .single();
+      if (error) throw error;
+      const issues = await this.attachLinesAndMaterials([data as unknown as GoodsIssue]);
+      return issues[0];
+    } catch (err: any) {
+      if (typeof err?.message === 'string' && err.message.toLowerCase().includes('relation')) {
+        throw new Error('Goods Issue tables not found. Please apply migrations (supabase/migrations/20250821000002-create-purchase-goods-management.sql).');
+      }
+      throw new Error(`Failed to fetch goods issue: ${err?.message || err}`);
+    }
   }
 
   async createGoodsIssue(goodsIssue: CreateGoodsIssue): Promise<GoodsIssue> {
-    // Create a mock goods issue for now since tables don't exist yet
-    const mockIssue: GoodsIssue = {
-      id: 'mock-' + Date.now(),
-      issue_number: 'GI-' + Date.now().toString().slice(-6),
-      issue_date: goodsIssue.issue_date,
-      issue_type: goodsIssue.issue_type,
-      reference_number: goodsIssue.reference_number,
-      status: 'pending',
-      notes: goodsIssue.notes,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      lines: goodsIssue.lines.map((line, index) => ({
-        id: 'mock-line-' + index,
-        goods_issue_id: 'mock-' + Date.now(),
-        raw_material_id: line.raw_material_id,
-        quantity_issued: line.quantity_issued,
-        unit_cost: line.unit_cost,
-        batch_number: line.batch_number,
-        notes: line.notes,
-        created_at: new Date().toISOString()
-      }))
-    };
-    
-    console.log('Created mock goods issue:', mockIssue);
-    return mockIssue;
+    // Generate next issue number via RPC
+    let generatedNumber: string | null = null;
+    try {
+      const { data: nextNumber, error: numErr } = await supabase.rpc('generate_issue_number');
+      if (numErr) throw numErr;
+      generatedNumber = nextNumber as unknown as string;
+    } catch {
+      // Fallback to timestamp-based number if RPC is unavailable
+      const ts = Date.now().toString().slice(-8);
+      generatedNumber = `GI${ts}`;
+    }
+
+    // Insert goods_issue header
+    let header: any;
+    try {
+      const res = await supabase
+        .from('goods_issue')
+        .insert({
+          issue_number: generatedNumber as string,
+          issue_date: goodsIssue.issue_date,
+          issue_type: goodsIssue.issue_type,
+          reference_number: goodsIssue.reference_number,
+          status: 'pending',
+          notes: goodsIssue.notes,
+        })
+        .select()
+        .single();
+      if (res.error) throw res.error;
+      header = res.data;
+    } catch (err: any) {
+      if (typeof err?.message === 'string' && err.message.toLowerCase().includes('relation')) {
+        console.warn('Goods Issue tables not found. Creating non-persistent mock for UI continuity.');
+        const mockIssue: GoodsIssue = {
+          id: 'mock-' + Date.now(),
+          issue_number: generatedNumber as string,
+          issue_date: goodsIssue.issue_date,
+          issue_type: goodsIssue.issue_type,
+          reference_number: goodsIssue.reference_number,
+          status: 'pending',
+          notes: goodsIssue.notes,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          lines: goodsIssue.lines.map((line, index) => ({
+            id: 'mock-line-' + index,
+            goods_issue_id: 'mock-' + Date.now(),
+            raw_material_id: line.raw_material_id,
+            quantity_issued: line.quantity_issued,
+            unit_cost: line.unit_cost,
+            batch_number: line.batch_number,
+            notes: line.notes,
+            created_at: new Date().toISOString()
+          }))
+        };
+        return mockIssue;
+      }
+      throw new Error(`Failed to create goods issue: ${err?.message || err}`);
+    }
+
+    // Insert lines (unit_cost may be null; will be finalized on issue)
+    if (goodsIssue.lines && goodsIssue.lines.length > 0) {
+      const { error: linesErr } = await supabase
+        .from('goods_issue_lines')
+        .insert(
+          goodsIssue.lines.map((l) => ({
+            goods_issue_id: header.id,
+            raw_material_id: l.raw_material_id,
+            quantity_issued: l.quantity_issued,
+            unit_cost: l.unit_cost,
+            batch_number: l.batch_number,
+            notes: l.notes,
+          }))
+        );
+      if (linesErr) {
+        throw new Error(`Failed to create goods issue lines: ${linesErr.message}`);
+      }
+    }
+
+    // Return the composed issue with lines + material info
+    return this.getGoodsIssue(header.id);
   }
 
   async updateGoodsIssue(id: string, updates: UpdateGoodsIssue): Promise<GoodsIssue> {
@@ -157,29 +275,70 @@ export class GoodsIssueService {
   }
 
   async issueGoods(id: string): Promise<void> {
-    // Mock implementation - goods issue tables not yet created
-    console.log('Mock: Issuing goods for ID:', id);
-    return;
+    // Fetch issue with lines
+    const issue = await this.getGoodsIssue(id);
+    if (!issue) throw new Error('Goods issue not found');
+    if (issue.status !== 'pending') throw new Error('Only pending issues can be issued');
+
+    // For each line, ensure unit cost and update inventory
+    for (const line of issue.lines || []) {
+      // Determine unit cost if missing
+      let unitCost = line.unit_cost;
+      if (unitCost == null) {
+        unitCost = await this.getAverageCost(line.raw_material_id);
+        // Persist computed unit cost onto the line
+        const { error: updErr } = await supabase
+          .from('goods_issue_lines')
+          .update({ unit_cost: unitCost })
+          .eq('id', line.id);
+        if (updErr) {
+          throw new Error(`Failed to set unit cost for line: ${updErr.message}`);
+        }
+      }
+
+      // Validate availability
+      await this.validateInventoryAvailability(line.raw_material_id, line.quantity_issued);
+
+      // Apply inventory decrease
+      await this.updateRawMaterialInventory(
+        line.raw_material_id,
+        -Math.abs(line.quantity_issued),
+        unitCost || 0
+      );
+    }
+
+    // Mark header as issued
+    const { error } = await supabase
+      .from('goods_issue')
+      .update({ status: 'issued' })
+      .eq('id', id);
+    if (error) {
+      throw new Error(`Failed to mark goods issue as issued: ${error.message}`);
+    }
   }
 
   async cancelGoodsIssue(id: string): Promise<void> {
-    // Mock implementation - goods issue tables not yet created
-    console.log('Mock: Cancelling goods issue for ID:', id);
-    return;
+    const { error } = await supabase
+      .from('goods_issue')
+      .update({ status: 'cancelled' })
+      .eq('id', id);
+    if (error) {
+      throw new Error(`Failed to cancel goods issue: ${error.message}`);
+    }
   }
 
   private async validateInventoryAvailability(materialId: string, requiredQuantity: number): Promise<void> {
     const { data: inventoryData, error } = await supabase
       .from('raw_material_inventory')
-      .select('quantity')
+      .select('quantity, quantity_available')
       .eq('raw_material_id', materialId)
-      .single();
+      .maybeSingle();
 
     if (error && error.code !== 'PGRST116') {
       throw new Error(`Failed to check inventory: ${error.message}`);
     }
 
-    const availableQuantity = inventoryData?.quantity || 0;
+    const availableQuantity = inventoryData?.quantity ?? inventoryData?.quantity_available ?? 0;
     if (availableQuantity < requiredQuantity) {
       // Get material name for better error message
       const { data: materialData } = await supabase
@@ -196,107 +355,107 @@ export class GoodsIssueService {
   }
 
   private async getAverageCost(materialId: string): Promise<number> {
-    const { data: inventoryData, error } = await supabase
+    const { data: inventoryData } = await supabase
       .from('raw_material_inventory')
-      .select('average_cost')
+      .select('average_cost, total_cost, quantity')
       .eq('raw_material_id', materialId)
-      .single();
-
-    if (error) {
-      return 0;
-    }
-
-    return inventoryData.average_cost || 0;
+      .maybeSingle();
+    if (!inventoryData) return 0;
+    if (inventoryData.average_cost != null) return inventoryData.average_cost as number;
+    const qty = (inventoryData as any).quantity || 0;
+    const total = (inventoryData as any).total_cost || 0;
+    return qty > 0 ? total / qty : 0;
   }
 
   private async updateRawMaterialInventory(
-    materialId: string, 
-    quantityChange: number, 
+    materialId: string,
+    quantityChange: number,
     unitCost: number
   ): Promise<void> {
-    // Get current inventory
+    // Get current inventory, supporting both schema variants
     const { data: inventoryData, error: fetchError } = await supabase
       .from('raw_material_inventory')
-      .select('quantity, total_cost, average_cost')
+      .select('quantity, total_cost, average_cost, quantity_on_hand, quantity_reserved, quantity_available')
       .eq('raw_material_id', materialId)
-      .single();
-
+      .maybeSingle();
     if (fetchError && fetchError.code !== 'PGRST116') {
       throw new Error(`Failed to fetch inventory: ${fetchError.message}`);
     }
 
-    const currentQuantity = inventoryData?.quantity || 0;
-    const currentTotalCost = inventoryData?.total_cost || 0;
-    const newQuantity = currentQuantity + quantityChange;
-
-    let newTotalCost: number;
-    let newAverageCost: number;
-
-    if (quantityChange < 0) {
-      // Issue (decrease): use average cost
-      const avgCost = inventoryData?.average_cost || 0;
-      newTotalCost = currentTotalCost + (quantityChange * avgCost);
-    } else {
-      // Receipt (increase): add at unit cost
-      newTotalCost = currentTotalCost + (quantityChange * unitCost);
+    // Variant A (costed): quantity/total_cost/average_cost
+    if (inventoryData && (inventoryData as any).quantity != null) {
+      const currentQuantity = (inventoryData as any).quantity || 0;
+      const currentTotalCost = (inventoryData as any).total_cost || 0;
+      const newQuantity = currentQuantity + quantityChange;
+      let newTotalCost: number;
+      if (quantityChange < 0) {
+        const avgCost = (inventoryData as any).average_cost || 0;
+        newTotalCost = currentTotalCost + (quantityChange * avgCost);
+      } else {
+        newTotalCost = currentTotalCost + (quantityChange * unitCost);
+      }
+      const newAverageCost = newQuantity > 0 ? newTotalCost / newQuantity : 0;
+      const { error } = await supabase
+        .from('raw_material_inventory')
+        .upsert({
+          raw_material_id: materialId,
+          quantity: newQuantity,
+          total_cost: newTotalCost,
+          average_cost: newAverageCost,
+          last_updated: new Date().toISOString(),
+        });
+      if (error) throw new Error(`Failed to update inventory: ${error.message}`);
+      return;
     }
 
-    newAverageCost = newQuantity > 0 ? newTotalCost / newQuantity : 0;
-
-    // Update inventory
+    // Variant B (available/reserved): quantity_on_hand/quantity_available
+    const currentOnHand = (inventoryData as any)?.quantity_on_hand || 0;
+    const currentReserved = (inventoryData as any)?.quantity_reserved || 0;
+    const newOnHand = currentOnHand + quantityChange;
+    const newAvailable = Math.max(0, newOnHand - currentReserved);
     const { error } = await supabase
       .from('raw_material_inventory')
       .upsert({
         raw_material_id: materialId,
-        quantity: newQuantity,
-        total_cost: newTotalCost,
-        average_cost: newAverageCost,
+        quantity_on_hand: newOnHand,
+        quantity_available: newAvailable,
         last_updated: new Date().toISOString(),
       });
-
-    if (error) {
-      throw new Error(`Failed to update inventory: ${error.message}`);
-    }
+    if (error) throw new Error(`Failed to update inventory: ${error.message}`);
   }
 
   async getPendingGoodsIssue(): Promise<GoodsIssue[]> {
-    const { data, error } = await supabase
-      .from('goods_issue')
-      .select(`
-        *,
-        lines:goods_issue_lines(
-          *,
-          raw_material:raw_materials(id, name, code, base_unit)
-        )
-      `)
-      .eq('status', 'pending')
-      .order('issue_date', { ascending: true });
-
-    if (error) {
-      throw new Error(`Failed to fetch pending goods issues: ${error.message}`);
+    try {
+      const { data, error } = await supabase
+        .from('goods_issue')
+        .select('*')
+        .eq('status', 'pending')
+        .order('issue_date', { ascending: true });
+      if (error) throw error;
+      return this.attachLinesAndMaterials((data || []) as unknown as GoodsIssue[]);
+    } catch (err: any) {
+      if (typeof err?.message === 'string' && err.message.toLowerCase().includes('relation')) {
+        return [];
+      }
+      throw new Error(`Failed to fetch pending goods issues: ${err?.message || err}`);
     }
-
-    return data || [];
   }
 
   async getGoodsIssueByType(issueType: GoodsIssue['issue_type']): Promise<GoodsIssue[]> {
-    const { data, error } = await supabase
-      .from('goods_issue')
-      .select(`
-        *,
-        lines:goods_issue_lines(
-          *,
-          raw_material:raw_materials(id, name, code, base_unit)
-        )
-      `)
-      .eq('issue_type', issueType)
-      .order('issue_date', { ascending: false });
-
-    if (error) {
-      throw new Error(`Failed to fetch goods issues by type: ${error.message}`);
+    try {
+      const { data, error } = await supabase
+        .from('goods_issue')
+        .select('*')
+        .eq('issue_type', issueType)
+        .order('issue_date', { ascending: false });
+      if (error) throw error;
+      return this.attachLinesAndMaterials((data || []) as unknown as GoodsIssue[]);
+    } catch (err: any) {
+      if (typeof err?.message === 'string' && err.message.toLowerCase().includes('relation')) {
+        return [];
+      }
+      throw new Error(`Failed to fetch goods issues by type: ${err?.message || err}`);
     }
-
-    return data || [];
   }
 
   async addGoodsIssueLine(issueId: string, line: CreateGoodsIssueLine): Promise<void> {
