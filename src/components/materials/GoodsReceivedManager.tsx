@@ -561,6 +561,8 @@ export const GoodsReceivedManager: React.FC = () => {
         grn.id === id ? { ...grn, status: 'verified' } : grn
       ));
       toast({ title: 'Verified', description: 'GRN verified successfully.' });
+      // Broadcast inventory update so other screens can refresh
+      window.dispatchEvent(new CustomEvent('inventory-updated'));
     } catch (error: any) {
       toast({ title: 'Error', description: error.message || 'Failed to verify GRN', variant: 'destructive' });
     }

@@ -441,6 +441,13 @@ export const RawMaterialsManager: React.FC = () => {
     loadSuppliers();
   }, []);
 
+  // Refresh when inventory updates elsewhere (e.g., after GRN approval)
+  useEffect(() => {
+    const handler = () => loadMaterials();
+    window.addEventListener('inventory-updated', handler as any);
+    return () => window.removeEventListener('inventory-updated', handler as any);
+  }, []);
+
   useEffect(() => {
     if (searchTerm) {
       const filtered = materials.filter(material =>

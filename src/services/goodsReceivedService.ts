@@ -87,6 +87,30 @@ export interface UpdateGoodsReceived {
 }
 
 export class GoodsReceivedService {
+  private async addInventoryLayer(params: { raw_material_id: number, grn_line_id?: string, quantity: number, unit_cost: number, batch_number?: string | null, expiry_date?: string | null }): Promise<void> {
+    try {
+      const { error } = await supabase
+        .from('inventory_layers')
+        .insert({
+          raw_material_id: params.raw_material_id,
+          grn_line_id: params.grn_line_id || null,
+          qty_remaining: params.quantity,
+          unit_cost: params.unit_cost,
+          batch_number: params.batch_number || null,
+          expiry_date: params.expiry_date || null,
+          received_at: new Date().toISOString(),
+        });
+      if (error) throw error;
+    } catch (err: any) {
+      // Fail soft if layers table is not present
+      if (typeof err?.message === 'string' && err.message.toLowerCase().includes('relation')) {
+        console.warn('inventory_layers table not found; skipping layer creation');
+        return;
+      }
+      console.error('Failed to add inventory layer:', err);
+      // Do not block GRN posting because of layers
+    }
+  }
   async getAllGoodsReceived(): Promise<GoodsReceived[]> {
     const { data, error } = await supabase
       .from('goods_received')
@@ -342,13 +366,17 @@ export class GoodsReceivedService {
       throw new Error(`Failed to verify/post goods received: ${updateError.message}`);
     }
 
-    // Update raw materials inventory (FIFO layers not tracked yet; aggregate quantities are updated)
+    // Update raw materials inventory and layers
     for (const line of grnData.lines || []) {
-      await this.updateRawMaterialInventory(
-        line.raw_material_id,
-        line.quantity_received,
-        line.unit_price
-      );
+      const materialId = Number(line.raw_material_id);
+      await this.updateRawMaterialInventory(materialId, line.quantity_received, line.unit_price);
+      await this.addInventoryLayer({
+        raw_material_id: materialId,
+        quantity: line.quantity_received,
+        unit_cost: line.unit_price,
+        batch_number: line.batch_number || null,
+        expiry_date: line.expiry_date || null,
+      });
     }
   }
 
@@ -486,11 +514,12 @@ export class GoodsReceivedService {
   }
 
   private async updateRawMaterialInventory(materialId: string, quantityChange: number, unitCost: number): Promise<void> {
+    const id = Number(materialId);
     // Schema with quantity_on_hand/quantity_available/quantity_reserved
     const { data: inventoryData, error: fetchError } = await supabase
       .from('raw_material_inventory')
-      .select('quantity_on_hand, quantity_reserved, quantity_available')
-      .eq('raw_material_id', materialId)
+      .select('quantity_on_hand, quantity_reserved, quantity_available, location')
+      .eq('raw_material_id', id)
       .maybeSingle();
 
     if (fetchError && fetchError.code !== 'PGRST116') {
@@ -502,14 +531,34 @@ export class GoodsReceivedService {
     const newOnHand = currentOnHand + quantityChange;
     const newAvailable = Math.max(0, newOnHand - currentReserved);
 
-    const { error } = await supabase
-      .from('raw_material_inventory')
-      .upsert({
-        raw_material_id: materialId,
-        quantity_on_hand: newOnHand,
-        quantity_available: newAvailable,
-        last_updated: new Date().toISOString(),
-      });
+    let invWriteErr: any = null;
+    if (inventoryData) {
+      const { error } = await supabase
+        .from('raw_material_inventory')
+        .update({
+          quantity_on_hand: newOnHand,
+          quantity_available: newAvailable,
+          location: inventoryData?.location ?? 'Default Warehouse',
+          last_updated: new Date().toISOString(),
+        })
+        .eq('raw_material_id', id);
+      invWriteErr = error;
+    } else {
+      const { error } = await supabase
+        .from('raw_material_inventory')
+        .insert({
+          raw_material_id: id,
+          quantity_on_hand: newOnHand,
+          quantity_available: newAvailable,
+          location: 'Default Warehouse',
+          last_updated: new Date().toISOString(),
+        });
+      invWriteErr = error;
+    }
+
+    if (invWriteErr) {
+      throw new Error(`Failed to update inventory: ${invWriteErr.message}`);
+    }
 
     if (error) {
       throw new Error(`Failed to update inventory: ${error.message}`);

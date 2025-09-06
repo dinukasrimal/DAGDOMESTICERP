@@ -77,6 +77,56 @@ export interface UpdateGoodsIssue {
 }
 
 export class GoodsIssueService {
+  private async consumeInventoryLayers(materialId: number, requiredQty: number): Promise<number> {
+    let remaining = requiredQty;
+    let costAccum = 0;
+    let qtyAccum = 0;
+
+    try {
+      // Get FIFO layers
+      const { data: layers, error } = await supabase
+        .from('inventory_layers')
+        .select('id, qty_remaining, unit_cost, received_at')
+        .eq('raw_material_id', materialId)
+        .gt('qty_remaining', 0)
+        .order('received_at', { ascending: true });
+      if (error) throw error;
+
+      const updates: { id: string; qty_remaining: number }[] = [];
+      for (const layer of layers || []) {
+        if (remaining <= 0) break;
+        const take = Math.min(Number(layer.qty_remaining || 0), remaining);
+        if (take > 0) {
+          remaining -= take;
+          qtyAccum += take;
+          costAccum += take * Number(layer.unit_cost || 0);
+          updates.push({ id: (layer as any).id, qty_remaining: Number(layer.qty_remaining || 0) - take });
+        }
+      }
+
+      if (remaining > 0) {
+        // Not enough layers to cover quantity
+        throw new Error('Insufficient inventory layers for FIFO consumption');
+      }
+
+      // Persist updates
+      if (updates.length) {
+        const { error: updErr } = await supabase
+          .from('inventory_layers')
+          .upsert(updates);
+        if (updErr) throw updErr;
+      }
+
+      const avgCost = qtyAccum > 0 ? costAccum / qtyAccum : 0;
+      return avgCost;
+    } catch (err: any) {
+      if (typeof err?.message === 'string' && err.message.toLowerCase().includes('relation')) {
+        // Layers table missing; fallback to 0 cost
+        return 0;
+      }
+      throw err;
+    }
+  }
   private async attachLinesAndMaterials(issues: GoodsIssue[]): Promise<GoodsIssue[]> {
     if (!issues.length) return issues;
 
@@ -282,11 +332,10 @@ export class GoodsIssueService {
 
     // For each line, ensure unit cost and update inventory
     for (const line of issue.lines || []) {
-      // Determine unit cost if missing
+      // FIFO consumption for cost (if cost not provided)
       let unitCost = line.unit_cost;
       if (unitCost == null) {
-        unitCost = await this.getAverageCost(line.raw_material_id);
-        // Persist computed unit cost onto the line
+        unitCost = await this.consumeInventoryLayers(Number(line.raw_material_id), Number(line.quantity_issued));
         const { error: updErr } = await supabase
           .from('goods_issue_lines')
           .update({ unit_cost: unitCost })
@@ -294,6 +343,9 @@ export class GoodsIssueService {
         if (updErr) {
           throw new Error(`Failed to set unit cost for line: ${updErr.message}`);
         }
+      } else {
+        // Consume layers even if cost provided to decrement quantities
+        await this.consumeInventoryLayers(Number(line.raw_material_id), Number(line.quantity_issued));
       }
 
       // Validate availability
@@ -374,11 +426,12 @@ export class GoodsIssueService {
     quantityChange: number,
     unitCost: number
   ): Promise<void> {
+    const id = Number(materialId);
     // Use quantity_on_hand/available schema
     const { data: inventoryData, error: fetchError } = await supabase
       .from('raw_material_inventory')
-      .select('quantity_on_hand, quantity_reserved, quantity_available')
-      .eq('raw_material_id', materialId)
+      .select('quantity_on_hand, quantity_reserved, quantity_available, location')
+      .eq('raw_material_id', id)
       .maybeSingle();
     if (fetchError && fetchError.code !== 'PGRST116') {
       throw new Error(`Failed to fetch inventory: ${fetchError.message}`);
@@ -388,15 +441,31 @@ export class GoodsIssueService {
     const currentReserved = inventoryData?.quantity_reserved || 0;
     const newOnHand = currentOnHand + quantityChange;
     const newAvailable = Math.max(0, newOnHand - currentReserved);
-    const { error } = await supabase
-      .from('raw_material_inventory')
-      .upsert({
-        raw_material_id: materialId,
-        quantity_on_hand: newOnHand,
-        quantity_available: newAvailable,
-        last_updated: new Date().toISOString(),
-      });
-    if (error) throw new Error(`Failed to update inventory: ${error.message}`);
+    let invWriteErr: any = null;
+    if (inventoryData) {
+      const { error } = await supabase
+        .from('raw_material_inventory')
+        .update({
+          quantity_on_hand: newOnHand,
+          quantity_available: newAvailable,
+          location: inventoryData?.location ?? 'Default Warehouse',
+          last_updated: new Date().toISOString(),
+        })
+        .eq('raw_material_id', id);
+      invWriteErr = error;
+    } else {
+      const { error } = await supabase
+        .from('raw_material_inventory')
+        .insert({
+          raw_material_id: id,
+          quantity_on_hand: newOnHand,
+          quantity_available: newAvailable,
+          location: 'Default Warehouse',
+          last_updated: new Date().toISOString(),
+        });
+      invWriteErr = error;
+    }
+    if (invWriteErr) throw new Error(`Failed to update inventory: ${invWriteErr.message}`);
   }
 
   async getPendingGoodsIssue(): Promise<GoodsIssue[]> {

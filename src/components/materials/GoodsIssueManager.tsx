@@ -123,6 +123,13 @@ export const GoodsIssueManager: React.FC = () => {
     loadInitialData();
   }, []);
 
+  // Refresh inventory when GRN posts
+  useEffect(() => {
+    const handler = () => rawMaterialsService.getRawMaterials().then(setRawMaterials).catch(() => {});
+    window.addEventListener('inventory-updated', handler as any);
+    return () => window.removeEventListener('inventory-updated', handler as any);
+  }, []);
+
   const loadInitialData = async () => {
     try {
       setLoading(true);

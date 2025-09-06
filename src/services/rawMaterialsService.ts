@@ -24,60 +24,173 @@ export interface RawMaterialWithInventory extends RawMaterial {
 }
 
 export class RawMaterialsService {
+  private async buildFromInventory(activeOnly: boolean): Promise<RawMaterialWithInventory[]> {
+    // Load inventory rows, then fetch material info and compose
+    const { data: invRows, error: invErr } = await supabase
+      .from('raw_material_inventory')
+      .select('raw_material_id, quantity_on_hand, quantity_available, quantity_reserved, location, last_updated');
+    if (invErr) {
+      console.error('Error fetching inventory (fallback):', invErr);
+      return [];
+    }
+
+    const ids = Array.from(new Set((invRows || []).map(r => r.raw_material_id).filter(Boolean))) as number[];
+    let materials: any[] = [];
+    if (ids.length) {
+      // Try plural table first
+      const { data: matsPlural, error: matsPluralErr } = await supabase
+        .from('raw_materials')
+        .select('*')
+        .in('id', ids)
+        .order('name');
+      if (!matsPluralErr && matsPlural) {
+        materials = matsPlural as any[];
+      } else {
+        // Fallback to singular table name
+        const { data: matsSingular } = await supabase
+          .from('raw_material')
+          .select('*')
+          .in('id', ids)
+          .order('name');
+        materials = matsSingular as any[] || [];
+      }
+    }
+
+    // Optional active filter
+    const filtered = activeOnly ? materials.filter(m => m.active !== false) : materials;
+
+    // Aggregate multiple inventory rows per material (sum quantities)
+    const invAgg = new Map<number, any>();
+    for (const r of invRows || []) {
+      if (!r?.raw_material_id) continue;
+      const key = r.raw_material_id as number;
+      const prev = invAgg.get(key) || { raw_material_id: key, quantity_on_hand: 0, quantity_available: 0, quantity_reserved: 0, location: r.location || 'Default Warehouse', last_updated: r.last_updated };
+      invAgg.set(key, {
+        ...prev,
+        quantity_on_hand: Number(prev.quantity_on_hand) + Number(r.quantity_on_hand || 0),
+        quantity_available: Number(prev.quantity_available) + Number(r.quantity_available || 0),
+        quantity_reserved: Number(prev.quantity_reserved) + Number(r.quantity_reserved || 0),
+        // Keep latest last_updated
+        last_updated: (prev.last_updated && r.last_updated && prev.last_updated > r.last_updated) ? prev.last_updated : r.last_updated,
+      });
+    }
+    return filtered.map(m => ({
+      ...m,
+      inventory: invAgg.get(m.id) || null,
+    }));
+  }
   
   async getRawMaterials(activeOnly: boolean = true): Promise<RawMaterialWithInventory[]> {
-    let query = supabase
-      .from('raw_materials')
-      .select(`
-        *,
-        inventory:raw_material_inventory(*),
-        category:material_categories(*),
-        supplier:material_suppliers(*)
-      `)
-      .order('name');
+    try {
+      let query = supabase
+        .from('raw_materials')
+        .select(`
+          *,
+          inventory:raw_material_inventory(*),
+          category:material_categories(*),
+          supplier:material_suppliers(*)
+        `)
+        .order('name');
 
-    if (activeOnly) {
-      query = query.eq('active', true);
-    }
+      if (activeOnly) query = query.eq('active', true);
 
-    const { data, error } = await query;
-    
-    if (error) {
-      console.error('Error fetching raw materials:', error);
-      throw error;
+      const { data, error } = await query;
+      if (error) throw error;
+
+      const aggregateInventoryArray = (arr: any[]) => {
+        const acc = { quantity_on_hand: 0, quantity_available: 0, quantity_reserved: 0 } as any;
+        let location: string | null = null;
+        let last_updated: string | null = null;
+        for (const r of arr || []) {
+          acc.quantity_on_hand += Number(r?.quantity_on_hand || 0);
+          acc.quantity_available += Number(r?.quantity_available || 0);
+          acc.quantity_reserved += Number(r?.quantity_reserved || 0);
+          location = location || r?.location || 'Default Warehouse';
+          if (!last_updated || (r?.last_updated && r.last_updated > last_updated)) last_updated = r.last_updated;
+        }
+        return arr && arr.length ? { ...acc, location, last_updated } : null;
+      };
+
+      let rows = (data || []).map((material: any) => {
+        const inv = Array.isArray(material.inventory)
+          ? aggregateInventoryArray(material.inventory)
+          : material.inventory;
+        const category = Array.isArray(material.category) ? material.category[0] : material.category;
+        const supplier = Array.isArray(material.supplier) ? material.supplier[0] : material.supplier;
+        return { ...material, inventory: inv, category, supplier };
+      });
+      
+      // For any materials missing inventory from the join, backfill directly from inventory table
+      const missingIds = rows.filter(r => !r.inventory).map(r => r.id);
+      if (missingIds.length) {
+        const { data: invRows } = await supabase
+          .from('raw_material_inventory')
+          .select('*')
+          .in('raw_material_id', missingIds);
+        // Aggregate as above
+        const agg = new Map<number, any>();
+        for (const r of invRows || []) {
+          if (!r?.raw_material_id) continue;
+          const key = r.raw_material_id as number;
+          const prev = agg.get(key) || { raw_material_id: key, quantity_on_hand: 0, quantity_available: 0, quantity_reserved: 0, location: r.location || 'Default Warehouse', last_updated: r.last_updated };
+          agg.set(key, {
+            ...prev,
+            quantity_on_hand: Number(prev.quantity_on_hand) + Number(r.quantity_on_hand || 0),
+            quantity_available: Number(prev.quantity_available) + Number(r.quantity_available || 0),
+            quantity_reserved: Number(prev.quantity_reserved) + Number(r.quantity_reserved || 0),
+            last_updated: (prev.last_updated && r.last_updated && prev.last_updated > r.last_updated) ? prev.last_updated : r.last_updated,
+          });
+        }
+        rows = rows.map(r => r.inventory ? r : { ...r, inventory: agg.get(r.id) || null });
+      }
+
+      // If still nobody has inventory, fallback to inventory-first build
+      const hasAnyInventory = rows.some((r: any) => r.inventory);
+      if (!hasAnyInventory) {
+        const fallback = await this.buildFromInventory(activeOnly);
+        if (fallback.length) return fallback as any;
+      }
+
+      return rows as any;
+    } catch (err) {
+      // Fallback to inventory-first (and possibly singular material table name)
+      console.warn('Primary materials query failed; falling back to inventory-first:', err);
+      return this.buildFromInventory(activeOnly);
     }
-    
-    return (data || []).map(material => ({
-      ...material,
-      inventory: Array.isArray(material.inventory) ? material.inventory[0] : material.inventory,
-      category: Array.isArray(material.category) ? material.category[0] : material.category,
-      supplier: Array.isArray(material.supplier) ? material.supplier[0] : material.supplier
-    }));
   }
 
   async getRawMaterialById(id: number): Promise<RawMaterialWithInventory | null> {
-    const { data, error } = await supabase
-      .from('raw_materials')
-      .select(`
-        *,
-        inventory:raw_material_inventory(*),
-        category:material_categories(*),
-        supplier:material_suppliers(*)
-      `)
-      .eq('id', id)
-      .single();
-    
-    if (error) {
-      console.error('Error fetching raw material:', error);
-      throw error;
+    try {
+      const { data, error } = await supabase
+        .from('raw_materials')
+        .select(`
+          *,
+          inventory:raw_material_inventory(*),
+          category:material_categories(*),
+          supplier:material_suppliers(*)
+        `)
+        .eq('id', id)
+        .single();
+      if (error) throw error;
+      return data ? {
+        ...data,
+        inventory: Array.isArray((data as any).inventory) ? (data as any).inventory[0] : (data as any).inventory,
+        category: Array.isArray((data as any).category) ? (data as any).category[0] : (data as any).category,
+        supplier: Array.isArray((data as any).supplier) ? (data as any).supplier[0] : (data as any).supplier
+      } as any : null;
+    } catch (err) {
+      // Fallback: compose from inventory + singular table name
+      const inv = await this.getInventoryByMaterial(id);
+      if (!inv) return null;
+      const { data: matPlural } = await supabase.from('raw_materials').select('*').eq('id', id).maybeSingle();
+      let mat: any = matPlural;
+      if (!mat) {
+        const { data: matSing } = await supabase.from('raw_material').select('*').eq('id', id).maybeSingle();
+        mat = matSing;
+      }
+      if (!mat) return null;
+      return { ...mat, inventory: inv } as any;
     }
-    
-    return data ? {
-      ...data,
-      inventory: Array.isArray(data.inventory) ? data.inventory[0] : data.inventory,
-      category: Array.isArray(data.category) ? data.category[0] : data.category,
-      supplier: Array.isArray(data.supplier) ? data.supplier[0] : data.supplier
-    } : null;
   }
 
   async createRawMaterial(material: RawMaterialInsert): Promise<RawMaterial> {
