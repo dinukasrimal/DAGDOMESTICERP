@@ -230,7 +230,7 @@ export const useProductionPlanning = () => {
 
     const days: DayPlan[] = [];
     let remainingQuantity = purchase.pending_qty;
-    let currentDate = new Date(startDate);
+    const currentDate = new Date(startDate);
 
     while (remainingQuantity > 0) {
       const dateStr = currentDate.toISOString().split('T')[0];

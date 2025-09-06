@@ -475,6 +475,23 @@ const BOMContent: React.FC = () => {
       // Convert to product objects with better parsing
       const uniqueProducts = Array.from(productSet);
       products = uniqueProducts.map((productKey, index) => {
+        // Check if this is a new format variant key with pipe separators
+        if (productKey.includes('|')) {
+          const parts = productKey.split('|');
+          const name = parts[0] || productKey;
+          const size = parts[1] && parts[1] !== 'no-size' ? parts[1] : null;
+          const colour = parts[2] && parts[2] !== 'no-color' ? parts[2] : null;
+          
+          return {
+            id: index + 1000,
+            name: name,
+            default_code: productKey,
+            colour: colour,
+            size: size
+          };
+        }
+        
+        // Fallback to old parsing logic for existing data
         const parts = productKey.split('-');
         let size = null;
         let colour = null;
@@ -484,8 +501,8 @@ const BOMContent: React.FC = () => {
           const lastPart = parts[parts.length - 1];
           const secondLastPart = parts[parts.length - 2];
           
-          const colorWords = ['grey', 'gray', 'black', 'white', 'blue', 'red', 'green', 'yellow', 'beige', 'beigh'];
-          const isColor = colorWords.some(color => lastPart.toLowerCase().includes(color));
+          const colorWords = ['grey', 'gray', 'black', 'white', 'blue', 'red', 'green', 'yellow', 'beige', 'beigh', 'multicolour', 'multicolor', 'multi-colour', 'multi-color', 'brown', 'orange', 'purple', 'pink', 'navy', 'maroon', 'cream', 'ivory'];
+          const isColor = colorWords.some(color => lastPart.toLowerCase().includes(color.toLowerCase()));
           const isSize = /^\d+$/.test(secondLastPart) || /^(xs|s|m|l|xl|xxl)$/i.test(secondLastPart);
           
           if (isColor) {
@@ -549,8 +566,8 @@ const BOMContent: React.FC = () => {
           const secondLastPart = parts[parts.length - 2];
           
           // Common color names and size patterns
-          const colorWords = ['grey', 'gray', 'black', 'white', 'blue', 'red', 'green', 'yellow', 'beige', 'beigh'];
-          const isColor = colorWords.some(color => lastPart.toLowerCase().includes(color));
+          const colorWords = ['grey', 'gray', 'black', 'white', 'blue', 'red', 'green', 'yellow', 'beige', 'beigh', 'multicolour', 'multicolor', 'multi-colour', 'multi-color', 'brown', 'orange', 'purple', 'pink', 'navy', 'maroon', 'cream', 'ivory'];
+          const isColor = colorWords.some(color => lastPart.toLowerCase().includes(color.toLowerCase()));
           const isSize = /^\d+$/.test(secondLastPart) || /^(xs|s|m|l|xl|xxl)$/i.test(secondLastPart);
           
           if (isColor) {

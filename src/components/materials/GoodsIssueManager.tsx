@@ -66,6 +66,23 @@ export const GoodsIssueManager: React.FC = () => {
   const [selectedProductionOrder, setSelectedProductionOrder] = useState<any | null>(null);
   const [selectedPurchaseOrder, setSelectedPurchaseOrder] = useState<any | null>(null);
   const [bomRequirements, setBomRequirements] = useState<{[key: string]: number}>({}); // Material requirements by PO
+  
+  // New BOM selection states
+  const [availableBOMs, setAvailableBOMs] = useState<BOMWithLines[]>([]);
+  const [selectedBOM, setSelectedBOM] = useState<BOMWithLines | null>(null);
+  const [bomMaterialRequirements, setBomMaterialRequirements] = useState<{
+    material_id: string;
+    material_name: string;
+    required_quantity: number;
+    issued_so_far: number;
+    issuing_quantity: number;
+    unit: string;
+    available_quantity: number;
+    category_id?: number; // For category-based consumption
+    category_materials?: { id: number; name: string; base_unit: string; }[]; // Available materials in this category
+  }[]>([]);
+  const [showBOMSelection, setShowBOMSelection] = useState(false);
+  const [categorySelections, setCategorySelections] = useState<{[categoryId: string]: {materialId: number, quantity: number}[]}>({});
   const { toast } = useToast();
 
   // Form states
@@ -192,7 +209,7 @@ export const GoodsIssueManager: React.FC = () => {
       const styleIds = [...new Set(ordersData.map(order => order.style_id).filter(Boolean))];
       
       // Fetch products that match the style_ids (assuming style_id maps to product id or code)
-      let productsMap: {[key: string]: any} = {};
+      const productsMap: {[key: string]: any} = {};
       
       if (styleIds.length > 0) {
         // Try fetching by id first (assuming style_id is product id as string)
@@ -295,6 +312,284 @@ export const GoodsIssueManager: React.FC = () => {
     }
   };
 
+  // Load available BOMs for products in the selected PO
+  const loadAvailableBOMs = async (purchaseOrder: any) => {
+    try {
+      console.log('🔍 Debug: Loading BOMs for PO:', purchaseOrder.po_number);
+      console.log('📦 Debug: PO products:', purchaseOrder.products);
+      
+      const bomSet = new Set<string>();
+      const boms: BOMWithLines[] = [];
+      
+      if (!purchaseOrder.products || purchaseOrder.products.length === 0) {
+        console.log('❌ Debug: No products found in PO');
+        setAvailableBOMs([]);
+        return;
+      }
+
+      console.log(`📋 Debug: Processing ${purchaseOrder.products.length} products`);
+
+      // Get BOMs for all products in the PO
+      for (const product of purchaseOrder.products) {
+        console.log('🔄 Debug: Processing product:', product);
+        
+        if (!product.id) {
+          console.log('⚠️ Debug: Product has no ID, skipping:', product);
+          continue;
+        }
+        
+        try {
+          console.log(`🔍 Debug: Looking for BOMs for product ID: ${product.id}, name: ${product.name}, code: ${product.default_code}`);
+          
+          // Try direct product ID lookup first
+          const bomList = await bomService.getBOMsByProduct(product.id);
+          console.log(`📊 Debug: Found ${bomList.length} BOMs for product ${product.id}:`, bomList);
+          
+          for (const bom of bomList) {
+            if (!bomSet.has(bom.id)) {
+              bomSet.add(bom.id);
+              boms.push(bom);
+              console.log(`✅ Debug: Added BOM: ${bom.name} (${bom.id})`);
+            }
+          }
+          
+          // If no BOMs found by direct lookup, try searching in all BOMs by product name/code
+          if (bomList.length === 0) {
+            console.log(`🔍 Debug: No direct BOMs found, searching all BOMs for product name/code matches`);
+            const allBOMs = await bomService.getAllBOMs();
+            console.log(`📋 Debug: Total BOMs in system: ${allBOMs.length}`);
+            
+            for (const bom of allBOMs) {
+              // More flexible matching - check both directions and word matches
+              const productName = product.name?.toLowerCase() || '';
+              const productCode = product.default_code?.toLowerCase() || '';
+              const bomName = bom.name?.toLowerCase() || '';
+              
+              // Extract meaningful words from names (remove brackets, dashes, etc.)
+              const getCleanWords = (text: string) => {
+                return text.replace(/[\[\]()-]/g, ' ').split(/\s+/).filter(word => word.length > 1);
+              };
+              
+              const productWords = getCleanWords(productName);
+              const bomWords = getCleanWords(bomName);
+              
+              // Check if BOM name is contained in product name or vice versa
+              const bomInProduct = bomName && productName.includes(bomName);
+              const productInBom = productName && bomName.includes(productName);
+              
+              // Check if product code matches
+              const codeMatches = productCode && (bomName.includes(productCode) || productCode.includes(bomName));
+              
+              // Check if there are common significant words (length > 2)
+              const commonWords = bomWords.filter(bomWord => 
+                bomWord.length > 2 && productWords.some(productWord => 
+                  productWord.includes(bomWord) || bomWord.includes(productWord)
+                )
+              );
+              
+              const hasCommonWords = commonWords.length > 0;
+              
+              if (bomInProduct || productInBom || codeMatches || hasCommonWords) {
+                console.log(`🎯 Debug: Found potential BOM match: "${bom.name}" for product "${product.name}" (${product.default_code})`);
+                console.log(`🔍 Debug: Match reason - bomInProduct: ${bomInProduct}, productInBom: ${productInBom}, codeMatches: ${codeMatches}, commonWords: [${commonWords.join(', ')}]`);
+                if (!bomSet.has(bom.id)) {
+                  bomSet.add(bom.id);
+                  boms.push(bom);
+                  console.log(`✅ Debug: Added BOM by name match: ${bom.name} (${bom.id})`);
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.error(`❌ Debug: Failed to get BOMs for product ${product.id}:`, error);
+        }
+      }
+      
+      console.log(`🎯 Debug: Total BOMs found: ${boms.length}`, boms);
+      
+      setAvailableBOMs(boms);
+      if (boms.length > 0) {
+        setShowBOMSelection(true);
+        toast({
+          title: 'BOMs Found',
+          description: `Found ${boms.length} available BOMs for products in this purchase order. Please select a BOM to calculate material requirements.`
+        });
+      } else {
+        toast({
+          title: 'No BOMs Found',
+          description: 'No BOMs found for the products in this purchase order. You can create general goods issue instead.',
+          variant: 'destructive'
+        });
+      }
+    } catch (error) {
+      console.error('Failed to load available BOMs:', error);
+      setAvailableBOMs([]);
+    }
+  };
+
+  // Helper: fetch total issued quantity per material for a given PO
+  const fetchIssuedSoFarForPO = async (poNumber: string): Promise<Map<string, number>> => {
+    try {
+      const { data: issues, error: issueErr } = await supabase
+        .from('goods_issue')
+        .select('id')
+        .eq('reference_number', poNumber)
+        .eq('status', 'issued');
+      if (issueErr || !issues || issues.length === 0) return new Map();
+
+      const issueIds = issues.map(i => i.id);
+      const { data: lines, error: linesErr } = await supabase
+        .from('goods_issue_lines')
+        .select('raw_material_id, quantity_issued')
+        .in('goods_issue_id', issueIds);
+      if (linesErr || !lines) return new Map();
+
+      const map = new Map<string, number>();
+      for (const l of lines) {
+        const key = l.raw_material_id?.toString();
+        if (!key) continue;
+        map.set(key, (map.get(key) || 0) + (Number(l.quantity_issued) || 0));
+      }
+      return map;
+    } catch {
+      return new Map();
+    }
+  };
+
+  // Calculate material requirements based on selected BOM and PO quantities
+  const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: any) => {
+    try {
+      const materialRequirements: typeof bomMaterialRequirements = [];
+      
+      if (!bom.lines || bom.lines.length === 0) {
+        setBomMaterialRequirements([]);
+        return;
+      }
+
+      // Load issued quantities so far for this PO, grouped by material
+      const issuedMap = purchaseOrder?.po_number
+        ? await fetchIssuedSoFarForPO(purchaseOrder.po_number)
+        : new Map<string, number>();
+
+      // Check if this is a category-wise BOM
+      if (bom.is_category_wise) {
+        // For category-wise BOMs, show categories instead of specific materials
+        for (const bomLine of bom.lines) {
+          if (!bomLine.material_category) continue;
+
+          // Calculate total quantity needed based on PO quantities
+          let totalRequired = 0;
+          
+          for (const product of purchaseOrder.products || []) {
+            const productQty = product.pending_qty || product.outstanding_qty || product.quantity || 0;
+            const materialQtyPerUnit = bomLine.quantity * (1 + (bomLine.waste_percentage || 0) / 100);
+            totalRequired += materialQtyPerUnit * productQty;
+          }
+
+          // Get available inventory for this category
+          const { data: categoryMaterials } = await supabase
+            .from('raw_materials')
+            .select('id, name, base_unit')
+            .eq('category_id', bomLine.material_category.id)
+            .eq('active', true);
+
+          // Add category as a requirement entry
+          materialRequirements.push({
+            material_id: `category-${bomLine.material_category.id}`,
+            material_name: `📁 ${bomLine.material_category.name} (Category)`,
+            required_quantity: totalRequired,
+            issued_so_far: 0, // TODO: Get actual issued quantities
+            issuing_quantity: 0,
+            unit: bomLine.unit,
+            available_quantity: 999999, // Categories don't have stock limits
+            category_id: bomLine.material_category.id,
+            category_materials: categoryMaterials || []
+          });
+        }
+      } else {
+        // For regular BOMs, show specific materials
+        for (const bomLine of bom.lines) {
+          if (!bomLine.raw_material) continue;
+
+          // Calculate total quantity needed based on PO quantities
+          let totalRequired = 0;
+          
+          for (const product of purchaseOrder.products || []) {
+            // For now, use pending/outstanding quantity
+            const productQty = product.pending_qty || product.outstanding_qty || product.quantity || 0;
+            const materialQtyPerUnit = bomLine.quantity * (1 + (bomLine.waste_percentage || 0) / 100);
+            totalRequired += materialQtyPerUnit * productQty;
+          }
+
+          if (totalRequired > 0) {
+            const issuedSoFar = issuedMap.get(bomLine.raw_material_id.toString()) || 0;
+            // Get available quantity from inventory if present
+            const material = rawMaterials.find(m => m.id.toString() === bomLine.raw_material_id.toString());
+            const availableQty = material?.inventory?.quantity_available || 0;
+            materialRequirements.push({
+              material_id: bomLine.raw_material_id.toString(),
+              material_name: bomLine.raw_material.name,
+              required_quantity: totalRequired,
+              issued_so_far: issuedSoFar,
+              issuing_quantity: Math.max(0, totalRequired - issuedSoFar),
+              unit: bomLine.raw_material.base_unit,
+              available_quantity: availableQty
+            });
+          }
+        }
+      }
+
+      setBomMaterialRequirements(materialRequirements);
+      
+      // Auto-populate form lines based on BOM requirements
+      const autoLines: CreateGoodsIssueLine[] = materialRequirements.map(req => ({
+        raw_material_id: req.material_id,
+        quantity_issued: req.issuing_quantity,
+        batch_number: '',
+        notes: `BOM-based requirement for ${bom.name} • Total required: ${req.required_quantity} ${req.unit}`
+      }));
+      
+      setFormData(prev => ({
+        ...prev,
+        lines: autoLines
+      }));
+
+    } catch (error) {
+      console.error('Failed to calculate BOM-based requirements:', error);
+      setBomMaterialRequirements([]);
+    }
+  };
+
+  // Handle BOM selection
+  const handleBOMSelection = async (bomId: string) => {
+    const bom = availableBOMs.find(b => b.id === bomId);
+    if (bom && selectedPurchaseOrder) {
+      setSelectedBOM(bom);
+      await calculateBOMBasedRequirements(bom, selectedPurchaseOrder);
+    }
+  };
+
+  // Update issuing quantity for a specific material
+  const updateIssuingQuantity = (materialId: string, quantity: number) => {
+    setBomMaterialRequirements(prev => 
+      prev.map(req => 
+        req.material_id === materialId 
+          ? { ...req, issuing_quantity: Math.max(0, quantity) }
+          : req
+      )
+    );
+    
+    // Update form lines
+    setFormData(prev => ({
+      ...prev,
+      lines: prev.lines.map(line => 
+        line.raw_material_id === materialId 
+          ? { ...line, quantity_issued: Math.max(0, quantity) }
+          : line
+      )
+    }));
+  };
+
   const handlePOSelection = async (orderId: string) => {
     const order = purchaseOrders.find(o => o.id === orderId);
     if (order) {
@@ -302,27 +597,17 @@ export const GoodsIssueManager: React.FC = () => {
       setFormData(prev => ({
         ...prev,
         reference_number: order.po_number,
-        issue_type: 'production'
+        issue_type: 'production',
+        lines: [] // Clear existing lines
       }));
 
-      // Calculate BOM requirements
-      const requirements = await calculateBOMRequirements(order);
-      setBomRequirements(requirements);
+      // Reset BOM selection states
+      setSelectedBOM(null);
+      setBomMaterialRequirements([]);
+      setShowBOMSelection(false);
 
-      // Auto-populate lines based on BOM requirements
-      const autoLines: CreateGoodsIssueLine[] = [];
-      Object.entries(requirements).forEach(([materialId, quantity]) => {
-        if (quantity > 0) {
-          autoLines.push({
-            raw_material_id: materialId,
-            quantity_issued: quantity,
-            batch_number: '',
-            notes: `Required for Purchase Order: ${order.po_number} (${order.products?.length || 0} products)`
-          });
-        }
-      });
-
-      setFormData(prev => ({ ...prev, lines: autoLines }));
+      // Load available BOMs for the products in this PO
+      await loadAvailableBOMs(order);
     }
   };
 
@@ -536,7 +821,7 @@ export const GoodsIssueManager: React.FC = () => {
 
   const getAvailableQuantity = (materialId: string): number => {
     const material = rawMaterials.find(m => m.id.toString() === materialId);
-    return material?.inventory_quantity || 0;
+    return material?.inventory?.quantity_available || 0;
   };
 
   return (
@@ -760,10 +1045,255 @@ export const GoodsIssueManager: React.FC = () => {
                           {selectedPurchaseOrder.supplier_name && ` • ${selectedPurchaseOrder.supplier_name}`}
                         </p>
                         <p className="text-xs text-green-600 mt-1">
-                          Material requirements calculated from BOMs for {selectedPurchaseOrder.products?.length || 0} products • Pending Qty: {selectedPurchaseOrder.outstanding_qty || selectedPurchaseOrder.pending_qty || 0}
+                          Products: {selectedPurchaseOrder.products?.length || 0} • Pending Qty: {selectedPurchaseOrder.outstanding_qty || selectedPurchaseOrder.pending_qty || 0}
                         </p>
                       </div>
                     )}
+                    
+                    {/* BOM Selection */}
+                    {showBOMSelection && availableBOMs.length > 0 && (
+                      <div className="mt-4">
+                        <Label>Select BOM for Material Requirements *</Label>
+                        <Select 
+                          value={selectedBOM?.id || ''} 
+                          onValueChange={handleBOMSelection}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select BOM to calculate material requirements" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {availableBOMs.map((bom) => (
+                              <SelectItem key={bom.id} value={bom.id}>
+                                <div className="flex items-center space-x-2">
+                                  <Package className="h-3 w-3 text-blue-600" />
+                                  <div>
+                                    <span className="font-medium">{bom.name}</span>
+                                    <span className="text-xs text-gray-500 ml-2">
+                                      v{bom.version} • {bom.lines?.length || 0} materials
+                                    </span>
+                                  </div>
+                                </div>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        
+                        {selectedBOM && (
+                          <div className="mt-2 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                            <p className="text-sm text-blue-800">
+                              <strong>Selected BOM:</strong> {selectedBOM.name} v{selectedBOM.version}
+                            </p>
+                            <p className="text-xs text-blue-600 mt-1">
+                              {selectedBOM.lines?.length || 0} materials • Quantity: {selectedBOM.quantity} {selectedBOM.unit}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* BOM-Based Material Requirements Table */}
+                {selectedBOM && bomMaterialRequirements.length > 0 && (
+                  <div className="mt-6">
+                    <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center space-x-2">
+                      <FileText className="h-5 w-5 text-blue-600" />
+                      <span>Material Requirements - {selectedBOM.name}</span>
+                    </h3>
+                    
+                    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="bg-gray-50">
+                            <TableHead className="font-semibold">Material</TableHead>
+                            <TableHead className="font-semibold">Total Required</TableHead>
+                            <TableHead className="font-semibold">Issued So Far</TableHead>
+                            <TableHead className="font-semibold">To Issue</TableHead>
+                            <TableHead className="font-semibold">Balance To Issue</TableHead>
+                            <TableHead className="font-semibold">Available Stock</TableHead>
+                            <TableHead className="font-semibold">Status</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {bomMaterialRequirements.map((req, index) => {
+                            const remainingToIssue = Math.max(0, req.required_quantity - req.issued_so_far);
+                            const isOverIssuing = req.issuing_quantity > remainingToIssue;
+                            const isInsufficientStock = req.issuing_quantity > req.available_quantity;
+                            
+                            // Check if this is a category-based requirement
+                            const isCategoryBased = req.category_id !== undefined;
+                            
+                            return (
+                              <React.Fragment key={req.material_id}>
+                                <TableRow className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}>
+                                  <TableCell>
+                                    <div className="flex items-center space-x-2">
+                                      {isCategoryBased ? (
+                                        <div className="flex items-center space-x-2">
+                                          <FileText className="h-4 w-4 text-blue-600" />
+                                          <div>
+                                            <div className="font-medium text-gray-900">{req.material_name}</div>
+                                            <div className="text-sm text-gray-500">
+                                              Category-based • {req.category_materials?.length || 0} materials available
+                                            </div>
+                                            <Button 
+                                              size="sm" 
+                                              variant="outline" 
+                                              className="mt-2 text-xs h-6"
+                                              onClick={() => {
+                                                // Toggle category selection view
+                                                const categoryKey = `category-${req.category_id}`;
+                                                setCategorySelections(prev => ({
+                                                  ...prev,
+                                                  [categoryKey]: prev[categoryKey] ? undefined : []
+                                                }));
+                                              }}
+                                            >
+                                              {categorySelections[`category-${req.category_id}`] ? 'Hide Materials' : 'Select Materials'}
+                                            </Button>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <>
+                                          <Package className="h-4 w-4 text-purple-600" />
+                                          <div>
+                                            <div className="font-medium text-gray-900">{req.material_name}</div>
+                                            <div className="text-sm text-gray-500">ID: {req.material_id}</div>
+                                          </div>
+                                        </>
+                                      )}
+                                    </div>
+                                  </TableCell>
+                                <TableCell>
+                                  <span className="font-medium">{req.required_quantity.toFixed(3)} {req.unit}</span>
+                                </TableCell>
+                                <TableCell>
+                                  <span className="text-green-700">{req.issued_so_far.toFixed(3)} {req.unit}</span>
+                                </TableCell>
+                                <TableCell>
+                                  {isCategoryBased ? (
+                                    <span className="text-sm text-gray-500 italic">Select materials below</span>
+                                  ) : (
+                                    <Input
+                                      type="number"
+                                      min="0"
+                                      step="0.001"
+                                      value={req.issuing_quantity}
+                                      onChange={(e) => updateIssuingQuantity(req.material_id, parseFloat(e.target.value) || 0)}
+                                      className={`w-24 ${isOverIssuing ? 'border-yellow-400 bg-yellow-50' : ''} ${isInsufficientStock ? 'border-red-400 bg-red-50' : ''}`}
+                                    />
+                                  )}
+                                </TableCell>
+                                <TableCell>
+                                  <span className="text-gray-700">{remainingToIssue.toFixed(3)} {req.unit}</span>
+                                </TableCell>
+                                <TableCell>
+                                  {isCategoryBased ? (
+                                    <span className="text-sm text-gray-500 italic">Multiple materials</span>
+                                  ) : (
+                                    <span className={`font-medium ${req.available_quantity < req.issuing_quantity ? 'text-red-600' : 'text-gray-700'}`}>
+                                      {req.available_quantity.toFixed(3)} {req.unit}
+                                    </span>
+                                  )}
+                                </TableCell>
+                                <TableCell>
+                                  {isCategoryBased ? (
+                                    <Badge className="bg-blue-100 text-blue-800 text-xs">
+                                      <FileText className="h-3 w-3 mr-1" />
+                                      Category-based
+                                    </Badge>
+                                  ) : isInsufficientStock ? (
+                                    <Badge variant="destructive" className="text-xs">
+                                      <AlertTriangle className="h-3 w-3 mr-1" />
+                                      Insufficient Stock
+                                    </Badge>
+                                  ) : isOverIssuing ? (
+                                    <Badge className="bg-yellow-100 text-yellow-800 text-xs">
+                                      <AlertTriangle className="h-3 w-3 mr-1" />
+                                      Over-issuing
+                                    </Badge>
+                                  ) : req.issuing_quantity === remainingToIssue ? (
+                                    <Badge className="bg-green-100 text-green-800 text-xs">
+                                      <Check className="h-3 w-3 mr-1" />
+                                      Exact
+                                    </Badge>
+                                  ) : (
+                                    <Badge variant="outline" className="text-xs">
+                                      Partial
+                                    </Badge>
+                                  )}
+                                </TableCell>
+                              </TableRow>
+                              
+                              {/* Category Material Selection Row */}
+                              {isCategoryBased && categorySelections[`category-${req.category_id}`] !== undefined && (
+                                <TableRow>
+                                  <TableCell colSpan={7}>
+                                    <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                                      <h4 className="font-medium text-blue-900 mb-3">
+                                        Select Materials from {req.material_name.replace('📁 ', '').replace(' (Category)', '')}
+                                      </h4>
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        {req.category_materials?.map((material) => (
+                                          <div key={material.id} className="flex items-center justify-between bg-white p-3 rounded border">
+                                            <div className="flex items-center space-x-2">
+                                              <Package className="h-4 w-4 text-gray-600" />
+                                              <div>
+                                                <div className="font-medium text-sm">{material.name}</div>
+                                                <div className="text-xs text-gray-500">Unit: {material.base_unit}</div>
+                                              </div>
+                                            </div>
+                                            <div className="flex items-center space-x-2">
+                                              <Input
+                                                type="number"
+                                                min="0"
+                                                step="0.001"
+                                                placeholder="Qty"
+                                                className="w-20 h-8 text-sm"
+                                                onChange={(e) => {
+                                                  const qty = parseFloat(e.target.value) || 0;
+                                                  const categoryKey = `category-${req.category_id}`;
+                                                  setCategorySelections(prev => ({
+                                                    ...prev,
+                                                    [categoryKey]: prev[categoryKey]?.filter(item => item.materialId !== material.id)
+                                                      .concat(qty > 0 ? [{materialId: material.id, quantity: qty}] : []) || 
+                                                      (qty > 0 ? [{materialId: material.id, quantity: qty}] : [])
+                                                  }));
+                                                }}
+                                              />
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              )}
+                            </React.Fragment>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    
+                    <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-gray-600">Total Materials:</span>
+                        <span className="font-medium">{bomMaterialRequirements.length}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm mt-1">
+                        <span className="text-gray-600">Materials with Sufficient Stock:</span>
+                        <span className="font-medium text-green-600">
+                          {bomMaterialRequirements.filter(req => req.available_quantity >= req.issuing_quantity).length}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm mt-1">
+                        <span className="text-gray-600">Materials with Insufficient Stock:</span>
+                        <span className="font-medium text-red-600">
+                          {bomMaterialRequirements.filter(req => req.available_quantity < req.issuing_quantity).length}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -982,6 +1512,7 @@ export const GoodsIssueManager: React.FC = () => {
               disabled={loading || 
                 formData.lines.length === 0 || 
                 (issueMode === 'po' && !selectedPurchaseOrder) ||
+                (issueMode === 'po' && !selectedBOM) ||
                 formData.lines.some(line => line.quantity_issued > getAvailableQuantity(line.raw_material_id))}
               className="bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600"
             >

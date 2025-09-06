@@ -109,6 +109,7 @@ export type Database = {
       bom_lines: {
         Row: {
           bom_header_id: string | null
+          category_id: number | null
           created_at: string | null
           id: string
           notes: string | null
@@ -121,6 +122,7 @@ export type Database = {
         }
         Insert: {
           bom_header_id?: string | null
+          category_id?: number | null
           created_at?: string | null
           id?: string
           notes?: string | null
@@ -133,6 +135,7 @@ export type Database = {
         }
         Update: {
           bom_header_id?: string | null
+          category_id?: number | null
           created_at?: string | null
           id?: string
           notes?: string | null

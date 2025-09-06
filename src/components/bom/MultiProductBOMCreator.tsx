@@ -192,7 +192,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
     // Always generate product-based variants regardless of category-wise setting
     // Category-wise only affects how consumption is defined, not which products are shown
     selectedProducts.forEach(product => {
-      const variantKey = `${product.id}_${product.size || 'no-size'}_${product.colour || 'no-color'}`;
+      const variantKey = `${product.default_code || product.name}|${product.size || 'no-size'}|${product.colour || 'no-color'}`;
       const displayName = `${product.name}${product.size ? ` - ${product.size}` : ''}${product.colour ? ` - ${product.colour}` : ''}`;
       
       variants.push({

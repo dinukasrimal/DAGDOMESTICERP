@@ -1224,7 +1224,7 @@ export const ProductionPlanner: React.FC = () => {
       new Date(a.scheduled_date).getTime() - new Date(b.scheduled_date).getTime()
     );
 
-    let currentDate = new Date(newStartDate);
+    const currentDate = new Date(newStartDate);
     const rescheduledOrders: PlannedOrder[] = [];
 
     for (const order of ordersToReschedule) {
@@ -1288,7 +1288,7 @@ export const ProductionPlanner: React.FC = () => {
 
       // Calculate scheduling plan with collision detection
       let remainingQuantity = totalQuantity;
-      let currentDate = new Date(date);
+      const currentDate = new Date(date);
       const schedulingPlan: Array<{
         date: string;
         quantity: number;
@@ -1375,7 +1375,7 @@ export const ProductionPlanner: React.FC = () => {
         // Process each PO group sequentially to ensure no mixing
         for (const [poId, group] of movedOrdersByPO) {
           // Schedule this PO starting from the global start date
-          let rescheduleDate = new Date(globalStartDate);
+          const rescheduleDate = new Date(globalStartDate);
           let remainingToReschedule = group.totalQuantity;
           const reschedulePlan: Array<{date: string; quantity: number}> = [];
           
@@ -1741,7 +1741,7 @@ export const ProductionPlanner: React.FC = () => {
         // Schedule the new PO first
         const totalQuantity = draggedPO.pending_qty || 0;
         let remainingQuantity = totalQuantity;
-        let currentDate = new Date(targetDate);
+        const currentDate = new Date(targetDate);
         const schedulingPlan: Array<{ date: string; quantity: number; }> = [];
 
         // Plan the new PO
@@ -1825,7 +1825,7 @@ export const ProductionPlanner: React.FC = () => {
         // Check remaining capacity on last day
         const remainingCapacityOnLastDay = getAvailableCapacity(lastDate, targetLine.id);
         
-        let startDate = new Date(lastDate);
+        const startDate = new Date(lastDate);
         let totalQuantity = draggedPO.pending_qty || 0;
 
         // Use remaining capacity on last day if available
@@ -1909,7 +1909,7 @@ export const ProductionPlanner: React.FC = () => {
 
   // Helper function to find next working day
   const findNextWorkingDay = (startDate: Date, lineId: string) => {
-    let currentDate = new Date(startDate);
+    const currentDate = new Date(startDate);
     while (!isWorkingDay(currentDate, lineId)) {
       currentDate.setDate(currentDate.getDate() + 1);
     }
@@ -1934,7 +1934,7 @@ export const ProductionPlanner: React.FC = () => {
         );
 
         // Find the starting working day
-        let currentDate = findNextWorkingDay(date, line.id);
+        const currentDate = findNextWorkingDay(date, line.id);
         
         console.log('Moving PO:', {
           originalDate: date.toISOString().split('T')[0],

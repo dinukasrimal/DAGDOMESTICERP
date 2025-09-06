@@ -9,7 +9,7 @@
         "--project-ref=tnduapjjyqhppclgnqsb"
       ],
       "env": {
-        "SUPABASE_ACCESS_TOKEN": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRuZHVhcGpqeXFocHBjbGducXNiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0OTIxNDg4NywiZXhwIjoyMDY0NzkwODg3fQ.UI3tMHuawJAax_p7gGECcPP7YdNOeIwjOBZM2P-K8OE"
+        "SUPABASE_ACCESS_TOKEN": "sbp_441caf42cfe06bab37b444436e792d4ec71e51d0"
       }
     }
   }

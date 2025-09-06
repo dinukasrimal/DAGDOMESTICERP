@@ -267,7 +267,7 @@ export const ProductionScheduler: React.FC = () => {
     console.log(`🔄 Rescheduling magnetic chain starting with ${firstOrder.poNumber}`);
     
     // Find next available date after holidays for the first order
-    let newStartDate = new Date(firstOrder.planStartDate);
+    const newStartDate = new Date(firstOrder.planStartDate);
     
     // Keep moving forward until we find a date without holiday conflicts
     while (true) {
@@ -324,7 +324,7 @@ export const ProductionScheduler: React.FC = () => {
   const calculateHolidayAwareProduction = useCallback(async (order: Order, line: any, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
-    let currentDate = new Date(startDate);
+    const currentDate = new Date(startDate);
     
     while (remainingQty > 0) {
       const isHoliday = holidays.some(h => h.date.toDateString() === currentDate.toDateString());

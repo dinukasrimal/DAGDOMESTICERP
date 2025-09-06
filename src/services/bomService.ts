@@ -19,6 +19,11 @@ export interface BOMLineWithMaterial extends BOMLine {
     conversion_factor: number;
     cost_per_unit: number | null;
   };
+  material_category?: {
+    id: number;
+    name: string;
+    description: string | null;
+  };
 }
 
 export interface BOMWithLines extends BOMHeader {
@@ -98,30 +103,36 @@ export interface MultiProductBOMCreate {
 export class BOMService {
   
   async getBOMsByProduct(productId: number): Promise<BOMWithLines[]> {
+    console.log(`🔍 BOMService Debug: Looking for BOMs with product_id = ${productId}`);
+    
     const { data, error } = await supabase
       .from('bom_headers')
       .select(`
         *,
-        product:products(id, name, default_code),
         lines:bom_lines(
           *,
-          raw_material:raw_materials(id, name, code, base_unit, purchase_unit, conversion_factor, cost_per_unit)
+          raw_material:raw_materials(id, name, code, base_unit, purchase_unit, conversion_factor, cost_per_unit),
+          material_category:material_categories(id, name, description)
         )
       `)
       .eq('product_id', productId)
       .eq('active', true)
       .order('created_at', { ascending: false });
 
+    console.log(`📊 BOMService Debug: Query result for product ${productId}:`, { data, error });
+
     if (error) {
       console.error('Error fetching BOMs:', error);
       throw error;
     }
     
-    return (data || []).map(bom => ({
+    const processedData = (data || []).map(bom => ({
       ...bom,
-      product: Array.isArray(bom.product) ? bom.product[0] : bom.product,
       lines: (bom.lines || []).sort((a, b) => a.sort_order - b.sort_order)
     }));
+    
+    console.log(`✅ BOMService Debug: Processed ${processedData.length} BOMs for product ${productId}`);
+    return processedData;
   }
 
   async getAllBOMs(): Promise<BOMWithLines[]> {
@@ -131,7 +142,8 @@ export class BOMService {
         *,
         lines:bom_lines(
           *,
-          raw_material:raw_materials(id, name, code, base_unit, purchase_unit, conversion_factor, cost_per_unit)
+          raw_material:raw_materials(id, name, code, base_unit, purchase_unit, conversion_factor, cost_per_unit),
+          material_category:material_categories(id, name, description)
         )
       `)
       .eq('active', true)
@@ -174,7 +186,8 @@ export class BOMService {
         *,
         lines:bom_lines(
           *,
-          raw_material:raw_materials(id, name, code, base_unit, purchase_unit, conversion_factor, cost_per_unit)
+          raw_material:raw_materials(id, name, code, base_unit, purchase_unit, conversion_factor, cost_per_unit),
+          material_category:material_categories(id, name, description)
         )
       `)
       .eq('id', bomId)
@@ -632,7 +645,8 @@ export class BOMService {
         *,
         lines:bom_lines(
           *,
-          raw_material:raw_materials(id, name, code, base_unit, purchase_unit, conversion_factor, cost_per_unit)
+          raw_material:raw_materials(id, name, code, base_unit, purchase_unit, conversion_factor, cost_per_unit),
+          material_category:material_categories(id, name, description)
         )
       `)
       .eq('is_category_wise', true)

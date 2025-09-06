@@ -266,7 +266,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   const calculateDailyProductionWithSharing = useCallback((order: Order, line: ProductionLine, startDate: Date) => {
     const dailyPlan: { [date: string]: number } = {};
     let remainingQty = order.orderQuantity;
-    let currentDate = new Date(startDate);
+    const currentDate = new Date(startDate);
     let workingDayNumber = 1;
 
     const rampUpPlan = rampUpPlans.find(p => p.id === selectedRampUpPlanId);
@@ -662,7 +662,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
     
     // Calculate production plan for the remaining quantity
     const remainingQuantity = draggedOrder.orderQuantity - initialProduction;
-    let dailyPlan: { [date: string]: number } = {};
+    const dailyPlan: { [date: string]: number } = {};
     
     if (initialProduction > 0) {
       const targetEndDateStr = targetEndDate.toISOString().split('T')[0];
@@ -789,7 +789,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       );
       const availableCapacityOnLastDay = Math.max(0, selectedLine.capacity - usedCapacityOnLastDay);
 
-      let startDateForNewOrder = new Date(latestEnd);
+      const startDateForNewOrder = new Date(latestEnd);
       let fillFirstDay = 0;
       if (availableCapacityOnLastDay > 0) {
         fillFirstDay = availableCapacityOnLastDay;
@@ -826,7 +826,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
   ) => {
     const plan: { [date: string]: number } = {};
     let remainingQty = qty;
-    let currentDate = new Date(startDate);
+    const currentDate = new Date(startDate);
     let placedFirstDay = false;
 
     while (remainingQty > 0) {
@@ -888,7 +888,7 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
       setSelectedRampUpPlanId('');
 
       if (pendingReschedule.toSchedule.length > 0 && pendingReschedule.afterOrderId === order.id && pendingReschedule.lineId) {
-        let newPlanEnd: Date | null = endDate;
+        const newPlanEnd: Date | null = endDate;
         let magnetDate = new Date(newPlanEnd);
         const newOrderLastDayStr = magnetDate.toISOString().split('T')[0];
         const lineObj = productionLines.find(l => l.id === pendingReschedule.lineId);
@@ -898,12 +898,12 @@ export const SchedulingBoard: React.FC<SchedulingBoardProps> = ({
         const usedCapacityOnLastDay = existingOrdersOnLastDay.reduce(
           (sum, ord) => sum + (ord.actualProduction?.[newOrderLastDayStr] || 0), 0
         );
-        let lastDayAvailCapacity = lineObj ? Math.max(0, lineObj.capacity - usedCapacityOnLastDay) : 0;
+        const lastDayAvailCapacity = lineObj ? Math.max(0, lineObj.capacity - usedCapacityOnLastDay) : 0;
 
         for (const [i, next] of pendingReschedule.toSchedule.entries()) {
           if (!lineObj) continue;
 
-          let qty = next.orderQuantity;
+          const qty = next.orderQuantity;
           let plan: { [date: string]: number } = {};
 
           if (i === 0 && lastDayAvailCapacity > 0) {
