@@ -366,17 +366,31 @@ export class GoodsReceivedService {
       throw new Error(`Failed to verify/post goods received: ${updateError.message}`);
     }
 
-    // Update raw materials inventory and layers
+    // Insert layer-wise rows into raw_material_inventory (FIFO layers)
     for (const line of grnData.lines || []) {
       const materialId = Number(line.raw_material_id);
-      await this.updateRawMaterialInventory(materialId, line.quantity_received, line.unit_price);
-      await this.addInventoryLayer({
+      const now = new Date().toISOString();
+      const payload: any = {
         raw_material_id: materialId,
-        quantity: line.quantity_received,
-        unit_cost: line.unit_price,
-        batch_number: line.batch_number || null,
-        expiry_date: line.expiry_date || null,
-      });
+        quantity_on_hand: line.quantity_received,
+        quantity_available: line.quantity_received,
+        quantity_reserved: 0,
+        unit_price: line.unit_price,
+        inventory_value: Number(line.quantity_received) * Number(line.unit_price || 0),
+        location: 'Default Warehouse',
+        last_updated: now,
+      };
+      const { error: insErr } = await supabase
+        .from('raw_material_inventory')
+        .insert(payload as any);
+      if (insErr) {
+        // Do not aggregate; layer-wise inventory is required for FIFO
+        const msg = (insErr as any)?.message || '';
+        if (msg.includes('ux_raw_material_inventory_material') || msg.toLowerCase().includes('duplicate key')) {
+          throw new Error('Cannot create inventory layer: the table raw_material_inventory currently enforces a unique row per material (constraint ux_raw_material_inventory_material). Drop this unique constraint to enable FIFO layers.');
+        }
+        throw new Error(`Failed to create inventory layer for material ${materialId}: ${msg}`);
+      }
     }
   }
 
@@ -433,13 +447,30 @@ export class GoodsReceivedService {
       throw new Error(`Failed to post goods received: ${updateError.message}`);
     }
 
-    // Update raw materials inventory
+    // Insert layer-wise rows into raw_material_inventory (FIFO layers)
     for (const line of grnData.lines || []) {
-      await this.updateRawMaterialInventory(
-        line.raw_material_id,
-        line.quantity_received,
-        line.unit_price
-      );
+      const materialId = Number(line.raw_material_id);
+      const now = new Date().toISOString();
+      const payload: any = {
+        raw_material_id: materialId,
+        quantity_on_hand: line.quantity_received,
+        quantity_available: line.quantity_received,
+        quantity_reserved: 0,
+        unit_price: line.unit_price,
+        inventory_value: Number(line.quantity_received) * Number(line.unit_price || 0),
+        location: 'Default Warehouse',
+        last_updated: now,
+      };
+      const { error: insErr } = await supabase
+        .from('raw_material_inventory')
+        .insert(payload as any);
+      if (insErr) {
+        const msg = (insErr as any)?.message || '';
+        if (msg.includes('ux_raw_material_inventory_material') || msg.toLowerCase().includes('duplicate key')) {
+          throw new Error('Cannot create inventory layer: the table raw_material_inventory currently enforces a unique row per material (constraint ux_raw_material_inventory_material). Drop this unique constraint to enable FIFO layers.');
+        }
+        throw new Error(`Failed to create inventory layer for material ${materialId}: ${msg}`);
+      }
     }
   }
 

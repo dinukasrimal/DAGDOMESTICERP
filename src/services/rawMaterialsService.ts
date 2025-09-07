@@ -24,6 +24,86 @@ export interface RawMaterialWithInventory extends RawMaterial {
 }
 
 export class RawMaterialsService {
+  async getInventoryValuation(materialIds: number[]): Promise<Record<number, { totalQty: number; totalValue: number; avgCost: number }>> {
+    const result: Record<number, { totalQty: number; totalValue: number; avgCost: number }> = {};
+    if (!materialIds || materialIds.length === 0) return result;
+    try {
+      // Primary: compute from raw_material_inventory layers (quantity * unit_cost)
+      const { data: invRows } = await supabase
+        .from('raw_material_inventory')
+        .select('raw_material_id, quantity_available, quantity_on_hand, unit_price, inventory_value')
+        .in('raw_material_id', materialIds);
+      const agg = new Map<number, { qty: number; value: number }>();
+      for (const r of invRows || []) {
+        const id = Number((r as any).raw_material_id);
+        const qty = Number((r as any).quantity_available ?? (r as any).quantity_on_hand ?? 0);
+        const invVal = (r as any).inventory_value;
+        const unitPrice = (r as any).unit_price;
+        const value = invVal != null ? Number(invVal) : qty * Number(unitPrice ?? 0);
+        if (qty <= 0) continue;
+        const prev = agg.get(id) || { qty: 0, value: 0 };
+        agg.set(id, { qty: prev.qty + qty, value: prev.value + value });
+      }
+      agg.forEach((v, k) => {
+        result[k] = { totalQty: v.qty, totalValue: v.value, avgCost: v.qty > 0 ? v.value / v.qty : 0 };
+      });
+
+      // Fallback for materials without valued layers
+      const missingIds = materialIds.filter(id => !result[id] || result[id].totalQty === 0 || result[id].totalValue === 0);
+      if (missingIds.length) {
+        // Get current inventory quantities for missing ids (sum across rows)
+        const { data: invTotalsRows } = await supabase
+          .from('raw_material_inventory')
+          .select('raw_material_id, quantity_available, quantity_on_hand, quantity')
+          .in('raw_material_id', missingIds);
+        const invMap = new Map<number, number>();
+        for (const r of invTotalsRows || []) {
+          const id = Number((r as any).raw_material_id);
+          const qty = Number((r as any).quantity_available ?? (r as any).quantity_on_hand ?? (r as any).quantity ?? 0);
+          invMap.set(id, (invMap.get(id) || 0) + qty);
+        }
+
+        // Weighted average unit_price from posted GRNs
+        const { data: grnLines } = await supabase
+          .from('goods_received_lines')
+          .select('raw_material_id, quantity_received, unit_price, goods_received_id')
+          .in('raw_material_id', missingIds);
+
+        let postedMap = new Map<number, { qty: number; value: number }>();
+        if (grnLines && grnLines.length) {
+          const grnIds = Array.from(new Set(grnLines.map((l: any) => l.goods_received_id).filter(Boolean)));
+          let postedSet = new Set<string>();
+          if (grnIds.length) {
+            const { data: posted } = await supabase
+              .from('goods_received')
+              .select('id, status')
+              .in('id', grnIds);
+            postedSet = new Set((posted || []).filter((r: any) => r.status === 'posted').map((r: any) => r.id));
+          }
+          for (const l of grnLines) {
+            if (!postedSet.has((l as any).goods_received_id)) continue;
+            const id = Number((l as any).raw_material_id);
+            const qty = Number((l as any).quantity_received || 0);
+            const price = Number((l as any).unit_price || 0);
+            const prev = postedMap.get(id) || { qty: 0, value: 0 };
+            postedMap.set(id, { qty: prev.qty + qty, value: prev.value + qty * price });
+          }
+        }
+
+        for (const id of missingIds) {
+          const invQty = invMap.get(id) || 0;
+          const postedAgg = postedMap.get(id) || { qty: 0, value: 0 };
+          if (invQty > 0 && postedAgg.qty > 0) {
+            const avg = postedAgg.value / postedAgg.qty;
+            result[id] = { totalQty: invQty, totalValue: invQty * avg, avgCost: avg };
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to compute inventory valuation:', err);
+    }
+    return result;
+  }
   private async buildFromInventory(activeOnly: boolean): Promise<RawMaterialWithInventory[]> {
     // Load inventory rows, then fetch material info and compose
     const { data: invRows, error: invErr } = await supabase
@@ -274,15 +354,30 @@ export class RawMaterialsService {
     const { data, error } = await supabase
       .from('raw_material_inventory')
       .select('*')
-      .eq('raw_material_id', materialId)
-      .single();
-    
-    if (error && error.code !== 'PGRST116') { // PGRST116 is "not found"
+      .eq('raw_material_id', materialId);
+    if (error) {
       console.error('Error fetching inventory:', error);
       throw error;
     }
-    
-    return data;
+    const rows = data || [];
+    if (!rows.length) return null;
+    // Aggregate across rows
+    const agg = rows.reduce(
+      (acc: any, r: any) => {
+        const qh = Number(r.quantity_on_hand ?? r.quantity ?? 0);
+        const qa = Number(r.quantity_available ?? r.quantity ?? 0);
+        const qr = Number(r.quantity_reserved ?? 0);
+        acc.quantity_on_hand += qh;
+        acc.quantity_available += qa;
+        acc.quantity_reserved += qr;
+        acc.location = acc.location || r.location || 'Default Warehouse';
+        acc.last_updated = !acc.last_updated || (r.last_updated && r.last_updated > acc.last_updated) ? r.last_updated : acc.last_updated;
+        acc.raw_material_id = materialId;
+        return acc;
+      },
+      { quantity_on_hand: 0, quantity_available: 0, quantity_reserved: 0, location: null as any, last_updated: null as any, raw_material_id: materialId }
+    );
+    return agg as RawMaterialInventory;
   }
 
   async createInventoryRecord(materialId: number, inventory: Omit<RawMaterialInventoryInsert, 'raw_material_id'>): Promise<RawMaterialInventory> {

@@ -70,7 +70,6 @@ const MaterialForm: React.FC<MaterialFormProps> = React.memo(({
       base_unit: baseUnit,
       purchase_unit: purchaseUnit,
       conversion_factor: conversionFactor,
-      cost_per_unit: formData.get('cost_per_unit') ? parseFloat(formData.get('cost_per_unit') as string) : undefined,
       reorder_level: formData.get('reorder_level') ? parseFloat(formData.get('reorder_level') as string) : 0,
       category_id: selectedCategoryId ? parseInt(selectedCategoryId) : undefined,
       supplier_id: selectedSupplierId ? parseInt(selectedSupplierId) : undefined,
@@ -206,18 +205,6 @@ const MaterialForm: React.FC<MaterialFormProps> = React.memo(({
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        <div>
-          <Label htmlFor="cost_per_unit">Cost per Purchase Unit (LKR)</Label>
-          <Input
-            id="cost_per_unit"
-            name="cost_per_unit"
-            type="number"
-            step="0.01"
-            autoComplete="off"
-            defaultValue={defaultValues.cost_per_unit}
-            placeholder="1500.00"
-          />
-        </div>
         <div>
           <Label htmlFor="reorder_level">Reorder Level</Label>
           <Input
@@ -410,6 +397,7 @@ const MaterialForm: React.FC<MaterialFormProps> = React.memo(({
 export const RawMaterialsManager: React.FC = () => {
   const [materials, setMaterials] = useState<RawMaterialWithInventory[]>([]);
   const [filteredMaterials, setFilteredMaterials] = useState<RawMaterialWithInventory[]>([]);
+  const [valuationMap, setValuationMap] = useState<Record<number, { totalQty: number; totalValue: number; avgCost: number }>>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [editingMaterial, setEditingMaterial] = useState<RawMaterialWithInventory | null>(null);
@@ -468,6 +456,9 @@ export const RawMaterialsManager: React.FC = () => {
       const data = await rawMaterialsService.getRawMaterials(false); // Get all including inactive
       setMaterials(data);
       setFilteredMaterials(data);
+      const ids = data.map(m => m.id);
+      const valuation = await rawMaterialsService.getInventoryValuation(ids);
+      setValuationMap(valuation);
     } catch (error) {
       toast({
         title: 'Error',
@@ -909,8 +900,7 @@ export const RawMaterialsManager: React.FC = () => {
                   <TableHead className="font-semibold text-gray-700">Category</TableHead>
                   <TableHead className="font-semibold text-gray-700">Units</TableHead>
                   <TableHead className="font-semibold text-gray-700">Stock Status</TableHead>
-                  <TableHead className="font-semibold text-gray-700">Cost</TableHead>
-                  <TableHead className="font-semibold text-gray-700">Supplier</TableHead>
+                  <TableHead className="font-semibold text-gray-700">Value (FIFO)</TableHead>
                   <TableHead className="font-semibold text-gray-700">Status</TableHead>
                   <TableHead className="font-semibold text-gray-700">Actions</TableHead>
                 </TableRow>
@@ -970,21 +960,12 @@ export const RawMaterialsManager: React.FC = () => {
                       </div>
                     </TableCell>
                     <TableCell>
-                      {material.cost_per_unit ? (
+                      {valuationMap[material.id] ? (
                         <div className="flex items-center gap-1 text-green-700">
                           <DollarSign className="h-3 w-3" />
-                          <span className="font-semibold">LKR {material.cost_per_unit}</span>
-                          <span className="text-xs text-gray-500">/{material.purchase_unit}</span>
+                          <span className="font-semibold">LKR {Math.round(valuationMap[material.id].totalValue).toLocaleString()}</span>
+                          <span className="text-xs text-gray-500"> (Avg: LKR {Math.round(valuationMap[material.id].avgCost).toLocaleString()}/{material.base_unit})</span>
                         </div>
-                      ) : (
-                        <span className="text-gray-400">-</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {material.supplier?.name ? (
-                        <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
-                          {material.supplier.name}
-                        </Badge>
                       ) : (
                         <span className="text-gray-400">-</span>
                       )}

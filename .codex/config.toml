@@ -1,0 +1,6 @@
+[mcp_servers.supabase]
+command = "npx"
+args = ["-y", "@supabase/mcp-server-supabase@latest", "--read-only", "--project-ref=tnduapjjyqhppclgnqsb"]
+env = { SUPABASE_ACCESS_TOKEN = "sbp_4c061660500ef4a2028cf0e06973c5d63801289a" }
+
+
