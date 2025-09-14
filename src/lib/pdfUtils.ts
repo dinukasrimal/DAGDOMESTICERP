@@ -1,7 +1,7 @@
 
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
-import 'jspdf-autotable';
+import autoTable from 'jspdf-autotable';
 import type { GoodsIssue } from '@/services/goodsIssueService';
 
 export const downloadElementAsPdf = async (elementId: string, fileName: string): Promise<void> => {
@@ -122,7 +122,7 @@ export const generatePlanningReportPdf = async (
       
       try {
         // Generate table with autoTable
-        (pdf as any).autoTable({
+        autoTable(pdf, {
           startY: yPosition,
           head: [['Product Name', 'Current Stock', `Sales Qty (${selectedMonths}M)`, 'Incoming', 'Stock + Incoming', 'Needs Planning']],
           body: tableData,
@@ -267,23 +267,33 @@ export const generatePlanningReportPdf = async (
   }
 };
 
-export const generateGoodsIssuePdf = (issue: GoodsIssue) => {
+// (generateGoodsIssuePdf detailed version defined below)
+
+export const generateGoodsIssuePdf = (
+  issue: GoodsIssue,
+  supplierName?: string,
+  issuedSoFarByMaterial?: Record<string, number>,
+  materialNameById?: Record<string, string>,
+  categoryNameById?: Record<string, string>
+) => {
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageWidth = pdf.internal.pageSize.getWidth();
   const margin = 15;
   let y = margin;
 
-  // Header band
+  // Header band with company name
   pdf.setFillColor(239, 68, 68); // red
-  pdf.rect(0, 0, pageWidth, 28, 'F');
+  pdf.rect(0, 0, pageWidth, 38, 'F');
   pdf.setTextColor(255, 255, 255);
-  pdf.setFontSize(18);
+  pdf.setFontSize(12);
   pdf.setFont(undefined, 'bold');
-  pdf.text('GOODS ISSUE NOTE', margin, 18);
+  pdf.text('DAG Clothing Pvt Ltd', margin, 14);
+  pdf.setFontSize(18);
+  pdf.text('GOODS ISSUE NOTE', margin, 28);
 
   // Reset
   pdf.setTextColor(0, 0, 0);
-  y = 35;
+  y = 45;
 
   // Header details
   const addRow = (label: string, value: string) => {
@@ -298,37 +308,74 @@ export const generateGoodsIssuePdf = (issue: GoodsIssue) => {
   addRow('Issue No', issue.issue_number || '—');
   addRow('Issue Date', new Date(issue.issue_date).toLocaleDateString());
   addRow('Type', (issue.issue_type || '').toString());
+  if (supplierName) addRow('Supplier', supplierName);
   if (issue.notes) addRow('Notes', issue.notes);
 
   y += 3;
-  // Lines table
-  const head = [['Material', 'Quantity', 'Unit', 'Unit Cost', 'Total', 'Batch']];
-  const body = (issue.lines || []).map((l) => [
-    l.raw_material?.name || l.raw_material_id,
-    String(l.quantity_issued ?? ''),
-    l.raw_material?.base_unit || '',
-    l.unit_cost != null ? `LKR ${Number(l.unit_cost).toFixed(2)}` : '-',
-    l.unit_cost != null ? `LKR ${(Number(l.unit_cost) * Number(l.quantity_issued || 0)).toFixed(2)}` : '-',
-    l.batch_number || '-'
-  ]);
+  // Group lines by category
+  type CatItem = { po: string, mat: string, reqNum: number, reqStr: string, issuedSoFar: number, issuedQty: number };
+  const groups = new Map<string, CatItem[]>();
+  for (const l of (issue.lines || [])) {
+    const idStr = String(l.raw_material_id);
+    const cat = (categoryNameById && categoryNameById[idStr]) || 'Uncategorized';
+    const matName = (materialNameById && materialNameById[idStr]) || l.raw_material?.name || idStr;
+    const reqMatch = (l.notes || '').toString().match(/Total required:\s*([\d.]+)/i);
+    const reqNum = reqMatch ? parseFloat(reqMatch[1]) || 0 : 0;
+    const requirement = reqMatch ? reqMatch[1] : '-';
+    const issuedSoFar = issuedSoFarByMaterial ? (issuedSoFarByMaterial[idStr] || 0) : 0;
+    const issuedQty = Number(l.quantity_issued || 0);
+    const item: CatItem = {
+      po: issue.reference_number || '-',
+      mat: matName,
+      reqNum,
+      reqStr: requirement,
+      issuedSoFar,
+      issuedQty,
+    };
+    const arr = groups.get(cat) || [];
+    arr.push(item);
+    groups.set(cat, arr);
+  }
 
-  (pdf as any).autoTable({
-    startY: y,
-    head,
-    body,
-    theme: 'grid',
-    styles: { fontSize: 9, cellPadding: 3 },
-    headStyles: { fillColor: [239, 68, 68], textColor: [255, 255, 255] },
-    columnStyles: {
-      0: { cellWidth: 64 },
-      1: { halign: 'right', cellWidth: 20 },
-      2: { cellWidth: 18 },
-      3: { halign: 'right', cellWidth: 30 },
-      4: { halign: 'right', cellWidth: 30 },
-      5: { cellWidth: 24 },
-    },
-    margin: { left: margin, right: margin },
-  });
+  const head = [['PO Number', 'Material', 'Requirement', 'Issued So Far', 'Issued Qty']];
+  // Render each category section
+  for (const [catName, items] of groups.entries()) {
+    // Category header band
+    pdf.setFontSize(12);
+    pdf.setFont(undefined, 'bold');
+    pdf.setTextColor(59, 130, 246);
+    pdf.text(catName, margin, y);
+    pdf.setTextColor(0, 0, 0);
+    y += 6;
+
+    // Category totals
+    const totalReq = items.reduce((s, it) => s + (it.reqNum || 0), 0);
+    const totalIssuedSoFar = items.reduce((s, it) => s + (it.issuedSoFar || 0), 0);
+    const balance = Math.max(0, totalReq - totalIssuedSoFar);
+    pdf.setFontSize(9);
+    pdf.text(`Totals — Requirement: ${totalReq.toLocaleString()}  |  Issued So Far: ${totalIssuedSoFar.toLocaleString()}  |  Balance: ${balance.toLocaleString()}`, margin, y);
+    y += 5;
+
+    const body = items.map(it => [it.po, it.mat, it.reqStr, it.issuedSoFar.toLocaleString(), it.issuedQty.toLocaleString()]);
+    autoTable(pdf, {
+      startY: y,
+      head,
+      body,
+      theme: 'grid',
+      styles: { fontSize: 9, cellPadding: 3 },
+      headStyles: { fillColor: [239, 68, 68], textColor: [255, 255, 255] },
+      columnStyles: {
+        0: { cellWidth: 30 }, // PO
+        1: { cellWidth: 70 }, // Material
+        2: { halign: 'right', cellWidth: 30 }, // Requirement
+        3: { halign: 'right', cellWidth: 30 }, // Issued So Far
+        4: { halign: 'right', cellWidth: 25 }, // Issued Qty
+      },
+      margin: { left: margin, right: margin },
+    });
+    // @ts-ignore
+    y = (pdf as any).lastAutoTable?.finalY + 10;
+  }
 
   const afterTableY = (pdf as any).lastAutoTable.finalY || y + 10;
 
@@ -349,4 +396,98 @@ export const generateGoodsIssuePdf = (issue: GoodsIssue) => {
   pdf.text(`Generated on ${new Date().toLocaleString()}`, margin, 290);
 
   pdf.save(`${issue.issue_number || 'Goods_Issue'}.pdf`);
+};
+
+type RequirementItem = {
+  material_name: string;
+  required_quantity: number;
+  issued_so_far: number;
+  unit: string;
+  category_id?: number;
+};
+
+export const generateRequirementsPdf = (
+  poNumber: string,
+  requirements: RequirementItem[],
+  supplierName?: string,
+  bomName?: string
+) => {
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const margin = 15;
+  let y = margin;
+
+  // Header band with company
+  pdf.setFillColor(59, 130, 246); // blue
+  pdf.rect(0, 0, pageWidth, 38, 'F');
+  pdf.setTextColor(255, 255, 255);
+  pdf.setFontSize(12);
+  pdf.setFont(undefined, 'bold');
+  pdf.text('DAG Clothing Pvt Ltd', margin, 14);
+  pdf.setFontSize(18);
+  pdf.text('MATERIAL REQUIREMENTS', margin, 28);
+
+  // Reset
+  pdf.setTextColor(0, 0, 0);
+  y = 45;
+  pdf.setFontSize(11);
+  pdf.text(`PO Number: ${poNumber}`, margin, y);
+  if (supplierName) pdf.text(`Supplier: ${supplierName}`, margin + 80, y);
+  if (bomName) pdf.text(`BOM: ${bomName}`, margin, y + 6);
+  y += bomName ? 12 : 8;
+
+  // Group by category (detect by prefix '📁 ')
+  type CatGroup = { name: string, items: RequirementItem[] };
+  const groupsMap = new Map<string, RequirementItem[]>();
+  for (const r of requirements) {
+    const isCat = r.material_name.startsWith('📁 ');
+    const catName = isCat ? r.material_name.replace(/^📁\s*/, '').replace(/\s*\(Category\)\s*$/, '') : 'Materials';
+    const arr = groupsMap.get(catName) || [];
+    arr.push(r);
+    groupsMap.set(catName, arr);
+  }
+
+  const head = [['Item', 'Requirement', 'Issued So Far', 'Balance']];
+  for (const [catName, items] of groupsMap.entries()) {
+    // Category title
+    pdf.setFontSize(12);
+    pdf.setFont(undefined, 'bold');
+    pdf.setTextColor(59, 130, 246);
+    pdf.text(catName, margin, y);
+    pdf.setTextColor(0, 0, 0);
+    y += 6;
+
+    const body = items.map(r => {
+      const isCat = r.material_name.startsWith('📁 ');
+      const label = isCat ? catName : r.material_name;
+      const req = Number(r.required_quantity || 0);
+      const issued = Number(r.issued_so_far || 0);
+      const bal = Math.max(0, req - issued);
+      return [label, `${req.toFixed(3)} ${r.unit}`, `${issued.toFixed(3)} ${r.unit}`, `${bal.toFixed(3)} ${r.unit}`];
+    });
+
+    autoTable(pdf, {
+      startY: y,
+      head,
+      body,
+      theme: 'grid',
+      styles: { fontSize: 9, cellPadding: 3 },
+      headStyles: { fillColor: [59, 130, 246], textColor: [255, 255, 255] },
+      columnStyles: {
+        0: { cellWidth: 80 }, // Item
+        1: { halign: 'right', cellWidth: 35 },
+        2: { halign: 'right', cellWidth: 35 },
+        3: { halign: 'right', cellWidth: 35 },
+      },
+      margin: { left: margin, right: margin },
+    });
+    // @ts-ignore
+    y = (pdf as any).lastAutoTable?.finalY + 10;
+  }
+
+  // Footer
+  pdf.setFontSize(8);
+  pdf.text(`Generated on ${new Date().toLocaleString()}`, margin, 290);
+
+  pdf.save(`Material_Requirements_${poNumber}.pdf`);
 };

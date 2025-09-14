@@ -405,6 +405,14 @@ export const RawMaterialsManager: React.FC = () => {
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [categories, setCategories] = useState<MaterialCategory[]>([]);
   const [suppliers, setSuppliers] = useState<MaterialSupplier[]>([]);
+  const [showAdjustDialog, setShowAdjustDialog] = useState(false);
+  const [adjustMaterialId, setAdjustMaterialId] = useState<number | null>(null);
+  const [adjustLayers, setAdjustLayers] = useState<Array<{ unit_price: number, available: number }>>([]);
+  const adjustPendingRef = useRef<Record<string, string>>({});
+  const newAdjPriceRef = useRef<HTMLInputElement | null>(null);
+  const newAdjQtyRef = useRef<HTMLInputElement | null>(null);
+  const [fabricRolls, setFabricRolls] = useState<Array<{ id: string, roll_barcode: string | null, roll_weight: number | null, roll_length: number | null, unit_price: number }>>([]);
+  const [isFabricAdjustment, setIsFabricAdjustment] = useState(false);
   const { toast } = useToast();
 
   const defaultFormData: Partial<RawMaterialInsert> = {
@@ -467,6 +475,73 @@ export const RawMaterialsManager: React.FC = () => {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const openAdjustmentDialog = async () => {
+    setShowAdjustDialog(true);
+    setAdjustMaterialId(null);
+    setAdjustLayers([]);
+    adjustPendingRef.current = {};
+  };
+
+  const onSelectAdjustMaterial = async (idStr: string) => {
+    const id = Number(idStr);
+    setAdjustMaterialId(id);
+    try {
+      const mat = materials.find(m => m.id === id);
+      const isFabric = mat && (mat.category?.id === 1 || (mat.name || '').toLowerCase().includes('fabric'));
+      setIsFabricAdjustment(!!isFabric);
+      if (isFabric) {
+        const rolls = await rawMaterialsService.getFabricRolls(id);
+        setFabricRolls(rolls as any);
+        setAdjustLayers([]);
+      } else {
+        const layers = await rawMaterialsService.getGrnLayersByMaterial(id);
+        // Group by unit_price
+        const byPrice = new Map<number, number>();
+        for (const l of layers) {
+          const price = Number((l as any).unit_price || 0);
+          const avail = Number((l as any).quantity_available || 0);
+          byPrice.set(price, (byPrice.get(price) || 0) + avail);
+        }
+        const list = Array.from(byPrice.entries()).map(([price, avail]) => ({ unit_price: price, available: avail }));
+        setAdjustLayers(list);
+        setFabricRolls([]);
+      }
+    } catch (e) {
+      console.error('Failed to load layers for adjustment', e);
+      setAdjustLayers([]);
+      setFabricRolls([]);
+    }
+  };
+
+  const submitAdjustment = async () => {
+    if (!adjustMaterialId) return;
+    try {
+      if (isFabricAdjustment && adjustMaterialId) {
+        // For fabric, use roll-specific updates
+        // Read any edited rows via DOM refs isn't ideal; keep simple: provide inline buttons per roll
+      }
+      const adjustments = adjustLayers
+        .map(l => {
+          const key = `${l.unit_price}`;
+          const s = adjustPendingRef.current[key];
+          const val = s == null ? 0 : (parseFloat(s) || 0);
+          return { unit_price: l.unit_price, delta: val };
+        })
+        .filter(l => l.delta !== 0);
+      const newPrice = parseFloat(newAdjPriceRef.current?.value || '0') || 0;
+      const newQty = parseFloat(newAdjQtyRef.current?.value || '0') || 0;
+      const newLayer = newQty > 0 && newPrice > 0 ? { unit_price: newPrice, qty: newQty } : undefined;
+      await rawMaterialsService.applyStockAdjustment(adjustMaterialId, adjustments, newLayer);
+      toast({ title: 'Success', description: 'Stock adjusted successfully' });
+      setShowAdjustDialog(false);
+      // Refresh materials
+      loadMaterials();
+      try { window.dispatchEvent(new CustomEvent('inventory-updated')); } catch {}
+    } catch (e: any) {
+      toast({ title: 'Error', description: e?.message || 'Failed to apply stock adjustment', variant: 'destructive' });
     }
   };
 
@@ -875,6 +950,157 @@ export const RawMaterialsManager: React.FC = () => {
             />
           </DialogContent>
         </Dialog>
+
+        <Dialog open={showAdjustDialog} onOpenChange={setShowAdjustDialog}>
+          <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto bg-white/95 backdrop-blur-sm border-gray-200/50">
+            <DialogHeader>
+              <DialogTitle className="text-xl font-bold text-gray-900">Stock Adjustment</DialogTitle>
+              <DialogDescription className="text-gray-600">Adjust stock quantities by material and unit price</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label>Select Material</Label>
+                <Select value={adjustMaterialId ? String(adjustMaterialId) : ''} onValueChange={onSelectAdjustMaterial}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose material" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {materials.map(m => (
+                      <SelectItem key={m.id} value={String(m.id)}>{m.name} {m.code ? `(${m.code})` : ''}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {adjustMaterialId && !isFabricAdjustment && (
+                <div className="space-y-3">
+                  <div className="text-sm text-gray-700 font-medium">Existing Layers (by Unit Price)</div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Unit Price</TableHead>
+                        <TableHead>Available</TableHead>
+                        <TableHead>Adjust (±)</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {adjustLayers.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={3} className="text-center text-gray-500 text-sm">No existing stock layers</TableCell>
+                        </TableRow>
+                      )}
+                      {adjustLayers.map((l, idx) => (
+                        <TableRow key={`adj-${adjustMaterialId}-${l.unit_price}-${idx}`}>
+                          <TableCell>LKR {l.unit_price}</TableCell>
+                          <TableCell>{l.available}</TableCell>
+                          <TableCell className="w-48">
+                            <Input type="text" inputMode="decimal" defaultValue={"0"}
+                              onChange={(e) => {
+                                adjustPendingRef.current[`${l.unit_price}`] = e.target.value;
+                              }} />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+
+              {!isFabricAdjustment && (<div className="space-y-2">
+                <div className="text-sm text-gray-700 font-medium">New Layer (optional)</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>Unit Price</Label>
+                    <Input type="text" inputMode="decimal" ref={newAdjPriceRef} defaultValue={""} />
+                  </div>
+                  <div>
+                    <Label>Quantity (+)</Label>
+                    <Input type="text" inputMode="decimal" ref={newAdjQtyRef} defaultValue={""} />
+                  </div>
+                </div>
+                <div className="text-xs text-gray-500">Enter a positive quantity to add a new stock layer at the given price.</div>
+              </div>)}
+
+              {adjustMaterialId && isFabricAdjustment && (
+                <div className="space-y-3">
+                  <div className="text-sm text-gray-700 font-medium">Current Rolls</div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Barcode</TableHead>
+                        <TableHead>Weight</TableHead>
+                        <TableHead>Length</TableHead>
+                        <TableHead>Unit Price</TableHead>
+                        <TableHead>Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {fabricRolls.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={5} className="text-center text-gray-500 text-sm">No rolls found for this material</TableCell>
+                        </TableRow>
+                      )}
+                      {fabricRolls.map((r, idx) => (
+                        <TableRow key={r.id}>
+                          <TableCell>{r.roll_barcode || '-'}</TableCell>
+                          <TableCell className="w-40">
+                            <Input type="text" inputMode="decimal" defaultValue={r.roll_weight ?? ''}
+                              onBlur={async (e) => {
+                                const v = parseFloat(e.target.value || '0') || 0;
+                                try {
+                                  await rawMaterialsService.updateFabricRoll(r.id, v, r.roll_length ?? null);
+                                  toast({ title: 'Updated', description: 'Roll weight adjusted' });
+                                  const rolls = await rawMaterialsService.getFabricRolls(adjustMaterialId!);
+                                  setFabricRolls(rolls as any);
+                                  loadMaterials();
+                                } catch (err: any) {
+                                  toast({ title: 'Error', description: err?.message || 'Failed to update roll', variant: 'destructive' });
+                                }
+                              }} />
+                          </TableCell>
+                          <TableCell className="w-40">
+                            <Input type="text" inputMode="decimal" defaultValue={r.roll_length ?? ''}
+                              onBlur={async (e) => {
+                                const v = parseFloat(e.target.value || '0') || 0;
+                                try {
+                                  await rawMaterialsService.updateFabricRoll(r.id, r.roll_weight ?? 0, v);
+                                  toast({ title: 'Updated', description: 'Roll length adjusted' });
+                                  const rolls = await rawMaterialsService.getFabricRolls(adjustMaterialId!);
+                                  setFabricRolls(rolls as any);
+                                } catch (err: any) {
+                                  toast({ title: 'Error', description: err?.message || 'Failed to update roll', variant: 'destructive' });
+                                }
+                              }} />
+                          </TableCell>
+                          <TableCell>LKR {r.unit_price}</TableCell>
+                          <TableCell>
+                            <Button variant="outline" size="sm" onClick={async () => {
+                              if (!confirm('Delete this roll (set weight to 0) and adjust stock?')) return;
+                              try {
+                                await rawMaterialsService.deleteFabricRoll(r.id);
+                                toast({ title: 'Deleted', description: 'Roll removed and stock adjusted' });
+                                const rolls = await rawMaterialsService.getFabricRolls(adjustMaterialId!);
+                                setFabricRolls(rolls as any);
+                                loadMaterials();
+                              } catch (err: any) {
+                                toast({ title: 'Error', description: err?.message || 'Failed to delete roll', variant: 'destructive' });
+                              }
+                            }}>Delete</Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  <div className="text-xs text-gray-500">Tip: Edit weights/lengths by typing and blurring the field. Deleting sets the roll to zero and adjusts stock.</div>
+                </div>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowAdjustDialog(false)}>Cancel</Button>
+              <Button onClick={submitAdjustment}>Apply Adjustment</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
 
       {/* Materials Table */}
@@ -889,6 +1115,9 @@ export const RawMaterialsManager: React.FC = () => {
           <CardDescription className="text-gray-600">
             {filteredMaterials.length} of {materials.length} materials shown
           </CardDescription>
+          <div className="mt-2">
+            <Button variant="outline" onClick={openAdjustmentDialog}>Stock Adjustment</Button>
+          </div>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">

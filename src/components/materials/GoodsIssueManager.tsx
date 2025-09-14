@@ -89,6 +89,7 @@ export const GoodsIssueManager: React.FC = () => {
   }[]>([]);
   const [showBOMSelection, setShowBOMSelection] = useState(false);
   const [categorySelections, setCategorySelections] = useState<{[categoryId: string]: {materialId: number, quantity: number}[]}>({});
+  const [issuedByMaterial, setIssuedByMaterial] = useState<Map<string, number>>(new Map());
   const { toast } = useToast();
   const [suppliers, setSuppliers] = useState<string[]>([]);
   const [selectedSupplier, setSelectedSupplier] = useState<string>('');
@@ -563,6 +564,8 @@ export const GoodsIssueManager: React.FC = () => {
       const issuedMap = purchaseOrder?.po_number
         ? await fetchIssuedSoFarForPO(purchaseOrder.po_number)
         : new Map<string, number>();
+      // Keep a copy for rendering per-material issued in category selections
+      setIssuedByMaterial(new Map(issuedMap));
 
       // Check if this is a category-wise BOM
       // Helper to parse category info from legacy/hacky notes format: CATEGORY:{id}:{name}:[...]
@@ -1187,6 +1190,63 @@ export const GoodsIssueManager: React.FC = () => {
     issue.notes?.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const handleExportIssuePdf = async (issue: GoodsIssue) => {
+    try {
+      // Try to fetch supplier name using reference_number (PO number)
+      let supplierName: string | undefined = undefined;
+      let issuedMap: Record<string, number> = {};
+      try {
+        if (issue.reference_number) {
+          const { data: po } = await supabase
+            .from('purchases')
+            .select('partner_name, name')
+            .eq('name', issue.reference_number)
+            .maybeSingle();
+          if (po?.partner_name) supplierName = po.partner_name as string;
+
+          // Fetch issued so far by material for this PO from raw_material_inventory
+          const { data: rmi } = await supabase
+            .from('raw_material_inventory')
+            .select('raw_material_id, quantity_available, quantity_on_hand, transaction_type, po_number')
+            .eq('po_number', issue.reference_number);
+          const map: Record<string, number> = {};
+          for (const row of (rmi || [])) {
+            const qoh = Number((row as any).quantity_on_hand || 0);
+            const qav = Number((row as any).quantity_available || 0);
+            const isNeg = qoh < 0 || qav < 0;
+            const isIssue = (row as any).transaction_type === 'issue' || (!row?.transaction_type && isNeg);
+            if (!isIssue) continue;
+            const key = String((row as any).raw_material_id);
+            const qty = Math.abs(qoh !== 0 ? qoh : qav);
+            map[key] = (map[key] || 0) + qty;
+          }
+          issuedMap = map;
+        }
+      } catch {}
+
+      // Fetch material names + categories for grouping
+      const ids = Array.from(new Set((issue.lines || []).map(l => Number(l.raw_material_id)).filter(n => !isNaN(n))));
+      let nameById: Record<string, string> = {};
+      let categoryById: Record<string, string> = {};
+      if (ids.length) {
+        const { data: mats } = await supabase
+          .from('raw_materials')
+          .select('id, name, category:material_categories(name)')
+          .in('id', ids);
+        for (const m of (mats || [])) {
+          nameById[String((m as any).id)] = (m as any).name;
+          categoryById[String((m as any).id)] = (m as any).category?.name || 'Uncategorized';
+        }
+      }
+
+      await Promise.resolve(generateGoodsIssuePdf(issue, supplierName, issuedMap, nameById, categoryById));
+      toast({ title: 'PDF Generated', description: `Goods Issue ${issue.issue_number} downloaded` });
+    } catch (e: any) {
+      console.error('Failed to export Goods Issue PDF:', e);
+      toast({ title: 'PDF Error', description: e?.message || 'Failed to generate PDF', variant: 'destructive' });
+    }
+  };
+
   const getAvailableQuantity = (materialId: string): number => {
     const material = rawMaterials.find(m => m.id.toString() === materialId);
     return material?.inventory?.quantity_available || 0;
@@ -1298,7 +1358,7 @@ export const GoodsIssueManager: React.FC = () => {
                         <Button 
                           size="sm" 
                           variant="ghost"
-                          onClick={() => generateGoodsIssuePdf(issue)}
+                          onClick={() => handleExportIssuePdf(issue)}
                           title="Export PDF"
                         >
                           <FileDown className="h-4 w-4" />
@@ -1647,13 +1707,14 @@ export const GoodsIssueManager: React.FC = () => {
                                         {req.category_materials?.map((material) => {
                                           const matFull = rawMaterials.find(m => m.id === material.id);
                                           const avl = matFull?.inventory?.quantity_available ?? 0;
+                                          const issued = issuedByMaterial.get(material.id.toString()) || 0;
                                           return (
                                           <div key={material.id} className="flex items-center justify-between bg-white p-3 rounded border">
                                             <div className="flex items-center space-x-2">
                                               <Package className="h-4 w-4 text-gray-600" />
                                               <div>
                                                 <div className="font-medium text-sm">{material.name}</div>
-                                                <div className="text-xs text-gray-500">Unit: {material.base_unit} • Avl: {avl} {material.base_unit}</div>
+                                                <div className="text-xs text-gray-500">Unit: {material.base_unit} • Avl: {avl} {material.base_unit} • Issued: {issued} {material.base_unit}</div>
                                               </div>
                                             </div>
                                             <div className="flex items-center space-x-2">

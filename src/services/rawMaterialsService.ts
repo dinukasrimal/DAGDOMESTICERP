@@ -24,6 +24,208 @@ export interface RawMaterialWithInventory extends RawMaterial {
 }
 
 export class RawMaterialsService {
+  async getGrnLayersByMaterial(materialId: number): Promise<Array<{ id: string, unit_price: number, quantity_available: number, last_updated: string }>> {
+    const { data, error } = await supabase
+      .from('raw_material_inventory')
+      .select('id, unit_price, quantity_available, last_updated, transaction_type')
+      .eq('raw_material_id', materialId)
+      .or('transaction_type.is.null,transaction_type.eq.grn')
+      .gt('quantity_available', 0)
+      .order('last_updated', { ascending: true });
+    if (error) {
+      console.error('Error fetching GRN layers:', error);
+      return [];
+    }
+    return (data || []) as any;
+  }
+
+  async getFabricRolls(materialId: number): Promise<Array<{ id: string, roll_barcode: string | null, roll_weight: number | null, roll_length: number | null, unit_price: number, goods_received_id: string }>> {
+    const { data, error } = await supabase
+      .from('goods_received_lines')
+      .select('id, goods_received_id, roll_barcode, roll_weight, roll_length, unit_price')
+      .eq('raw_material_id', materialId)
+      .not('roll_barcode', 'is', null);
+    if (error) {
+      console.error('Error fetching fabric rolls:', error);
+      return [];
+    }
+    return (data || []) as any;
+  }
+
+  async updateFabricRoll(lineId: string, newWeight: number, newLength: number | null): Promise<void> {
+    // Fetch existing line
+    const { data: line, error: fetchErr } = await supabase
+      .from('goods_received_lines')
+      .select('raw_material_id, roll_weight, roll_length, unit_price')
+      .eq('id', lineId)
+      .maybeSingle();
+    if (fetchErr || !line) throw new Error(fetchErr?.message || 'Roll not found');
+    const oldWeight = Number((line as any).roll_weight || 0);
+    const delta = Number(newWeight || 0) - oldWeight;
+    const unitPrice = Number((line as any).unit_price || 0);
+    const materialId = Number((line as any).raw_material_id);
+
+    // Update roll record first
+    const { error: updErr } = await supabase
+      .from('goods_received_lines')
+      .update({ roll_weight: newWeight, roll_length: newLength })
+      .eq('id', lineId);
+    if (updErr) throw new Error(`Failed to update roll: ${updErr.message}`);
+
+    if (delta === 0) return;
+    const now = new Date().toISOString();
+    if (delta > 0) {
+      // Add stock as GRN adjustment at this roll's unit price
+      const { error: insErr } = await supabase.from('raw_material_inventory').insert({
+        raw_material_id: materialId,
+        quantity_on_hand: delta,
+        quantity_available: delta,
+        quantity_reserved: 0,
+        unit_price: unitPrice,
+        inventory_value: delta * unitPrice,
+        location: 'Adjustment (Roll)',
+        transaction_type: 'grn',
+        transaction_ref: 'ADJ-ROLL',
+        last_updated: now,
+      } as any);
+      if (insErr) throw new Error(`Failed to record roll increase: ${insErr.message}`);
+    } else {
+      // Reduce stock against GRN layers at this price (oldest first)
+      let remaining = Math.abs(delta);
+      const { data: layers, error } = await supabase
+        .from('raw_material_inventory')
+        .select('id, quantity_available, quantity_on_hand, last_updated')
+        .eq('raw_material_id', materialId)
+        .or('transaction_type.is.null,transaction_type.eq.grn')
+        .eq('unit_price', unitPrice)
+        .gt('quantity_available', 0)
+        .order('last_updated', { ascending: true });
+      if (error) throw new Error(`Failed to fetch layers for roll reduction: ${error.message}`);
+      for (const layer of layers || []) {
+        if (remaining <= 0) break;
+        const avail = Number((layer as any).quantity_available || 0);
+        const take = Math.min(avail, remaining);
+        const newAvail = avail - take;
+        const newOnHand = Math.max(0, Number((layer as any).quantity_on_hand || 0) - take);
+        const { error: lErr } = await supabase
+          .from('raw_material_inventory')
+          .update({ quantity_available: newAvail, quantity_on_hand: newOnHand })
+          .eq('id', (layer as any).id);
+        if (lErr) throw new Error(`Failed to apply roll reduction: ${lErr.message}`);
+        remaining -= take;
+      }
+      if (remaining > 0) throw new Error(`Insufficient stock at price ${unitPrice} to reduce by ${Math.abs(delta)}`);
+      // Record negative ledger row for audit
+      const { error: outErr } = await supabase.from('raw_material_inventory').insert({
+        raw_material_id: materialId,
+        quantity_on_hand: delta, // negative
+        quantity_available: delta,
+        quantity_reserved: 0,
+        unit_price: unitPrice,
+        inventory_value: delta * unitPrice,
+        location: 'Adjustment (Roll)',
+        transaction_type: 'issue',
+        transaction_ref: 'ADJ-ROLL',
+        last_updated: now,
+      } as any);
+      if (outErr) throw new Error(`Failed to log roll decrease: ${outErr.message}`);
+    }
+  }
+
+  async deleteFabricRoll(lineId: string): Promise<void> {
+    const { data: line, error: fetchErr } = await supabase
+      .from('goods_received_lines')
+      .select('raw_material_id, roll_weight, unit_price')
+      .eq('id', lineId)
+      .maybeSingle();
+    if (fetchErr || !line) throw new Error(fetchErr?.message || 'Roll not found');
+    const weight = Number((line as any).roll_weight || 0);
+    const unitPrice = Number((line as any).unit_price || 0);
+    const materialId = Number((line as any).raw_material_id);
+    // Zero out roll
+    const { error: updErr } = await supabase
+      .from('goods_received_lines')
+      .update({ roll_weight: 0, roll_length: 0 })
+      .eq('id', lineId);
+    if (updErr) throw new Error(`Failed to delete roll: ${updErr.message}`);
+    if (weight <= 0) return;
+    // Reduce GRN layers at this price and log an issue adjustment
+    await this.updateFabricRoll(lineId, 0, 0);
+  }
+
+  async applyStockAdjustment(
+    materialId: number,
+    adjustments: Array<{ unit_price: number, delta: number }>,
+    newLayer?: { unit_price: number, qty: number }
+  ): Promise<void> {
+    // Positive deltas create new GRN rows; negative deltas decrement existing GRN rows at the given price in FIFO order.
+    const now = new Date().toISOString();
+    // Handle positive adjustments and new layer first
+    const positives = adjustments.filter(a => a.delta > 0);
+    const rowsToInsert: any[] = [];
+    for (const p of positives) {
+      rowsToInsert.push({
+        raw_material_id: materialId,
+        quantity_on_hand: p.delta,
+        quantity_available: p.delta,
+        quantity_reserved: 0,
+        unit_price: p.unit_price,
+        inventory_value: Number(p.delta) * Number(p.unit_price || 0),
+        location: 'Adjustment',
+        transaction_type: 'grn',
+        transaction_ref: 'ADJ',
+        last_updated: now,
+      });
+    }
+    if (newLayer && newLayer.qty > 0) {
+      rowsToInsert.push({
+        raw_material_id: materialId,
+        quantity_on_hand: newLayer.qty,
+        quantity_available: newLayer.qty,
+        quantity_reserved: 0,
+        unit_price: newLayer.unit_price,
+        inventory_value: Number(newLayer.qty) * Number(newLayer.unit_price || 0),
+        location: 'Adjustment',
+        transaction_type: 'grn',
+        transaction_ref: 'ADJ',
+        last_updated: now,
+      });
+    }
+    if (rowsToInsert.length) {
+      const { error: insErr } = await supabase.from('raw_material_inventory').insert(rowsToInsert as any);
+      if (insErr) throw new Error(`Failed to insert positive adjustments: ${insErr.message}`);
+    }
+
+    // Handle negative adjustments
+    const negatives = adjustments.filter(a => a.delta < 0);
+    for (const n of negatives) {
+      let remaining = Math.abs(n.delta);
+      // Fetch GRN layers for this unit_price
+      const { data: layers, error } = await supabase
+        .from('raw_material_inventory')
+        .select('id, quantity_available, quantity_on_hand, last_updated')
+        .eq('raw_material_id', materialId)
+        .or('transaction_type.is.null,transaction_type.eq.grn')
+        .eq('unit_price', n.unit_price)
+        .gt('quantity_available', 0)
+        .order('last_updated', { ascending: true });
+      if (error) throw new Error(`Failed to fetch layers for reduction: ${error.message}`);
+      for (const layer of layers || []) {
+        if (remaining <= 0) break;
+        const avail = Number((layer as any).quantity_available || 0);
+        const take = Math.min(avail, remaining);
+        const newAvail = avail - take;
+        const newOnHand = Math.max(0, Number((layer as any).quantity_on_hand || 0) - take);
+        const { error: updErr } = await supabase
+          .from('raw_material_inventory')
+          .update({ quantity_available: newAvail, quantity_on_hand: newOnHand })
+          .eq('id', (layer as any).id);
+        if (updErr) throw new Error(`Failed to apply negative adjustment: ${updErr.message}`);
+        remaining -= take;
+      }
+      if (remaining > 0) throw new Error(`Insufficient stock at price ${n.unit_price} to reduce by ${Math.abs(n.delta)}`);
+    }
+  }
   async getInventoryValuation(materialIds: number[]): Promise<Record<number, { totalQty: number; totalValue: number; avgCost: number }>> {
     const result: Record<number, { totalQty: number; totalValue: number; avgCost: number }> = {};
     if (!materialIds || materialIds.length === 0) return result;
