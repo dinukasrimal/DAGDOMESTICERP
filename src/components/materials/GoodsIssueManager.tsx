@@ -119,6 +119,8 @@ export const GoodsIssueManager: React.FC = () => {
     batch_number: '',
     notes: ''
   });
+  // Per-material alternate unit issuing state within category selection
+  const [altIssueModes, setAltIssueModes] = useState<Record<string, { enabled: boolean; unit: string; qty: number; factor: number }>>({});
 
   useEffect(() => {
     loadInitialData();
@@ -976,6 +978,12 @@ export const GoodsIssueManager: React.FC = () => {
 
   const handleCreateIssue = async () => {
     try {
+      // Enforce issue date must be today
+      const today = new Date().toISOString().split('T')[0];
+      if (formData.issue_date !== today) {
+        setFormData(prev => ({ ...prev, issue_date: today }));
+      }
+
       if (formData.lines.length === 0) {
         toast({
           title: 'Validation Error',
@@ -1794,7 +1802,7 @@ export const GoodsIssueManager: React.FC = () => {
                                           const avl = matFull?.inventory?.quantity_available ?? 0;
                                           const issued = issuedByMaterial.get(material.id.toString()) || 0;
                                           return (
-                                          <div key={material.id} className="flex items-center justify-between bg-white p-3 rounded border">
+                                          <div key={material.id} className="bg-white p-3 rounded border space-y-2">
                                             <div className="flex items-center space-x-2">
                                               <Package className="h-4 w-4 text-gray-600" />
                                               <div>
@@ -1802,50 +1810,136 @@ export const GoodsIssueManager: React.FC = () => {
                                                 <div className="text-xs text-gray-500">Unit: {material.base_unit} • Avl: {avl} {material.base_unit} • Issued: {issued} {material.base_unit}</div>
                                               </div>
                                             </div>
-                                            <div className="flex items-center space-x-2">
-                                              <Input
-                                                type="number"
-                                                min="0"
-                                                step="0.001"
-                                                placeholder="Qty"
-                                                className="w-20 h-8 text-sm"
-                                                value={(categorySelections[`category-${req.category_id}`]?.find(i => i.materialId === material.id)?.quantity ?? '') as any}
-                                                onChange={(e) => {
-                                                  const qty = parseFloat(e.target.value) || 0;
-                                                  const categoryKey = `category-${req.category_id}`;
-                                                  setCategorySelections(prev => ({
-                                                    ...prev,
-                                                    [categoryKey]: prev[categoryKey]?.filter(item => item.materialId !== material.id)
-                                                      .concat(qty > 0 ? [{materialId: material.id, quantity: qty}] : []) || 
-                                                      (qty > 0 ? [{materialId: material.id, quantity: qty}] : [])
-                                                  }));
-                                                  // Mirror into form lines so Create button activates and issuance uses these quantities
-                                                  setFormData(prev => {
-                                                    const matId = String(material.id);
-                                                    const exists = prev.lines.some(l => l.raw_material_id === matId);
-                                                    let newLines = prev.lines;
-                                                    if (qty > 0) {
-                                                      newLines = exists
-                                                        ? prev.lines.map(l => l.raw_material_id === matId ? { ...l, quantity_issued: qty } : l)
-                                                        : [...prev.lines, { raw_material_id: matId, quantity_issued: qty, batch_number: '', notes: '' }];
-                                                    } else if (exists && qty <= 0) {
-                                                      newLines = prev.lines.filter(l => l.raw_material_id !== matId);
-                                                    }
-                                                    return { ...prev, lines: newLines };
-                                                  });
-                                                }}
-                                              />
-                                              {isFabricCategory(req.category_id, req.material_name) && (
-                                                <Button 
-                                                  variant="outline" 
-                                                  size="sm" 
-                                                  className="h-8 px-2"
-                                                  onClick={() => startScanForCategoryMaterial(req.category_id!, material.id)}
-                                                  title="Scan rolls to set quantity"
-                                                >
-                                                  <QrCode className="h-4 w-4" />
-                                                </Button>
-                                              )}
+                                            <div className="flex flex-wrap items-center gap-2">
+                                              {(() => {
+                                                const key = `cat-${req.category_id}-mat-${material.id}`;
+                                                const alt = altIssueModes[key] || { enabled: false, unit: '', qty: 0, factor: 1 };
+                                                const setAlt = (patch: Partial<{enabled:boolean; unit:string; qty:number; factor:number;}>) => {
+                                                  setAltIssueModes(prev => ({ ...prev, [key]: { ...alt, ...patch } }));
+                                                };
+                                                if (!alt.enabled) {
+                                                  return (
+                                                    <>
+                                                      <Input
+                                                        type="number"
+                                                        min="0"
+                                                        step="0.001"
+                                                        placeholder="Qty"
+                                                        className="w-20 h-8 text-sm"
+                                                        value={(categorySelections[`category-${req.category_id}`]?.find(i => i.materialId === material.id)?.quantity ?? '') as any}
+                                                        onChange={(e) => {
+                                                          const qty = parseFloat(e.target.value) || 0;
+                                                          const categoryKey = `category-${req.category_id}`;
+                                                          setCategorySelections(prev => ({
+                                                            ...prev,
+                                                            [categoryKey]: prev[categoryKey]?.filter(item => item.materialId !== material.id)
+                                                              .concat(qty > 0 ? [{materialId: material.id, quantity: qty}] : []) || 
+                                                              (qty > 0 ? [{materialId: material.id, quantity: qty}] : [])
+                                                          }));
+                                                          setFormData(prev => {
+                                                            const matId = String(material.id);
+                                                            const exists = prev.lines.some(l => l.raw_material_id === matId);
+                                                            let newLines = prev.lines;
+                                                            if (qty > 0) {
+                                                              newLines = exists
+                                                                ? prev.lines.map(l => l.raw_material_id === matId ? { ...l, quantity_issued: qty, notes: '' } : l)
+                                                                : [...prev.lines, { raw_material_id: matId, quantity_issued: qty, batch_number: '', notes: '' }];
+                                                            } else if (exists && qty <= 0) {
+                                                              newLines = prev.lines.filter(l => l.raw_material_id !== matId);
+                                                            }
+                                                            return { ...prev, lines: newLines };
+                                                          });
+                                                        }}
+                                                      />
+                                                      <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => setAlt({ enabled: true })}>
+                                                        Different unit
+                                                      </Button>
+                                                      {isFabricCategory(req.category_id, req.material_name) && (
+                                                        <Button 
+                                                          variant="outline" 
+                                                          size="sm" 
+                                                          className="h-8 px-2"
+                                                          onClick={() => startScanForCategoryMaterial(req.category_id!, material.id)}
+                                                          title="Scan rolls to set quantity"
+                                                        >
+                                                          <QrCode className="h-4 w-4" />
+                                                        </Button>
+                                                      )}
+                                                    </>
+                                                  );
+                                                }
+                                                return (
+                                                  <div className="flex flex-wrap items-center gap-2">
+                                                    <Select value={alt.unit} onValueChange={(v) => setAlt({ unit: v })}>
+                                                      <SelectTrigger className="h-8 w-28 text-sm">
+                                                        <SelectValue placeholder="Unit" />
+                                                      </SelectTrigger>
+                                                      <SelectContent>
+                                                        {['kg','meter','meters','m','yard','yards','yd','piece','pieces','pc','dozen','dz'].map(u => (
+                                                          <SelectItem key={u} value={u}>{u}</SelectItem>
+                                                        ))}
+                                                      </SelectContent>
+                                                    </Select>
+                                                    <Input
+                                                      type="number"
+                                                      min="0"
+                                                      step="0.001"
+                                                      className="h-8 w-24 text-sm"
+                                                      placeholder="Qty"
+                                                      value={alt.qty || 0}
+                                                      onChange={(e) => setAlt({ qty: Number(e.target.value) || 0 })}
+                                                    />
+                                                    <Input
+                                                      type="number"
+                                                      min="0"
+                                                      step="0.0001"
+                                                      className="h-8 w-28 text-sm"
+                                                      placeholder="Factor"
+                                                      value={alt.factor}
+                                                      onChange={(e) => setAlt({ factor: Math.max(0, Number(e.target.value) || 0) })}
+                                                    />
+                                                    <Button
+                                                      variant="secondary"
+                                                      size="sm"
+                                                      className="h-8"
+                                                      onClick={() => {
+                                                        const baseQty = (Number(alt.qty) || 0) * (Number(alt.factor) || 0);
+                                                        if (!baseQty || baseQty <= 0) {
+                                                          toast({ title: 'Invalid Quantity', description: 'Provide alt quantity and conversion factor.', variant: 'destructive' });
+                                                          return;
+                                                        }
+                                                        const matId = String(material.id);
+                                                        const baseUnit = material.base_unit || 'unit';
+                                                        const note = `Issued via alt unit: ${alt.qty} ${alt.unit || ''} (1 ${alt.unit || 'alt'} = ${alt.factor} ${baseUnit}) => ${baseQty.toFixed(3)} ${baseUnit}`;
+                                                        const categoryKey = `category-${req.category_id}`;
+                                                        setCategorySelections(prev => ({
+                                                          ...prev,
+                                                          [categoryKey]: prev[categoryKey]?.filter(item => item.materialId !== material.id)
+                                                            .concat(baseQty > 0 ? [{materialId: material.id, quantity: baseQty}] : []) || 
+                                                            (baseQty > 0 ? [{materialId: material.id, quantity: baseQty}] : [])
+                                                        }));
+                                                        setFormData(prev => {
+                                                          const exists = prev.lines.some(l => l.raw_material_id === matId);
+                                                          const newLine = { raw_material_id: matId, quantity_issued: baseQty, batch_number: '', notes: note } as any;
+                                                          const lines = exists
+                                                            ? prev.lines.map(l => l.raw_material_id === matId ? { ...l, quantity_issued: baseQty, notes: note } : l)
+                                                            : [...prev.lines, newLine];
+                                                          return { ...prev, lines };
+                                                        });
+                                                      }}
+                                                    >
+                                                      Apply
+                                                    </Button>
+                                                    <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => setAlt({ enabled: false })}>Cancel</Button>
+                                                    <div className="text-xs text-gray-500">
+                                                      {(() => {
+                                                        const baseQty = (Number(alt.qty) || 0) * (Number(alt.factor) || 0);
+                                                        return baseQty > 0 ? `= ${baseQty.toFixed(3)} ${material.base_unit}` : '';
+                                                      })()}
+                                                    </div>
+                                                  </div>
+                                                );
+                                              })()}
                                             </div>
                                           </div>
                                         )})}
@@ -1917,7 +2011,13 @@ export const GoodsIssueManager: React.FC = () => {
                 <Input
                   type="date"
                   value={formData.issue_date}
-                  onChange={(e) => setFormData(prev => ({ ...prev, issue_date: e.target.value }))}
+                  min={new Date().toISOString().split('T')[0]}
+                  max={new Date().toISOString().split('T')[0]}
+                  onChange={() => {
+                    // Enforce today only
+                    const today = new Date().toISOString().split('T')[0];
+                    setFormData(prev => ({ ...prev, issue_date: today }));
+                  }}
                 />
               </div>
               <div>
@@ -2016,8 +2116,13 @@ export const GoodsIssueManager: React.FC = () => {
                         return (
                           <TableRow key={idx}>
                             <TableCell>{mat ? `${mat.name}${mat.code ? ` (${mat.code})` : ''}` : line.raw_material_id}</TableCell>
-                            <TableCell className="w-48">
-                              <span className="text-sm font-medium">{line.quantity_issued}</span>
+                            <TableCell className="w-96">
+                              <div className="flex flex-col">
+                                <span className="text-sm font-medium">{line.quantity_issued} {mat?.base_unit}</span>
+                                {line.notes ? (
+                                  <span className="text-xs text-gray-500">{line.notes}</span>
+                                ) : null}
+                              </div>
                             </TableCell>
                             <TableCell className="w-20 text-right">
                               <Button type="button" variant="outline" onClick={() => handleRemoveLine(idx)}>Remove</Button>
