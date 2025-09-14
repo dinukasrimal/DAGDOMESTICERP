@@ -378,6 +378,8 @@ export class GoodsReceivedService {
         unit_price: line.unit_price,
         inventory_value: Number(line.quantity_received) * Number(line.unit_price || 0),
         location: 'Default Warehouse',
+        transaction_type: 'grn',
+        transaction_ref: null,
         last_updated: now,
       };
       const { error: insErr } = await supabase
@@ -459,6 +461,8 @@ export class GoodsReceivedService {
         unit_price: line.unit_price,
         inventory_value: Number(line.quantity_received) * Number(line.unit_price || 0),
         location: 'Default Warehouse',
+        transaction_type: 'grn',
+        transaction_ref: null,
         last_updated: now,
       };
       const { error: insErr } = await supabase

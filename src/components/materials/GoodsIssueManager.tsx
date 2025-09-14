@@ -154,6 +154,17 @@ export const GoodsIssueManager: React.FC = () => {
     }
   };
 
+  // Recompute available quantities in BOM requirements when rawMaterials refreshes
+  useEffect(() => {
+    if (!bomMaterialRequirements.length) return;
+    setBomMaterialRequirements(prev => prev.map(req => {
+      if (req.category_id) return req; // skip category placeholder rows
+      const mat = rawMaterials.find(m => m.id.toString() === req.material_id);
+      const avail = mat?.inventory?.quantity_available ?? req.available_quantity;
+      return { ...req, available_quantity: avail };
+    }));
+  }, [rawMaterials]);
+
   const loadPurchaseOrders = async (): Promise<any[]> => {
     try {
       console.log('Loading purchase orders from purchases table...');
@@ -924,19 +935,7 @@ export const GoodsIssueManager: React.FC = () => {
         return;
       }
 
-      // Validate selections
-      if (!selectedPurchaseOrder) {
-        toast({
-          title: 'Validation Error',
-          description: 'Please select a Purchase Order for PO-based issues',
-          variant: 'destructive'
-        });
-        return;
-      }
-      if (!selectedBOM) {
-        toast({ title: 'Validation Error', description: 'Please select a BOM', variant: 'destructive' });
-        return;
-      }
+      // For general issues, allow without PO/BOM; for trims, still require supplier
       if (issueTab === 'trims' && !selectedSupplier) {
         toast({ title: 'Validation Error', description: 'Please select a supplier for trims issue', variant: 'destructive' });
         return;
@@ -956,10 +955,18 @@ export const GoodsIssueManager: React.FC = () => {
         notes: issueTab === 'trims' && selectedSupplier ? `Supplier: ${selectedSupplier}` : undefined,
       });
       setGoodsIssues(prev => [newIssue, ...prev]);
+      // Refresh local materials and notify other views to refresh inventory
+      try {
+        const mats = await rawMaterialsService.getRawMaterials();
+        setRawMaterials(mats);
+        // Recompute BOM requirements view to refresh available stock columns
+        if (selectedBOM && selectedPurchaseOrder) {
+          await calculateBOMBasedRequirements(selectedBOM, selectedPurchaseOrder);
+        }
+        window.dispatchEvent(new CustomEvent('inventory-updated'));
+      } catch {}
       
-      const successMessage = issueMode === 'po' 
-        ? `Goods Issue ${newIssue.issue_number} created for Purchase Order ${selectedPurchaseOrder?.po_number}`
-        : `Goods Issue ${newIssue.issue_number} created (pending approval)`;
+      const successMessage = `Goods Issue ${newIssue.issue_number} created and issued`;
       
       toast({
         title: 'Success',
@@ -1613,6 +1620,20 @@ export const GoodsIssueManager: React.FC = () => {
                                                       .concat(qty > 0 ? [{materialId: material.id, quantity: qty}] : []) || 
                                                       (qty > 0 ? [{materialId: material.id, quantity: qty}] : [])
                                                   }));
+                                                  // Mirror into form lines so Create button activates and issuance uses these quantities
+                                                  setFormData(prev => {
+                                                    const matId = String(material.id);
+                                                    const exists = prev.lines.some(l => l.raw_material_id === matId);
+                                                    let newLines = prev.lines;
+                                                    if (qty > 0) {
+                                                      newLines = exists
+                                                        ? prev.lines.map(l => l.raw_material_id === matId ? { ...l, quantity_issued: qty } : l)
+                                                        : [...prev.lines, { raw_material_id: matId, quantity_issued: qty, batch_number: '', notes: '' }];
+                                                    } else if (exists && qty <= 0) {
+                                                      newLines = prev.lines.filter(l => l.raw_material_id !== matId);
+                                                    }
+                                                    return { ...prev, lines: newLines };
+                                                  });
                                                 }}
                                               />
                                               {isFabricCategory(req.category_id, req.material_name) && (
@@ -1706,14 +1727,107 @@ export const GoodsIssueManager: React.FC = () => {
               </div>
             </div>
 
-            {/* Notes removed per requirements */}
+            {/* Manual Material + Quantity (auto-add/auto-update line) */}
+            <div className="mt-6 p-4 border rounded-md">
+              <div className="grid grid-cols-3 gap-4 items-end">
+                <div>
+                  <Label htmlFor="material-select">Material</Label>
+                  <Select 
+                    value={currentLine.raw_material_id}
+                    onValueChange={(v: string) => {
+                      setCurrentLine(prev => ({ ...prev, raw_material_id: v }));
+                      setFormData(prev => {
+                        const qty = currentLine.quantity_issued || 0;
+                        const exists = prev.lines.some(l => l.raw_material_id === v);
+                        let newLines = prev.lines;
+                        if (qty > 0) {
+                          newLines = exists 
+                            ? prev.lines.map(l => l.raw_material_id === v ? { ...l, quantity_issued: qty } : l)
+                            : [...prev.lines, { raw_material_id: v, quantity_issued: qty, batch_number: '', notes: '' }];
+                        } else if (exists && qty <= 0) {
+                          newLines = prev.lines.filter(l => l.raw_material_id !== v);
+                        }
+                        return { ...prev, lines: newLines };
+                      });
+                    }}
+                  >
+                    <SelectTrigger id="material-select">
+                      <SelectValue placeholder="Select material" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {rawMaterials.map(m => (
+                        <SelectItem key={m.id} value={String(m.id)}>
+                          {m.name} {m.code ? `(${m.code})` : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="issue-qty">Quantity</Label>
+                  <Input
+                    id="issue-qty"
+                    type="number"
+                    min={0}
+                    step={0.001}
+                    value={currentLine.quantity_issued || 0}
+                    onChange={(e) => {
+                      const q = Number(e.target.value) || 0;
+                      const mat = currentLine.raw_material_id;
+                      setCurrentLine(prev => ({ ...prev, quantity_issued: q }));
+                      if (!mat) return;
+                      setFormData(prev => {
+                        const exists = prev.lines.some(l => l.raw_material_id === mat);
+                        let newLines = prev.lines;
+                        if (q > 0) {
+                          newLines = exists 
+                            ? prev.lines.map(l => l.raw_material_id === mat ? { ...l, quantity_issued: q } : l)
+                            : [...prev.lines, { raw_material_id: mat, quantity_issued: q, batch_number: '', notes: '' }];
+                        } else if (exists && q <= 0) {
+                          newLines = prev.lines.filter(l => l.raw_material_id !== mat);
+                        }
+                        return { ...prev, lines: newLines };
+                      });
+                    }}
+                  />
+                </div>
+                <div />
+              </div>
 
-            {/* Manual Add Line removed per requirements */}
-
-            {/* Line Items table removed per requirements (BOM table controls quantities) */}
+              {/* Current lines */}
+              {formData.lines.length > 0 && (
+                <div className="mt-4">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Material</TableHead>
+                        <TableHead>Quantity</TableHead>
+                        <TableHead></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {formData.lines.map((line, idx) => {
+                        const mat = rawMaterials.find(m => m.id.toString() === line.raw_material_id);
+                        return (
+                          <TableRow key={idx}>
+                            <TableCell>{mat ? `${mat.name}${mat.code ? ` (${mat.code})` : ''}` : line.raw_material_id}</TableCell>
+                            <TableCell className="w-48">
+                              <span className="text-sm font-medium">{line.quantity_issued}</span>
+                            </TableCell>
+                            <TableCell className="w-20 text-right">
+                              <Button type="button" variant="outline" onClick={() => handleRemoveLine(idx)}>Remove</Button>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </div>
 
             {/* Validation Alerts */}
-            {formData.lines.some(line => line.quantity_issued > getAvailableQuantity(line.raw_material_id)) && (
+            {formData.lines.length > 0 && formData.lines.some(line => line.quantity_issued > getAvailableQuantity(line.raw_material_id)) && (
               <Alert variant="destructive">
                 <AlertTriangle className="h-4 w-4" />
                 <AlertDescription>
@@ -1729,11 +1843,7 @@ export const GoodsIssueManager: React.FC = () => {
             </Button>
             <Button 
               onClick={handleCreateIssue} 
-              disabled={loading ||
-                formData.lines.length === 0 ||
-                !selectedPurchaseOrder ||
-                !selectedBOM ||
-                formData.lines.some(line => line.quantity_issued > getAvailableQuantity(line.raw_material_id))}
+              disabled={loading || formData.lines.length === 0}
               className="bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600"
             >
               {loading ? 'Creating...' : 'Create Goods Issue'}

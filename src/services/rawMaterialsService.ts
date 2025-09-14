@@ -178,17 +178,18 @@ export class RawMaterialsService {
       if (error) throw error;
 
       const aggregateInventoryArray = (arr: any[]) => {
+        const onlyGrn = (arr || []).filter((r: any) => !r?.transaction_type || r.transaction_type === 'grn');
         const acc = { quantity_on_hand: 0, quantity_available: 0, quantity_reserved: 0 } as any;
         let location: string | null = null;
         let last_updated: string | null = null;
-        for (const r of arr || []) {
+        for (const r of onlyGrn) {
           acc.quantity_on_hand += Number(r?.quantity_on_hand || 0);
           acc.quantity_available += Number(r?.quantity_available || 0);
           acc.quantity_reserved += Number(r?.quantity_reserved || 0);
           location = location || r?.location || 'Default Warehouse';
           if (!last_updated || (r?.last_updated && r.last_updated > last_updated)) last_updated = r.last_updated;
         }
-        return arr && arr.length ? { ...acc, location, last_updated } : null;
+        return onlyGrn && onlyGrn.length ? { ...acc, location, last_updated } : null;
       };
 
       let rows = (data || []).map((material: any) => {
@@ -206,10 +207,11 @@ export class RawMaterialsService {
         const { data: invRows } = await supabase
           .from('raw_material_inventory')
           .select('*')
-          .in('raw_material_id', missingIds);
+          .in('raw_material_id', missingIds)
+          .or('transaction_type.is.null,transaction_type.eq.grn');
         // Aggregate as above
         const agg = new Map<number, any>();
-        for (const r of invRows || []) {
+        for (const r of (invRows || [])) {
           if (!r?.raw_material_id) continue;
           const key = r.raw_material_id as number;
           const prev = agg.get(key) || { raw_material_id: key, quantity_on_hand: 0, quantity_available: 0, quantity_reserved: 0, location: r.location || 'Default Warehouse', last_updated: r.last_updated };

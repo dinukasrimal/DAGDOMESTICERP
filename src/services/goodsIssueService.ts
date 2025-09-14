@@ -77,29 +77,30 @@ export interface UpdateGoodsIssue {
 }
 
 export class GoodsIssueService {
-  private async consumeInventoryLayers(materialId: number, requiredQty: number): Promise<number> {
-    // FIFO over raw_material_inventory rows (layer-wise entries), not averages
+  private async consumeInventoryLayersDetailed(materialId: number, requiredQty: number): Promise<{ avgCost: number, breakdown: { layerId: string, qty: number, unit_price: number }[] }> {
+    // FIFO over raw_material_inventory GRN rows; decrement layer quantities; return per-layer consumption
     let remaining = requiredQty;
     let costAccum = 0;
     let qtyAccum = 0;
 
     const { data: rows, error } = await supabase
       .from('raw_material_inventory')
-      .select('*')
-      .eq('raw_material_id', materialId);
+      .select('id, quantity_on_hand, quantity_available, unit_price, last_updated, transaction_type')
+      .eq('raw_material_id', materialId)
+      .or('transaction_type.is.null,transaction_type.eq.grn');
     if (error) throw new Error(`Failed to load inventory for FIFO: ${error.message}`);
 
     const layers = (rows || [])
       .map((r: any) => {
         const qty = Number(r.quantity_available ?? r.quantity_on_hand ?? 0);
-        const cost = Number(r.unit_price ?? r.unit_cost ?? 0);
-        const ts = r.last_updated || r.created_at || r.updated_at || '1970-01-01T00:00:00Z';
+        const cost = Number(r.unit_price ?? 0);
+        const ts = r.last_updated || '1970-01-01T00:00:00Z';
         return { id: r.id as string, qty, cost, ts };
       })
       .filter(l => l.qty > 0)
       .sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
 
-    const updates: { id: string; newQty: number; take: number }[] = [];
+    const updates: { id: string; newQtyAvail: number; newQtyOnHand: number; take: number; unit_price: number }[] = [];
 
     for (const layer of layers) {
       if (remaining <= 0) break;
@@ -108,7 +109,7 @@ export class GoodsIssueService {
         remaining -= take;
         qtyAccum += take;
         costAccum += take * layer.cost;
-        updates.push({ id: layer.id, newQty: layer.qty - take, take });
+        updates.push({ id: layer.id, newQtyAvail: layer.qty - take, newQtyOnHand: layer.qty - take, take, unit_price: layer.cost });
       }
     }
 
@@ -116,26 +117,20 @@ export class GoodsIssueService {
       throw new Error('Insufficient inventory layers for FIFO consumption');
     }
 
-    // Persist updates back to raw_material_inventory
+    // Persist updates back to raw_material_inventory (do not change last_updated to preserve FIFO order)
     for (const u of updates) {
-      const { data: row } = await supabase
-        .from('raw_material_inventory')
-        .select('*')
-        .eq('id', u.id)
-        .maybeSingle();
-      const hasQtyAvailable = row && Object.prototype.hasOwnProperty.call(row, 'quantity_available');
-      const hasQtyOnHand = row && Object.prototype.hasOwnProperty.call(row, 'quantity_on_hand');
-      const payload: any = { last_updated: new Date().toISOString() };
-      if (hasQtyAvailable) payload.quantity_available = Math.max(0, Number(row.quantity_available || 0) - u.take);
-      if (hasQtyOnHand) payload.quantity_on_hand = Math.max(0, Number(row.quantity_on_hand || 0) - u.take);
       const { error: updErr } = await supabase
         .from('raw_material_inventory')
-        .update(payload)
+        .update({ quantity_available: u.newQtyAvail, quantity_on_hand: u.newQtyOnHand })
         .eq('id', u.id);
       if (updErr) throw new Error(`Failed to update inventory layer: ${updErr.message}`);
     }
 
-    return qtyAccum > 0 ? costAccum / qtyAccum : 0;
+    return { avgCost: qtyAccum > 0 ? costAccum / qtyAccum : 0, breakdown: updates.map(u => ({ layerId: u.id, qty: u.take, unit_price: u.unit_price })) };
+  }
+  private async consumeInventoryLayers(materialId: number, requiredQty: number): Promise<number> {
+    const res = await this.consumeInventoryLayersDetailed(materialId, requiredQty);
+    return res.avgCost;
   }
   private async attachLinesAndMaterials(issues: GoodsIssue[]): Promise<GoodsIssue[]> {
     if (!issues.length) return issues;
@@ -187,11 +182,69 @@ export class GoodsIssueService {
       if (error) throw error;
       return this.attachLinesAndMaterials((data || []) as unknown as GoodsIssue[]);
     } catch (err: any) {
-      if (typeof err?.message === 'string' && err.message.toLowerCase().includes('relation')) {
-        console.warn('Goods Issue tables not found. Returning empty list. Apply migrations in supabase/migrations/20250821000002-create-purchase-goods-management.sql');
-        return [];
+      // Fallback: derive issues from raw_material_inventory negative rows.
+      // Prefer rows marked with transaction_type='issue' and transaction_ref as issue number.
+      let invRows: any[] = [];
+      try {
+        const { data } = await supabase
+          .from('raw_material_inventory')
+          .select('raw_material_id, quantity_on_hand, quantity_available, unit_price, last_updated, location, transaction_type, transaction_ref')
+          .or('quantity_on_hand.lt.0,quantity_available.lt.0')
+          .order('last_updated', { ascending: false });
+        invRows = data || [];
+      } catch {}
+      const groups = new Map<string, any[]>();
+      for (const r of invRows) {
+        const type = (r as any).transaction_type;
+        if (type && type !== 'issue') continue;
+        const issueNum = (r as any).transaction_ref || 'GI-UNKNOWN';
+        const qoh = Number((r as any).quantity_on_hand || 0);
+        const qav = Number((r as any).quantity_available || 0);
+        if (qoh >= 0 && qav >= 0) continue; // ensure negative rows only
+        const arr = groups.get(issueNum) || [];
+        arr.push(r);
+        groups.set(issueNum, arr);
       }
-      throw new Error(`Failed to fetch goods issues: ${err?.message || err}`);
+      // Fetch material names
+      const matIds = Array.from(new Set((invRows || []).map((r: any) => Number(r.raw_material_id)).filter(Boolean)));
+      let matsMap = new Map<number, any>();
+      if (matIds.length) {
+        const { data: mats } = await supabase.from('raw_materials').select('id, name, code, base_unit').in('id', matIds);
+        matsMap = new Map((mats || []).map((m: any) => [Number(m.id), m]));
+      }
+      const issues: GoodsIssue[] = Array.from(groups.entries()).map(([issueNum, rows]) => {
+        const last = rows.reduce((a: any, b: any) => (a.last_updated > b.last_updated ? a : b));
+        const id = `inv-${issueNum}`;
+        const lines: GoodsIssueLine[] = rows.map((r: any, idx: number) => {
+          const mid = String(r.raw_material_id);
+          const qty = Math.abs(Number(r.quantity_available ?? r.quantity_on_hand ?? 0));
+          const mat = matsMap.get(Number(mid));
+          return {
+            id: `${id}-line-${idx}`,
+            goods_issue_id: id,
+            raw_material_id: mid,
+            quantity_issued: qty,
+            unit_cost: Number(r.unit_price || 0),
+            batch_number: '',
+            notes: '',
+            created_at: r.last_updated,
+            raw_material: mat ? { id: String(mat.id), name: mat.name, code: mat.code, base_unit: mat.base_unit } : undefined,
+          } as any;
+        });
+        return {
+          id,
+          issue_number: issueNum,
+          issue_date: (last.last_updated || new Date().toISOString()).split('T')[0],
+          issue_type: 'production',
+          reference_number: undefined,
+          status: 'issued',
+          notes: undefined,
+          created_at: last.last_updated,
+          updated_at: last.last_updated,
+          lines,
+        } as any;
+      });
+      return issues;
     }
   }
 
@@ -214,85 +267,69 @@ export class GoodsIssueService {
   }
 
   async createGoodsIssue(goodsIssue: CreateGoodsIssue): Promise<GoodsIssue> {
-    // Generate next issue number via RPC
-    let generatedNumber: string | null = null;
+    // Generate issue number (no DB dependency)
+    let generatedNumber: string;
     try {
-      const { data: nextNumber, error: numErr } = await supabase.rpc('generate_issue_number');
-      if (numErr) throw numErr;
-      generatedNumber = nextNumber as unknown as string;
+      const { data: nextNumber } = await supabase.rpc('generate_issue_number');
+      generatedNumber = (nextNumber as unknown as string) || `GI${Date.now().toString().slice(-8)}`;
     } catch {
-      // Fallback to timestamp-based number if RPC is unavailable
-      const ts = Date.now().toString().slice(-8);
-      generatedNumber = `GI${ts}`;
+      generatedNumber = `GI${Date.now().toString().slice(-8)}`;
     }
 
-    // Insert goods_issue header
-    let header: any;
-    try {
-      const res = await supabase
-        .from('goods_issue')
-        .insert({
-          issue_number: generatedNumber as string,
-          issue_date: goodsIssue.issue_date,
-          issue_type: goodsIssue.issue_type,
-          reference_number: goodsIssue.reference_number,
-          status: 'pending',
-          notes: goodsIssue.notes,
-        })
-        .select()
-        .single();
-      if (res.error) throw res.error;
-      header = res.data;
-    } catch (err: any) {
-      if (typeof err?.message === 'string' && err.message.toLowerCase().includes('relation')) {
-        console.warn('Goods Issue tables not found. Creating non-persistent mock for UI continuity.');
-        const mockIssue: GoodsIssue = {
-          id: 'mock-' + Date.now(),
-          issue_number: generatedNumber as string,
-          issue_date: goodsIssue.issue_date,
-          issue_type: goodsIssue.issue_type,
-          reference_number: goodsIssue.reference_number,
-          status: 'pending',
-          notes: goodsIssue.notes,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          lines: goodsIssue.lines.map((line, index) => ({
-            id: 'mock-line-' + index,
-            goods_issue_id: 'mock-' + Date.now(),
-            raw_material_id: line.raw_material_id,
-            quantity_issued: line.quantity_issued,
-            unit_cost: line.unit_cost,
-            batch_number: line.batch_number,
-            notes: line.notes,
-            created_at: new Date().toISOString()
-          }))
-        };
-        return mockIssue;
-      }
-      throw new Error(`Failed to create goods issue: ${err?.message || err}`);
-    }
-
-    // Insert lines (unit_cost may be null; will be finalized on issue)
-    if (goodsIssue.lines && goodsIssue.lines.length > 0) {
-      const { error: linesErr } = await supabase
-        .from('goods_issue_lines')
-        .insert(
-          goodsIssue.lines.map((l) => ({
-            goods_issue_id: header.id,
-            raw_material_id: l.raw_material_id,
-            quantity_issued: l.quantity_issued,
-            unit_cost: l.unit_cost,
-            batch_number: l.batch_number,
-            notes: l.notes,
-          }))
-        );
-      if (linesErr) {
-        throw new Error(`Failed to create goods issue lines: ${linesErr.message}`);
+    // Validate and immediately issue via FIFO directly against raw_material_inventory
+    const costByMaterial = new Map<string, number>();
+    for (const line of goodsIssue.lines || []) {
+      await this.validateInventoryAvailability(line.raw_material_id, line.quantity_issued);
+      const { avgCost, breakdown } = await this.consumeInventoryLayersDetailed(Number(line.raw_material_id), Number(line.quantity_issued));
+      costByMaterial.set(String(line.raw_material_id), avgCost);
+      const now = new Date().toISOString();
+      // Write one negative row per layer consumed to preserve exact FIFO pricing in ledger
+      if (breakdown.length) {
+        const rows = breakdown.map(slice => ({
+          raw_material_id: Number(line.raw_material_id),
+          quantity_on_hand: -Number(slice.qty),
+          quantity_available: -Number(slice.qty),
+          quantity_reserved: 0,
+          unit_price: slice.unit_price,
+          inventory_value: -Number(slice.qty) * Number(slice.unit_price || 0),
+          location: 'Default Warehouse',
+          transaction_type: 'issue',
+          transaction_ref: generatedNumber,
+          last_updated: now,
+        }));
+        const { error: insErr } = await supabase
+          .from('raw_material_inventory')
+          .insert(rows as any);
+        if (insErr) {
+          const msg = (insErr as any)?.message || JSON.stringify(insErr);
+          throw new Error(`Failed to write inventory outflow: ${msg}`);
+        }
       }
     }
 
-    // Return the composed issue with lines + material info
-    return this.getGoodsIssue(header.id);
+    // Compose a mock issued object for UI continuity (no separate tables)
+    const mockIssue: GoodsIssue = {
+      id: 'issue-' + Date.now(),
+      issue_number: generatedNumber,
+      issue_date: goodsIssue.issue_date,
+      issue_type: goodsIssue.issue_type,
+      reference_number: goodsIssue.reference_number,
+      status: 'issued',
+      notes: goodsIssue.notes,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      lines: (goodsIssue.lines || []).map((line, index) => ({
+        id: 'line-' + index + '-' + Date.now(),
+        goods_issue_id: 'issue-' + Date.now(),
+        raw_material_id: line.raw_material_id,
+        quantity_issued: line.quantity_issued,
+        unit_cost: costByMaterial.get(String(line.raw_material_id)) ?? line.unit_cost ?? 0,
+        batch_number: line.batch_number,
+        notes: line.notes,
+        created_at: new Date().toISOString()
+      }))
+    };
+    return mockIssue;
   }
 
   async updateGoodsIssue(id: string, updates: UpdateGoodsIssue): Promise<GoodsIssue> {
@@ -340,9 +377,9 @@ export class GoodsIssueService {
     if (!issue) throw new Error('Goods issue not found');
     if (issue.status !== 'pending') throw new Error('Only pending issues can be issued');
 
-    // For each line, ensure unit cost and update inventory (via layer consumption)
+    // For each line, pre-validate, then record FIFO outflows and set cost
     for (const line of issue.lines || []) {
-      // FIFO consumption for cost (if cost not provided)
+      await this.validateInventoryAvailability(line.raw_material_id, line.quantity_issued);
       let unitCost = line.unit_cost;
       if (unitCost == null) {
         unitCost = await this.consumeInventoryLayers(Number(line.raw_material_id), Number(line.quantity_issued));
@@ -354,12 +391,8 @@ export class GoodsIssueService {
           throw new Error(`Failed to set unit cost for line: ${updErr.message}`);
         }
       } else {
-        // Consume layers even if cost provided to decrement quantities
         await this.consumeInventoryLayers(Number(line.raw_material_id), Number(line.quantity_issued));
       }
-
-      // Validate availability after layer updates (aggregate across rows)
-      await this.validateInventoryAvailability(line.raw_material_id, line.quantity_issued);
     }
 
     // Mark header as issued
@@ -386,8 +419,9 @@ export class GoodsIssueService {
     const id = Number(materialId);
     const { data: rows, error } = await supabase
       .from('raw_material_inventory')
-      .select('*')
-      .eq('raw_material_id', id);
+      .select('quantity_on_hand, quantity_reserved, quantity_available, transaction_type')
+      .eq('raw_material_id', id)
+      .or('transaction_type.is.null,transaction_type.eq.grn');
 
     if (error) {
       throw new Error(`Failed to check inventory: ${error.message}`);
@@ -651,17 +685,18 @@ export class GoodsIssueService {
       throw new Error(`Failed to fetch BOM: ${bomError.message}`);
     }
 
-    // Get current inventory levels (aggregate across rows per material)
+    // Get current inventory levels (aggregate GRN rows per material)
     const { data: inventoryData, error: inventoryError } = await supabase
       .from('raw_material_inventory')
-      .select('raw_material_id, quantity_available, quantity_on_hand, quantity');
+      .select('raw_material_id, quantity_available, quantity_on_hand, transaction_type')
+      .or('transaction_type.is.null,transaction_type.eq.grn');
     if (inventoryError) {
       throw new Error(`Failed to fetch inventory: ${inventoryError.message}`);
     }
     const inventoryMap = new Map<number, number>();
     for (const inv of inventoryData || []) {
       const id = Number((inv as any).raw_material_id);
-      const qty = Number((inv as any).quantity_available ?? (inv as any).quantity_on_hand ?? (inv as any).quantity ?? 0);
+      const qty = Number((inv as any).quantity_available ?? (inv as any).quantity_on_hand ?? 0);
       inventoryMap.set(id, (inventoryMap.get(id) || 0) + qty);
     }
 
