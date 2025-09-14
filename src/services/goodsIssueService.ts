@@ -285,7 +285,7 @@ export class GoodsIssueService {
       const now = new Date().toISOString();
       // Write one negative row per layer consumed to preserve exact FIFO pricing in ledger
       if (breakdown.length) {
-        const rows = breakdown.map(slice => ({
+        const rowsBase = breakdown.map(slice => ({
           raw_material_id: Number(line.raw_material_id),
           quantity_on_hand: -Number(slice.qty),
           quantity_available: -Number(slice.qty),
@@ -297,9 +297,22 @@ export class GoodsIssueService {
           transaction_ref: generatedNumber,
           last_updated: now,
         }));
-        const { error: insErr } = await supabase
-          .from('raw_material_inventory')
-          .insert(rows as any);
+        // Try to include po_number if column exists
+        const poNumber = goodsIssue.reference_number || null;
+        let insErr: any = null;
+        if (poNumber) {
+          const rowsWithPo = (rowsBase as any).map((r: any) => ({ ...r, po_number: poNumber }));
+          const res = await supabase.from('raw_material_inventory').insert(rowsWithPo as any);
+          insErr = res.error;
+          if (insErr && String(insErr.message || '').toLowerCase().includes('column') && String(insErr.message || '').toLowerCase().includes('po_number')) {
+            // Retry without po_number if column doesn't exist
+            const res2 = await supabase.from('raw_material_inventory').insert(rowsBase as any);
+            insErr = res2.error;
+          }
+        } else {
+          const res = await supabase.from('raw_material_inventory').insert(rowsBase as any);
+          insErr = res.error;
+        }
         if (insErr) {
           const msg = (insErr as any)?.message || JSON.stringify(insErr);
           throw new Error(`Failed to write inventory outflow: ${msg}`);

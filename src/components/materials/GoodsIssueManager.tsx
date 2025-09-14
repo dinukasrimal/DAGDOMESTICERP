@@ -482,22 +482,68 @@ export const GoodsIssueManager: React.FC = () => {
         .select('id')
         .eq('reference_number', poNumber)
         .eq('status', 'issued');
-      if (issueErr || !issues || issues.length === 0) return new Map();
-
-      const issueIds = issues.map(i => i.id);
-      const { data: lines, error: linesErr } = await supabase
-        .from('goods_issue_lines')
-        .select('raw_material_id, quantity_issued')
-        .in('goods_issue_id', issueIds);
-      if (linesErr || !lines) return new Map();
-
-      const map = new Map<string, number>();
-      for (const l of lines) {
-        const key = l.raw_material_id?.toString();
-        if (!key) continue;
-        map.set(key, (map.get(key) || 0) + (Number(l.quantity_issued) || 0));
+      if (!issueErr && issues && issues.length > 0) {
+        const issueIds = issues.map(i => i.id);
+        const { data: lines, error: linesErr } = await supabase
+          .from('goods_issue_lines')
+          .select('raw_material_id, quantity_issued')
+          .in('goods_issue_id', issueIds);
+        if (!linesErr && lines) {
+          const map = new Map<string, number>();
+          for (const l of lines) {
+            const key = l.raw_material_id?.toString();
+            if (!key) continue;
+            map.set(key, (map.get(key) || 0) + (Number(l.quantity_issued) || 0));
+          }
+          return map;
+        }
       }
-      return map;
+
+      // Fallback: derive from raw_material_inventory if it has po_number + transaction_type
+      // Attempt with transaction_type filter first
+      let map = new Map<string, number>();
+      let rmiErr: any = null;
+      try {
+        const { data, error } = await supabase
+          .from('raw_material_inventory')
+          .select('raw_material_id, quantity_available, quantity_on_hand, transaction_type, po_number')
+          .eq('transaction_type', 'issue')
+          .eq('po_number', poNumber);
+        rmiErr = error;
+        if (!error && data) {
+          for (const row of data) {
+            const key = String((row as any).raw_material_id);
+            const qty = Math.abs(Number((row as any).quantity_available ?? (row as any).quantity_on_hand ?? 0));
+            map.set(key, (map.get(key) || 0) + qty);
+          }
+          if (map.size) return map;
+        }
+      } catch (e) {
+        rmiErr = e;
+      }
+
+      // If transaction_type isn't available, fall back to negative rows by po_number only
+      try {
+        const { data, error } = await supabase
+          .from('raw_material_inventory')
+          .select('raw_material_id, quantity_available, quantity_on_hand, po_number')
+          .eq('po_number', poNumber);
+        if (!error && data) {
+          const fallback = new Map<string, number>();
+          for (const row of data) {
+            const qoh = Number((row as any).quantity_on_hand ?? 0);
+            const qav = Number((row as any).quantity_available ?? 0);
+            // Count only negative ledger rows as issued
+            const isNeg = qoh < 0 || qav < 0;
+            if (!isNeg) continue;
+            const key = String((row as any).raw_material_id);
+            const qty = Math.abs(qoh !== 0 ? qoh : qav);
+            fallback.set(key, (fallback.get(key) || 0) + qty);
+          }
+          if (fallback.size) return fallback;
+        }
+      } catch {}
+      return new Map();
     } catch {
       return new Map();
     }
@@ -621,7 +667,7 @@ export const GoodsIssueManager: React.FC = () => {
             material_id: `category-${categoryInfo.id}`,
             material_name: `📁 ${categoryInfo.name} (Category)`,
             required_quantity: totalRequired,
-            issued_so_far: 0, // TODO: Get actual issued quantities
+            issued_so_far: (categoryMaterials || []).reduce((s, m) => s + (issuedMap.get(m.id.toString()) || 0), 0),
             issuing_quantity: 0,
             unit: bomLine.unit,
             available_quantity: 999999, // Categories don't have stock limits
@@ -909,7 +955,8 @@ export const GoodsIssueManager: React.FC = () => {
       setSelectedPurchaseOrder(order);
       setFormData(prev => ({
         ...prev,
-        reference_number: undefined,
+        // Tie issues to this PO so issued-so-far can be computed
+        reference_number: order.po_number || order.name || prev.reference_number,
         issue_type: 'production',
         lines: [] // Clear existing lines
       }));
@@ -949,8 +996,10 @@ export const GoodsIssueManager: React.FC = () => {
       }
 
       setLoading(true);
+      // Ensure reference_number carries the selected PO number for ledger linkage
       const newIssue = await goodsIssueService.createGoodsIssue({
         ...formData,
+        reference_number: formData.reference_number || selectedPurchaseOrder?.po_number || selectedPurchaseOrder?.name,
         lines: cleanedLines,
         notes: issueTab === 'trims' && selectedSupplier ? `Supplier: ${selectedSupplier}` : undefined,
       });
@@ -1549,11 +1598,12 @@ export const GoodsIssueManager: React.FC = () => {
                                 </TableCell>
                                 <TableCell>
                                   {isCategoryBased ? (
-                                    <span className="text-sm text-gray-500 italic">Multiple materials</span>
+                                    <span className="text-sm text-gray-700">Issued: {req.issued_so_far.toFixed(3)} {req.unit}</span>
                                   ) : (
-                                    <span className={`font-medium ${req.available_quantity < req.issuing_quantity ? 'text-red-600' : 'text-gray-700'}`}>
-                                      {req.available_quantity.toFixed(3)} {req.unit}
-                                    </span>
+                                    <div className={`font-medium ${req.available_quantity < req.issuing_quantity ? 'text-red-600' : 'text-gray-700'}`}>
+                                      Avl: {req.available_quantity.toFixed(3)} {req.unit}
+                                      <span className="text-gray-500"> • Issued: {req.issued_so_far.toFixed(3)} {req.unit}</span>
+                                    </div>
                                   )}
                                 </TableCell>
                                 <TableCell>
@@ -1594,13 +1644,16 @@ export const GoodsIssueManager: React.FC = () => {
                                         Select Materials from {req.material_name.replace('📁 ', '').replace(' (Category)', '')}
                                       </h4>
                                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                        {req.category_materials?.map((material) => (
+                                        {req.category_materials?.map((material) => {
+                                          const matFull = rawMaterials.find(m => m.id === material.id);
+                                          const avl = matFull?.inventory?.quantity_available ?? 0;
+                                          return (
                                           <div key={material.id} className="flex items-center justify-between bg-white p-3 rounded border">
                                             <div className="flex items-center space-x-2">
                                               <Package className="h-4 w-4 text-gray-600" />
                                               <div>
                                                 <div className="font-medium text-sm">{material.name}</div>
-                                                <div className="text-xs text-gray-500">Unit: {material.base_unit}</div>
+                                                <div className="text-xs text-gray-500">Unit: {material.base_unit} • Avl: {avl} {material.base_unit}</div>
                                               </div>
                                             </div>
                                             <div className="flex items-center space-x-2">
@@ -1649,7 +1702,7 @@ export const GoodsIssueManager: React.FC = () => {
                                               )}
                                             </div>
                                           </div>
-                                        ))}
+                                        )})}
                                       </div>
                                     </div>
                                   </TableCell>
@@ -1755,11 +1808,17 @@ export const GoodsIssueManager: React.FC = () => {
                       <SelectValue placeholder="Select material" />
                     </SelectTrigger>
                     <SelectContent>
-                      {rawMaterials.map(m => (
-                        <SelectItem key={m.id} value={String(m.id)}>
-                          {m.name} {m.code ? `(${m.code})` : ''}
-                        </SelectItem>
-                      ))}
+                      {rawMaterials.map(m => {
+                        const avl = m.inventory?.quantity_available ?? 0;
+                        return (
+                          <SelectItem key={m.id} value={String(m.id)}>
+                            <div className="flex items-center justify-between w-full">
+                              <span>{m.name} {m.code ? `(${m.code})` : ''}</span>
+                              <span className="text-xs text-gray-600">Avl: {avl} {m.base_unit}</span>
+                            </div>
+                          </SelectItem>
+                        );
+                      })}
                     </SelectContent>
                   </Select>
                 </div>
