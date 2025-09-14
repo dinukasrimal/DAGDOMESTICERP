@@ -188,7 +188,7 @@ export class GoodsIssueService {
       try {
         const { data } = await supabase
           .from('raw_material_inventory')
-          .select('raw_material_id, quantity_on_hand, quantity_available, unit_price, last_updated, location, transaction_type, transaction_ref')
+          .select('raw_material_id, quantity_on_hand, quantity_available, unit_price, last_updated, location, transaction_type, transaction_ref, po_number')
           .or('quantity_on_hand.lt.0,quantity_available.lt.0')
           .order('last_updated', { ascending: false });
         invRows = data || [];
@@ -215,6 +215,18 @@ export class GoodsIssueService {
       const issues: GoodsIssue[] = Array.from(groups.entries()).map(([issueNum, rows]) => {
         const last = rows.reduce((a: any, b: any) => (a.last_updated > b.last_updated ? a : b));
         const id = `inv-${issueNum}`;
+        // Derive a PO number if available in any of the grouped rows
+        const poCandidates = Array.from(new Set(rows.map((r: any) => (r.po_number || '').toString()).filter((s: string) => !!s)));
+        const poNumber = poCandidates.length === 1 ? poCandidates[0] : (poCandidates[0] || undefined);
+        // Derive CATEGORY_TOTALS from any embedded string in location
+        let headerNotes: string | undefined = undefined;
+        try {
+          for (const r of rows) {
+            const loc = (r as any).location || '';
+            const m = loc.match(/CATEGORY_TOTALS\s*:\s*([^|]+(?:\|[^|]+)*)/i);
+            if (m && m[0]) { headerNotes = m[0].trim(); break; }
+          }
+        } catch {}
         const lines: GoodsIssueLine[] = rows.map((r: any, idx: number) => {
           const mid = String(r.raw_material_id);
           const qty = Math.abs(Number(r.quantity_available ?? r.quantity_on_hand ?? 0));
@@ -236,9 +248,9 @@ export class GoodsIssueService {
           issue_number: issueNum,
           issue_date: (last.last_updated || new Date().toISOString()).split('T')[0],
           issue_type: 'production',
-          reference_number: undefined,
+          reference_number: poNumber,
           status: 'issued',
-          notes: undefined,
+          notes: headerNotes,
           created_at: last.last_updated,
           updated_at: last.last_updated,
           lines,
@@ -278,6 +290,13 @@ export class GoodsIssueService {
 
     // Validate and immediately issue via FIFO directly against raw_material_inventory
     const costByMaterial = new Map<string, number>();
+    // Extract CATEGORY_TOTALS (if present) from header notes to persist into ledger rows
+    let categoryTotalsLine: string | null = null;
+    try {
+      const m = (goodsIssue.notes || '').toString().match(/CATEGORY_TOTALS\s*:\s*([^\n]+)/i);
+      if (m && m[1]) categoryTotalsLine = `CATEGORY_TOTALS: ${m[1]}`;
+    } catch {}
+
     for (const line of goodsIssue.lines || []) {
       await this.validateInventoryAvailability(line.raw_material_id, line.quantity_issued);
       const { avgCost, breakdown } = await this.consumeInventoryLayersDetailed(Number(line.raw_material_id), Number(line.quantity_issued));
@@ -292,7 +311,8 @@ export class GoodsIssueService {
           quantity_reserved: 0,
           unit_price: slice.unit_price,
           inventory_value: -Number(slice.qty) * Number(slice.unit_price || 0),
-          location: 'Default Warehouse',
+          // Embed CATEGORY_TOTALS into location so fallback reconstruction can carry it
+          location: categoryTotalsLine ? `Default Warehouse | ${categoryTotalsLine}` : 'Default Warehouse',
           transaction_type: 'issue',
           transaction_ref: generatedNumber,
           last_updated: now,
@@ -318,6 +338,46 @@ export class GoodsIssueService {
           throw new Error(`Failed to write inventory outflow: ${msg}`);
         }
       }
+    }
+
+    // Attempt to persist header + lines (best-effort). Fall back to mock object if tables absent.
+    try {
+      const { data: header, error: headErr } = await supabase
+        .from('goods_issue')
+        .insert([{
+          issue_number: generatedNumber,
+          issue_date: goodsIssue.issue_date,
+          issue_type: goodsIssue.issue_type,
+          reference_number: goodsIssue.reference_number || null,
+          status: 'issued',
+          notes: goodsIssue.notes || null,
+        }])
+        .select('*')
+        .single();
+      if (!headErr && header) {
+        const headerId = (header as any).id as string;
+        // Insert lines
+        const lineRows = (goodsIssue.lines || []).map((line) => ({
+          goods_issue_id: headerId,
+          raw_material_id: Number(line.raw_material_id),
+          quantity_issued: Number(line.quantity_issued),
+          unit_cost: costByMaterial.get(String(line.raw_material_id)) ?? line.unit_cost ?? null,
+          batch_number: line.batch_number || null,
+          notes: line.notes || null,
+        }));
+        if (lineRows.length) {
+          const { error: lineErr } = await supabase.from('goods_issue_lines').insert(lineRows as any);
+          if (lineErr) {
+            // Non-fatal; continue
+            console.warn('Failed to insert goods_issue_lines:', lineErr);
+          }
+        }
+        // Return canonical row with attached lines
+        const persisted = await this.getGoodsIssue(headerId);
+        return persisted;
+      }
+    } catch (e) {
+      // Ignore and fall back to mock below
     }
 
     // Compose a mock issued object for UI continuity (no separate tables)

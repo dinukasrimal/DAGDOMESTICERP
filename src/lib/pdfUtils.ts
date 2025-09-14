@@ -274,12 +274,53 @@ export const generateGoodsIssuePdf = (
   supplierName?: string,
   issuedSoFarByMaterial?: Record<string, number>,
   materialNameById?: Record<string, string>,
-  categoryNameById?: Record<string, string>
+  categoryNameById?: Record<string, string>,
+  categoryRequirementByName?: Record<string, number>
 ) => {
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageWidth = pdf.internal.pageSize.getWidth();
   const margin = 15;
   let y = margin;
+
+  // Optional: parse embedded category totals from issue notes for post-refresh accuracy
+  const parsedCategoryTotals: Record<string, number> = {};
+  const normalize = (s: string) => {
+    const t = (s || '').toString().toLowerCase();
+    return t
+      .replace(/^📁\s*/, '')
+      .replace(/\(category\)/g, '')
+      .replace(/category$/g, '')
+      .replace(/[^a-z0-9&]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+  try {
+    const notes = (issue.notes || '').toString();
+    const m = notes.match(/CATEGORY_TOTALS\s*:\s*([^\n]+)/i);
+    if (m && m[1]) {
+      const parts = m[1].split(/[;|]/);
+      for (const p of parts) {
+        const kv = p.split('=');
+        if (kv.length === 2) {
+          const key = kv[0].trim();
+          const val = parseFloat(kv[1]);
+          if (key && !isNaN(val)) parsedCategoryTotals[key] = val;
+        }
+      }
+    }
+  } catch {}
+
+  // Build normalized lookup maps
+  const normalizedExplicit: Record<string, number> = {};
+  if (categoryRequirementByName) {
+    for (const [k, v] of Object.entries(categoryRequirementByName)) {
+      normalizedExplicit[normalize(k)] = Number(v || 0);
+    }
+  }
+  const normalizedParsed: Record<string, number> = {};
+  for (const [k, v] of Object.entries(parsedCategoryTotals)) {
+    normalizedParsed[normalize(k)] = Number(v || 0);
+  }
 
   // Header band with company name
   pdf.setFillColor(239, 68, 68); // red
@@ -349,7 +390,23 @@ export const generateGoodsIssuePdf = (
     y += 6;
 
     // Category totals
-    const totalReq = items.reduce((s, it) => s + (it.reqNum || 0), 0);
+    // Prefer explicit category requirement passed from the issue screen context
+    // Try exact and normalized matches
+    let explicitCategoryReq: number | undefined = undefined;
+    if (categoryRequirementByName && Object.prototype.hasOwnProperty.call(categoryRequirementByName, catName)) {
+      explicitCategoryReq = Number(categoryRequirementByName[catName] || 0);
+    }
+    if (explicitCategoryReq === undefined) {
+      const kn = normalize(catName);
+      if (Object.prototype.hasOwnProperty.call(normalizedExplicit, kn)) {
+        explicitCategoryReq = Number(normalizedExplicit[kn] || 0);
+      } else if (Object.prototype.hasOwnProperty.call(normalizedParsed, kn)) {
+        explicitCategoryReq = Number(normalizedParsed[kn] || 0);
+      }
+    }
+    const totalReq = explicitCategoryReq !== undefined
+      ? explicitCategoryReq
+      : items.reduce((s, it) => s + (it.reqNum || 0), 0);
     const totalIssuedSoFar = items.reduce((s, it) => s + (it.issuedSoFar || 0), 0);
     const balance = Math.max(0, totalReq - totalIssuedSoFar);
     pdf.setFontSize(9);

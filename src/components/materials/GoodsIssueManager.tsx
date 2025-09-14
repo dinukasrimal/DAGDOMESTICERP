@@ -999,12 +999,30 @@ export const GoodsIssueManager: React.FC = () => {
       }
 
       setLoading(true);
+      // Build category totals summary to persist in notes for accurate PDFs after refresh
+      let categoryTotalsNote: string | undefined = undefined;
+      if (bomMaterialRequirements && bomMaterialRequirements.some(r => r.category_id)) {
+        const totals: Record<string, number> = {};
+        for (const r of bomMaterialRequirements) {
+          if (!r.category_id) continue;
+          const name = r.material_name
+            .replace(/^📁\s*/, '')
+            .replace(/\s*\(Category\)\s*$/, '');
+          totals[name] = Number(r.required_quantity || 0);
+        }
+        const parts = Object.entries(totals).map(([k, v]) => `${k}=${v}`);
+        if (parts.length) categoryTotalsNote = `CATEGORY_TOTALS: ${parts.join(' | ')}`;
+      }
+
       // Ensure reference_number carries the selected PO number for ledger linkage
       const newIssue = await goodsIssueService.createGoodsIssue({
         ...formData,
         reference_number: formData.reference_number || selectedPurchaseOrder?.po_number || selectedPurchaseOrder?.name,
         lines: cleanedLines,
-        notes: issueTab === 'trims' && selectedSupplier ? `Supplier: ${selectedSupplier}` : undefined,
+        notes: [
+          issueTab === 'trims' && selectedSupplier ? `Supplier: ${selectedSupplier}` : undefined,
+          categoryTotalsNote,
+        ].filter(Boolean).join('\n') || undefined,
       });
       setGoodsIssues(prev => [newIssue, ...prev]);
       // Refresh local materials and notify other views to refresh inventory
@@ -1239,10 +1257,77 @@ export const GoodsIssueManager: React.FC = () => {
         }
       }
 
-      await Promise.resolve(generateGoodsIssuePdf(issue, supplierName, issuedMap, nameById, categoryById));
+      // If current UI has category requirements loaded for this PO, pass them through
+      let categoryRequirementByName: Record<string, number> | undefined = undefined;
+      if (bomMaterialRequirements?.length && issue.reference_number) {
+        const relatesToCurrentPO = (selectedPurchaseOrder?.po_number || selectedPurchaseOrder?.name) === issue.reference_number;
+        if (relatesToCurrentPO) {
+          categoryRequirementByName = {};
+          for (const req of bomMaterialRequirements) {
+            if (!req.category_id) continue;
+            const name = req.material_name
+              .replace(/^📁\s*/, '')
+              .replace(/\s*\(Category\)\s*$/, '');
+            categoryRequirementByName[name] = Number(req.required_quantity || 0);
+          }
+          if (Object.keys(categoryRequirementByName).length === 0) categoryRequirementByName = undefined;
+        }
+      }
+
+      await Promise.resolve(generateGoodsIssuePdf(issue, supplierName, issuedMap, nameById, categoryById, categoryRequirementByName));
       toast({ title: 'PDF Generated', description: `Goods Issue ${issue.issue_number} downloaded` });
     } catch (e: any) {
       console.error('Failed to export Goods Issue PDF:', e);
+      toast({ title: 'PDF Error', description: e?.message || 'Failed to generate PDF', variant: 'destructive' });
+    }
+  };
+
+  // Export PDF for the currently viewed issue using on-screen requirements (ensures category totals match UI)
+  const handleExportCurrentIssuePdf = async () => {
+    if (!selectedIssue) return;
+    try {
+      // Build material name and category mappings from already loaded rawMaterials
+      const ids = Array.from(new Set((selectedIssue.lines || []).map(l => Number(l.raw_material_id)).filter(n => !isNaN(n))));
+      const nameById: Record<string, string> = {};
+      const categoryById: Record<string, string> = {};
+      for (const m of rawMaterials) {
+        const idStr = m.id.toString();
+        if (!ids.includes(Number(idStr))) continue;
+        nameById[idStr] = m.name;
+        categoryById[idStr] = (m as any).category?.name || 'Uncategorized';
+      }
+
+      // Compute issued map for this PO, if any
+      let issuedMap: Record<string, number> = {};
+      if (selectedIssue.reference_number) {
+        const map = await fetchIssuedSoFarForPO(selectedIssue.reference_number);
+        for (const [k, v] of map.entries()) issuedMap[k] = v;
+      }
+
+      // Derive category total requirements from UI state (bomMaterialRequirements)
+      // Match names to the category group names used in PDF (plain category names)
+      const categoryRequirementByName: Record<string, number> = {};
+      for (const req of bomMaterialRequirements) {
+        if (!req.category_id) continue;
+        const name = req.material_name
+          .replace(/^📁\s*/, '')
+          .replace(/\s*\(Category\)\s*$/, '');
+        categoryRequirementByName[name] = Number(req.required_quantity || 0);
+      }
+
+      await Promise.resolve(
+        generateGoodsIssuePdf(
+          selectedIssue,
+          selectedSupplier || undefined,
+          issuedMap,
+          nameById,
+          categoryById,
+          categoryRequirementByName
+        )
+      );
+      toast({ title: 'PDF Generated', description: `Goods Issue ${selectedIssue.issue_number} downloaded` });
+    } catch (e: any) {
+      console.error('Failed to export Goods Issue PDF (context-aware):', e);
       toast({ title: 'PDF Error', description: e?.message || 'Failed to generate PDF', variant: 'destructive' });
     }
   };
@@ -2062,7 +2147,7 @@ export const GoodsIssueManager: React.FC = () => {
               <Minus className="h-5 w-5 text-red-600" />
               <span>Goods Issue {selectedIssue?.issue_number}</span>
               {selectedIssue && (
-                <Button size="sm" variant="outline" className="ml-2" onClick={() => generateGoodsIssuePdf(selectedIssue)}>
+                <Button size="sm" variant="outline" className="ml-2" onClick={handleExportCurrentIssuePdf}>
                   <FileText className="h-4 w-4 mr-1" /> PDF
                 </Button>
               )}
