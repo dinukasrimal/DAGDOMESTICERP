@@ -275,7 +275,8 @@ export const generateGoodsIssuePdf = (
   issuedSoFarByMaterial?: Record<string, number>,
   materialNameById?: Record<string, string>,
   categoryNameById?: Record<string, string>,
-  categoryRequirementByName?: Record<string, number>
+  categoryRequirementByName?: Record<string, number>,
+  weightKgByMaterial?: Record<string, number>
 ) => {
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageWidth = pdf.internal.pageSize.getWidth();
@@ -354,13 +355,25 @@ export const generateGoodsIssuePdf = (
 
   y += 3;
   // Group lines by category
-  type CatItem = { po: string, mat: string, reqNum: number, reqStr: string, issuedSoFar: number, issuedQty: number };
+  type CatItem = { po: string, mat: string, matId: string, reqNum: number, reqStr: string, issuedSoFar: number, issuedQty: number, issuedKg: number };
   const groups = new Map<string, CatItem[]>();
   for (const l of (issue.lines || [])) {
     const idStr = String(l.raw_material_id);
     const cat = (categoryNameById && categoryNameById[idStr]) || 'Uncategorized';
     const matName = (materialNameById && materialNameById[idStr]) || l.raw_material?.name || idStr;
-    const reqMatch = (l.notes || '').toString().match(/Total required:\s*([\d.]+)/i);
+    const notesStr = (l.notes || '').toString();
+    const reqMatch = notesStr.match(/Total required:\s*([\d.]+)/i);
+    let kgVal = 0;
+    const kgAlt = notesStr.match(/Issued via alt unit:\s*([\d.]+)\s*kg/i);
+    const kgWeight = notesStr.match(/Weight\s*\(?(?:kg)?\)?\s*[:=]\s*([\d.]+)/i);
+    if (kgAlt && kgAlt[1]) kgVal = parseFloat(kgAlt[1]) || 0;
+    else if (kgWeight && kgWeight[1]) kgVal = parseFloat(kgWeight[1]) || 0;
+    // Prefer explicit map passed in from DB rows if available
+    if (weightKgByMaterial && Object.prototype.hasOwnProperty.call(weightKgByMaterial, idStr)) {
+      const dbKg = Number(weightKgByMaterial[idStr] || 0);
+      if (!isNaN(dbKg) && dbKg > 0) kgVal = dbKg;
+    }
+    const issuedKg = kgVal;
     const reqNum = reqMatch ? parseFloat(reqMatch[1]) || 0 : 0;
     const requirement = reqMatch ? reqMatch[1] : '-';
     const issuedSoFar = issuedSoFarByMaterial ? (issuedSoFarByMaterial[idStr] || 0) : 0;
@@ -368,17 +381,19 @@ export const generateGoodsIssuePdf = (
     const item: CatItem = {
       po: issue.reference_number || '-',
       mat: matName,
+      matId: idStr,
       reqNum,
       reqStr: requirement,
       issuedSoFar,
       issuedQty,
+      issuedKg,
     };
     const arr = groups.get(cat) || [];
     arr.push(item);
     groups.set(cat, arr);
   }
 
-  const head = [['PO Number', 'Material', 'Requirement', 'Issued So Far', 'Issued Qty']];
+  const head = [['PO Number', 'Material', 'Requirement', 'Issued So Far', 'Issued Qty', 'Issued Kg']];
   // Render each category section
   for (const [catName, items] of groups.entries()) {
     // Category header band
@@ -407,13 +422,14 @@ export const generateGoodsIssuePdf = (
     const totalReq = explicitCategoryReq !== undefined
       ? explicitCategoryReq
       : items.reduce((s, it) => s + (it.reqNum || 0), 0);
+    const totalIssuedKg = items.reduce((s, it) => s + (it.issuedKg || 0), 0);
     const totalIssuedSoFar = items.reduce((s, it) => s + (it.issuedSoFar || 0), 0);
     const balance = Math.max(0, totalReq - totalIssuedSoFar);
     pdf.setFontSize(9);
-    pdf.text(`Totals — Requirement: ${totalReq.toLocaleString()}  |  Issued So Far: ${totalIssuedSoFar.toLocaleString()}  |  Balance: ${balance.toLocaleString()}`, margin, y);
+    pdf.text(`Totals — Requirement: ${totalReq.toLocaleString()}  |  Issued So Far: ${totalIssuedSoFar.toLocaleString()}  |  Balance: ${balance.toLocaleString()}  |  Total Kg: ${totalIssuedKg.toFixed(3)}`, margin, y);
     y += 5;
 
-    const body = items.map(it => [it.po, it.mat, it.reqStr, it.issuedSoFar.toLocaleString(), it.issuedQty.toLocaleString()]);
+    const body = items.map(it => [it.po, it.mat, it.reqStr, it.issuedSoFar.toLocaleString(), it.issuedQty.toLocaleString(), (it.issuedKg || 0).toFixed(3)]);
     autoTable(pdf, {
       startY: y,
       head,
@@ -422,11 +438,12 @@ export const generateGoodsIssuePdf = (
       styles: { fontSize: 9, cellPadding: 3 },
       headStyles: { fillColor: [239, 68, 68], textColor: [255, 255, 255] },
       columnStyles: {
-        0: { cellWidth: 30 }, // PO
-        1: { cellWidth: 70 }, // Material
-        2: { halign: 'right', cellWidth: 30 }, // Requirement
-        3: { halign: 'right', cellWidth: 30 }, // Issued So Far
-        4: { halign: 'right', cellWidth: 25 }, // Issued Qty
+        0: { cellWidth: 25 }, // PO
+        1: { cellWidth: 65 }, // Material
+        2: { halign: 'right', cellWidth: 28 }, // Requirement
+        3: { halign: 'right', cellWidth: 28 }, // Issued So Far
+        4: { halign: 'right', cellWidth: 24 }, // Issued Qty
+        5: { halign: 'right', cellWidth: 24 }, // Issued Kg
       },
       margin: { left: margin, right: margin },
     });

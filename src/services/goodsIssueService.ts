@@ -231,6 +231,8 @@ export class GoodsIssueService {
           const mid = String(r.raw_material_id);
           const qty = Math.abs(Number(r.quantity_available ?? r.quantity_on_hand ?? 0));
           const mat = matsMap.get(Number(mid));
+          const wkg = Number((r as any).weight_kg || 0);
+          const weightNote = !isNaN(wkg) && wkg > 0 ? `Weight: ${wkg} kg` : '';
           return {
             id: `${id}-line-${idx}`,
             goods_issue_id: id,
@@ -238,7 +240,7 @@ export class GoodsIssueService {
             quantity_issued: qty,
             unit_cost: Number(r.unit_price || 0),
             batch_number: '',
-            notes: '',
+            notes: weightNote,
             created_at: r.last_updated,
             raw_material: mat ? { id: String(mat.id), name: mat.name, code: mat.code, base_unit: mat.base_unit } : undefined,
           } as any;
@@ -297,6 +299,23 @@ export class GoodsIssueService {
       if (m && m[1]) categoryTotalsLine = `CATEGORY_TOTALS: ${m[1]}`;
     } catch {}
 
+    const parseKgAndFactor = (notes?: string): { kg: number | null; factor: number | null } => {
+      try {
+        const txt = (notes || '').toString();
+        // Match patterns like: "Weight: 12.5 kg"
+        const mWeight = txt.match(/Weight\s*\(?(?:kg)?\)?\s*[:=]\s*([\d.]+)/i);
+        if (mWeight && mWeight[1]) return { kg: parseFloat(mWeight[1]) || 0, factor: null };
+        // Match patterns like: "Issued via alt unit: 5 kg (1 kg = 13.92 yards)"
+        const mAlt = txt.match(/Issued\s+via\s+alt\s+unit\s*:\s*([\d.]+)\s*kg.*?1\s*kg\s*=\s*([\d.]+)/i);
+        if (mAlt && mAlt[1]) {
+          const kg = parseFloat(mAlt[1]) || 0;
+          const factor = mAlt[2] ? (parseFloat(mAlt[2]) || null) : null;
+          return { kg, factor };
+        }
+      } catch {}
+      return { kg: null, factor: null };
+    };
+
     for (const line of goodsIssue.lines || []) {
       await this.validateInventoryAvailability(line.raw_material_id, line.quantity_issued);
       const { avgCost, breakdown } = await this.consumeInventoryLayersDetailed(Number(line.raw_material_id), Number(line.quantity_issued));
@@ -304,6 +323,10 @@ export class GoodsIssueService {
       const now = new Date().toISOString();
       // Write one negative row per layer consumed to preserve exact FIFO pricing in ledger
       if (breakdown.length) {
+        // Parse optional weight_kg and kg_conversion_factor from line notes
+        const parsed = parseKgAndFactor(line.notes);
+        const weightKgVal = parsed.kg != null ? Math.max(0, parsed.kg) : null;
+        const kgFactorVal = parsed.factor != null ? Math.max(0, parsed.factor) : null;
         const rowsBase = breakdown.map(slice => ({
           raw_material_id: Number(line.raw_material_id),
           quantity_on_hand: -Number(slice.qty),
@@ -316,22 +339,43 @@ export class GoodsIssueService {
           transaction_type: 'issue',
           transaction_ref: generatedNumber,
           last_updated: now,
+          // New explicit weight capture columns (if present in schema)
+          weight_kg: weightKgVal,
+          kg_conversion_factor: kgFactorVal,
         }));
         // Try to include po_number if column exists
         const poNumber = goodsIssue.reference_number || null;
         let insErr: any = null;
         if (poNumber) {
-          const rowsWithPo = (rowsBase as any).map((r: any) => ({ ...r, po_number: poNumber }));
-          const res = await supabase.from('raw_material_inventory').insert(rowsWithPo as any);
+          let rowsWithPo: any[] = (rowsBase as any).map((r: any) => ({ ...r, po_number: poNumber }));
+          let res = await supabase.from('raw_material_inventory').insert(rowsWithPo as any);
           insErr = res.error;
-          if (insErr && String(insErr.message || '').toLowerCase().includes('column') && String(insErr.message || '').toLowerCase().includes('po_number')) {
-            // Retry without po_number if column doesn't exist
-            const res2 = await supabase.from('raw_material_inventory').insert(rowsBase as any);
-            insErr = res2.error;
+          if (insErr) {
+            const msg = String(insErr.message || '').toLowerCase();
+            // Retry dropping unknown columns progressively: kg columns then po_number
+            if (msg.includes('column') && (msg.includes('weight_kg') || msg.includes('kg_conversion_factor'))) {
+              rowsWithPo = rowsWithPo.map((r: any) => ({ po_number: r.po_number, last_updated: r.last_updated, transaction_ref: r.transaction_ref, transaction_type: r.transaction_type, location: r.location, inventory_value: r.inventory_value, unit_price: r.unit_price, quantity_reserved: r.quantity_reserved, quantity_available: r.quantity_available, quantity_on_hand: r.quantity_on_hand, raw_material_id: r.raw_material_id }));
+              let res2 = await supabase.from('raw_material_inventory').insert(rowsWithPo as any);
+              insErr = res2.error;
+            }
+            if (insErr && msg.includes('column') && msg.includes('po_number')) {
+              const res3 = await supabase.from('raw_material_inventory').insert(rowsBase as any);
+              insErr = res3.error;
+              if (insErr && String(insErr.message || '').toLowerCase().includes('weight_kg')) {
+                const trimmed = (rowsBase as any).map((r: any) => ({ last_updated: r.last_updated, transaction_ref: r.transaction_ref, transaction_type: r.transaction_type, location: r.location, inventory_value: r.inventory_value, unit_price: r.unit_price, quantity_reserved: r.quantity_reserved, quantity_available: r.quantity_available, quantity_on_hand: r.quantity_on_hand, raw_material_id: r.raw_material_id }));
+                const res4 = await supabase.from('raw_material_inventory').insert(trimmed as any);
+                insErr = res4.error;
+              }
+            }
           }
         } else {
-          const res = await supabase.from('raw_material_inventory').insert(rowsBase as any);
+          let res = await supabase.from('raw_material_inventory').insert(rowsBase as any);
           insErr = res.error;
+          if (insErr && String(insErr.message || '').toLowerCase().includes('column') && (String(insErr.message || '').toLowerCase().includes('weight_kg') || String(insErr.message || '').toLowerCase().includes('kg_conversion_factor'))) {
+            const trimmed = (rowsBase as any).map((r: any) => ({ last_updated: r.last_updated, transaction_ref: r.transaction_ref, transaction_type: r.transaction_type, location: r.location, inventory_value: r.inventory_value, unit_price: r.unit_price, quantity_reserved: r.quantity_reserved, quantity_available: r.quantity_available, quantity_on_hand: r.quantity_on_hand, raw_material_id: r.raw_material_id }));
+            const res2 = await supabase.from('raw_material_inventory').insert(trimmed as any);
+            insErr = res2.error;
+          }
         }
         if (insErr) {
           const msg = (insErr as any)?.message || JSON.stringify(insErr);

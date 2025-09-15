@@ -119,6 +119,9 @@ export const GoodsIssueManager: React.FC = () => {
     batch_number: '',
     notes: ''
   });
+  // Per-line manual weight entry (kg) for non-kg base materials in Current Lines table
+  // Per-line manual weight entry (kg) for non-kg base materials in Current Lines table
+  const [lineKgState, setLineKgState] = useState<Record<string, { kg: number }>>({});
   // Per-material alternate unit issuing state within category selection
   const [altIssueModes, setAltIssueModes] = useState<Record<string, { enabled: boolean; unit: string; qty: number; factor: number }>>({});
 
@@ -1221,7 +1224,9 @@ export const GoodsIssueManager: React.FC = () => {
       // Try to fetch supplier name using reference_number (PO number)
       let supplierName: string | undefined = undefined;
       let issuedMap: Record<string, number> = {};
+      let weightKgMap: Record<string, number> = {};
       try {
+        // Supplier lookup (optional)
         if (issue.reference_number) {
           const { data: po } = await supabase
             .from('purchases')
@@ -1229,24 +1234,43 @@ export const GoodsIssueManager: React.FC = () => {
             .eq('name', issue.reference_number)
             .maybeSingle();
           if (po?.partner_name) supplierName = po.partner_name as string;
+        }
 
-          // Fetch issued so far by material for this PO from raw_material_inventory
-          const { data: rmi } = await supabase
+        // Issued so far by PO (aggregated across all past issues for this PO)
+        if (issue.reference_number) {
+          const mapByPo = await fetchIssuedSoFarForPO(issue.reference_number);
+          const agg: Record<string, number> = {};
+          for (const [k, v] of mapByPo.entries()) agg[k] = v;
+          issuedMap = agg;
+        }
+
+        // Fetch weights for this issue number (current issue rows), fallback by PO
+        const { data: rmiIssue } = await supabase
+          .from('raw_material_inventory')
+          .select('raw_material_id, quantity_available, quantity_on_hand, transaction_type, transaction_ref, weight_kg')
+          .eq('transaction_ref', issue.issue_number);
+        let rows = rmiIssue || [];
+        // Fallback: match by PO number if no rows by issue_number
+        if ((!rows || rows.length === 0) && issue.reference_number) {
+          const { data: byPo } = await supabase
             .from('raw_material_inventory')
-            .select('raw_material_id, quantity_available, quantity_on_hand, transaction_type, po_number')
+            .select('raw_material_id, quantity_available, quantity_on_hand, transaction_type, po_number, weight_kg')
             .eq('po_number', issue.reference_number);
-          const map: Record<string, number> = {};
-          for (const row of (rmi || [])) {
+          rows = byPo || [];
+        }
+        if (rows && rows.length) {
+          const mapKg: Record<string, number> = {};
+          for (const row of rows) {
             const qoh = Number((row as any).quantity_on_hand || 0);
             const qav = Number((row as any).quantity_available || 0);
             const isNeg = qoh < 0 || qav < 0;
             const isIssue = (row as any).transaction_type === 'issue' || (!row?.transaction_type && isNeg);
             if (!isIssue) continue;
             const key = String((row as any).raw_material_id);
-            const qty = Math.abs(qoh !== 0 ? qoh : qav);
-            map[key] = (map[key] || 0) + qty;
+            const wkg = Number((row as any).weight_kg || 0);
+            if (!isNaN(wkg) && wkg > 0) mapKg[key] = (mapKg[key] || 0) + wkg;
           }
-          issuedMap = map;
+          weightKgMap = mapKg;
         }
       } catch {}
 
@@ -1282,7 +1306,7 @@ export const GoodsIssueManager: React.FC = () => {
         }
       }
 
-      await Promise.resolve(generateGoodsIssuePdf(issue, supplierName, issuedMap, nameById, categoryById, categoryRequirementByName));
+      await Promise.resolve(generateGoodsIssuePdf(issue, supplierName, issuedMap, nameById, categoryById, categoryRequirementByName, weightKgMap));
       toast({ title: 'PDF Generated', description: `Goods Issue ${issue.issue_number} downloaded` });
     } catch (e: any) {
       console.error('Failed to export Goods Issue PDF:', e);
@@ -1305,12 +1329,43 @@ export const GoodsIssueManager: React.FC = () => {
         categoryById[idStr] = (m as any).category?.name || 'Uncategorized';
       }
 
-      // Compute issued map for this PO, if any
+      // Compute issued map by PO (total issued so far for this PO)
       let issuedMap: Record<string, number> = {};
-      if (selectedIssue.reference_number) {
-        const map = await fetchIssuedSoFarForPO(selectedIssue.reference_number);
-        for (const [k, v] of map.entries()) issuedMap[k] = v;
-      }
+      let weightKgMap: Record<string, number> = {};
+      try {
+        if (selectedIssue.reference_number) {
+          const mapByPo = await fetchIssuedSoFarForPO(selectedIssue.reference_number);
+          for (const [k, v] of mapByPo.entries()) issuedMap[k] = v;
+        }
+
+        // For weights, start with current issue rows and fallback by PO
+        const { data: rmiIssue } = await supabase
+          .from('raw_material_inventory')
+          .select('raw_material_id, quantity_available, quantity_on_hand, transaction_type, transaction_ref, weight_kg')
+          .eq('transaction_ref', selectedIssue.issue_number);
+        let rows = rmiIssue || [];
+        if ((!rows || rows.length === 0) && selectedIssue.reference_number) {
+          const { data: byPo } = await supabase
+            .from('raw_material_inventory')
+            .select('raw_material_id, quantity_available, quantity_on_hand, transaction_type, po_number, weight_kg')
+            .eq('po_number', selectedIssue.reference_number);
+          rows = byPo || [];
+        }
+        if (rows && rows.length) {
+          const mapKg: Record<string, number> = {};
+          for (const row of rows) {
+            const qoh = Number((row as any).quantity_on_hand || 0);
+            const qav = Number((row as any).quantity_available || 0);
+            const isNeg = qoh < 0 || qav < 0;
+            const isIssue = (row as any).transaction_type === 'issue' || (!row?.transaction_type && isNeg);
+            if (!isIssue) continue;
+            const key = String((row as any).raw_material_id);
+            const wkg = Number((row as any).weight_kg || 0);
+            if (!isNaN(wkg) && wkg > 0) mapKg[key] = (mapKg[key] || 0) + wkg;
+          }
+          weightKgMap = mapKg;
+        }
+      } catch {}
 
       // Derive category total requirements from UI state (bomMaterialRequirements)
       // Match names to the category group names used in PDF (plain category names)
@@ -1330,7 +1385,8 @@ export const GoodsIssueManager: React.FC = () => {
           issuedMap,
           nameById,
           categoryById,
-          categoryRequirementByName
+          categoryRequirementByName,
+          weightKgMap
         )
       );
       toast({ title: 'PDF Generated', description: `Goods Issue ${selectedIssue.issue_number} downloaded` });
@@ -2035,6 +2091,7 @@ export const GoodsIssueManager: React.FC = () => {
                     value={currentLine.raw_material_id}
                     onValueChange={(v: string) => {
                       setCurrentLine(prev => ({ ...prev, raw_material_id: v }));
+                      // reset per-line weight state for a clean start
                       setFormData(prev => {
                         const qty = currentLine.quantity_issued || 0;
                         const exists = prev.lines.some(l => l.raw_material_id === v);
@@ -2107,22 +2164,78 @@ export const GoodsIssueManager: React.FC = () => {
                       <TableRow>
                         <TableHead>Material</TableHead>
                         <TableHead>Quantity</TableHead>
+                        <TableHead>Weight (kg)</TableHead>
                         <TableHead></TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {formData.lines.map((line, idx) => {
                         const mat = rawMaterials.find(m => m.id.toString() === line.raw_material_id);
+                        const key = String(line.raw_material_id);
+                        const baseUnit = (mat?.base_unit || '').toLowerCase();
+                        const isBaseKg = baseUnit === 'kg' || baseUnit === 'kilogram' || baseUnit === 'kilograms';
+                        const kgState = lineKgState[key] || { kg: 0 };
                         return (
                           <TableRow key={idx}>
                             <TableCell>{mat ? `${mat.name}${mat.code ? ` (${mat.code})` : ''}` : line.raw_material_id}</TableCell>
-                            <TableCell className="w-96">
-                              <div className="flex flex-col">
-                                <span className="text-sm font-medium">{line.quantity_issued} {mat?.base_unit}</span>
-                                {line.notes ? (
-                                  <span className="text-xs text-gray-500">{line.notes}</span>
-                                ) : null}
-                              </div>
+                            <TableCell className="w-64">
+                              <Input
+                                aria-label="Quantity (base unit)"
+                                type="number"
+                                min={0}
+                                step={0.001}
+                                className="h-8 w-28 text-sm"
+                                value={Number(line.quantity_issued) || 0}
+                                onChange={(e) => {
+                                  const q = Number(e.target.value) || 0;
+                                  setFormData(prev => ({
+                                    ...prev,
+                                    lines: prev.lines.map((l, i) => i === idx ? { ...l, quantity_issued: q } : l)
+                                  }));
+                                }}
+                              />
+                              <div className="text-xs text-gray-500 mt-1">{mat?.base_unit}</div>
+                              {line.notes ? (
+                                <div className="text-xs text-gray-500 mt-1">{line.notes}</div>
+                              ) : null}
+                            </TableCell>
+                            <TableCell className="w-64">
+                              {mat ? (
+                                isBaseKg ? (
+                                  <span className="text-xs text-gray-500">Base unit is kg</span>
+                                ) : (
+                                  <div className="flex items-center space-x-2">
+                                    <Input
+                                      aria-label="Weight (kg)"
+                                      type="number"
+                                      min={0}
+                                      step={0.001}
+                                      className="h-8 w-28 text-sm"
+                                      value={kgState.kg || 0}
+                                      onChange={(e) => {
+                                        const kg = Number(e.target.value) || 0;
+                                        setLineKgState(prev => ({ ...prev, [key]: { kg } }));
+                                        // Update note with weight and derived factor (base/1kg) when base qty present
+                                        setFormData(prev => ({
+                                          ...prev,
+                                          lines: prev.lines.map((l, i) => {
+                                            if (i !== idx) return l;
+                                            const baseUnitLabel = mat.base_unit || 'unit';
+                                            const existing = (l.notes || '').toString();
+                                            const cleaned1 = existing.replace(/\s*\|?\s*Weight\s*\(?(?:kg)?\)?\s*[:=]\s*[\d.]+\s*kg?/i, '');
+                                            const cleaned = cleaned1.replace(/\s*\|?\s*1\s*kg\s*=\s*[\d.]+\s*[a-zA-Z]+/i, '');
+                                            const weightPart = kg > 0 ? `${cleaned ? ' | ' : ''}Weight: ${kg} kg` : '';
+                                            const factor = kg > 0 ? (Number(l.quantity_issued) || 0) / kg : 0;
+                                            const factorPart = kg > 0 && (Number(l.quantity_issued) || 0) > 0 ? ` | 1 kg = ${factor.toFixed(4)} ${baseUnitLabel}` : '';
+                                            return { ...l, notes: `${cleaned}${weightPart}${factorPart}` };
+                                          })
+                                        }));
+                                      }}
+                                    />
+                                    <span className="text-xs text-gray-500">kg</span>
+                                  </div>
+                                )
+                              ) : null}
                             </TableCell>
                             <TableCell className="w-20 text-right">
                               <Button type="button" variant="outline" onClick={() => handleRemoveLine(idx)}>Remove</Button>
