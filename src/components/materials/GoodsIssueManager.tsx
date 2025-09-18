@@ -1764,83 +1764,173 @@ export const GoodsIssueManager: React.FC = () => {
                                   {isCategoryBased ? (
                                     <span className="text-sm text-gray-500 italic">Select materials below</span>
                                   ) : (
-                                    <div className="flex items-center space-x-2">
-                                      <Input
-                                        type="number"
-                                        min="0"
-                                        step="0.001"
-                                        value={req.issuing_quantity}
-                                        onChange={(e) => updateIssuingQuantity(req.material_id, parseFloat(e.target.value) || 0)}
-                                        className={`w-24 ${isOverIssuing ? 'border-yellow-400 bg-yellow-50' : ''} ${isInsufficientStock ? 'border-red-400 bg-red-50' : ''}`}
-                                      />
-                                      {(() => {
-                                        const mat = rawMaterials.find(m => m.id.toString() === req.material_id);
-                                        const baseUnit = (mat?.base_unit || '').toLowerCase();
-                                        const isBaseKg = baseUnit === 'kg' || baseUnit === 'kilogram' || baseUnit === 'kilograms';
-                                        if (!isBaseKg) {
-                                          const key = String(req.material_id);
-                                          const kgVal = (lineKgState[key]?.kg || 0);
-                                          return (
-                                            <div className="flex items-center space-x-1">
+                                    (() => {
+                                      const mat = rawMaterials.find(m => m.id.toString() === req.material_id);
+                                      const baseUnitLabel = mat?.base_unit || req.unit || 'unit';
+                                      const baseUnitLower = baseUnitLabel.toLowerCase();
+                                      const isBaseKg = baseUnitLower === 'kg' || baseUnitLower === 'kilogram' || baseUnitLower === 'kilograms';
+                                      const altKey = `material-${req.material_id}`;
+                                      const alt = altIssueModes[altKey] || { enabled: false, unit: '', qty: 0, factor: 1 };
+                                      const setAlt = (patch: Partial<{enabled: boolean; unit: string; qty: number; factor: number}>) => {
+                                        setAltIssueModes(prev => ({
+                                          ...prev,
+                                          [altKey]: {
+                                            enabled: alt.enabled,
+                                            unit: alt.unit,
+                                            qty: alt.qty,
+                                            factor: alt.factor,
+                                            ...patch,
+                                          },
+                                        }));
+                                      };
+                                      const key = String(req.material_id);
+                                      const kgVal = (lineKgState[key]?.kg || 0);
+
+                                      return (
+                                        <div className="flex flex-col gap-2">
+                                          <div className="flex items-center space-x-2">
+                                            <Input
+                                              type="number"
+                                              min="0"
+                                              step="0.001"
+                                              value={req.issuing_quantity}
+                                              onChange={(e) => updateIssuingQuantity(req.material_id, parseFloat(e.target.value) || 0)}
+                                              className={`w-24 ${isOverIssuing ? 'border-yellow-400 bg-yellow-50' : ''} ${isInsufficientStock ? 'border-red-400 bg-red-50' : ''}`}
+                                            />
+                                            {!isBaseKg && (
+                                              <div className="flex items-center space-x-1">
+                                                <Input
+                                                  aria-label="Weight (kg)"
+                                                  type="number"
+                                                  min={0}
+                                                  step={0.001}
+                                                  className="h-8 w-24 text-sm"
+                                                  value={kgVal}
+                                                  placeholder="kg"
+                                                  onChange={(e) => {
+                                                    const kg = Number(e.target.value) || 0;
+                                                    setLineKgState(prev => ({ ...prev, [key]: { kg } }));
+                                                    setFormData(prev => {
+                                                      const baseQty = Number(req.issuing_quantity) || 0;
+                                                      const notesFactor = kg > 0 && baseQty > 0 ? ` | 1 kg = ${(baseQty / kg).toFixed(4)} ${baseUnitLabel}` : '';
+                                                      const matId = String(req.material_id);
+                                                      const exists = prev.lines.some(l => l.raw_material_id === matId);
+                                                      const updateNotes = (n?: string) => {
+                                                        const existing = (n || '').toString();
+                                                        const cleaned1 = existing.replace(/\s*\|?\s*Weight\s*\(?(?:kg)?\)?\s*[:=]\s*[\d.]+\s*kg?/i, '');
+                                                        const cleaned = cleaned1.replace(/\s*\|?\s*1\s*kg\s*=\s*[\d.]+\s*[a-zA-Z]+/i, '');
+                                                        const weightPart = kg > 0 ? `${cleaned ? ' | ' : ''}Weight: ${kg} kg` : '';
+                                                        return `${cleaned}${weightPart}${notesFactor}`;
+                                                      };
+                                                      if (exists) {
+                                                        return {
+                                                          ...prev,
+                                                          lines: prev.lines.map(l => l.raw_material_id === matId ? { ...l, notes: updateNotes(l.notes) } : l)
+                                                        };
+                                                      }
+                                                      if (baseQty > 0) {
+                                                        return {
+                                                          ...prev,
+                                                          lines: [...prev.lines, { raw_material_id: matId, quantity_issued: baseQty, batch_number: '', notes: updateNotes('') }]
+                                                        };
+                                                      }
+                                                      return prev;
+                                                    });
+                                                  }}
+                                                />
+                                                <span className="text-xs text-gray-500">kg</span>
+                                              </div>
+                                            )}
+                                            {isFabricMaterialId(req.material_id) && (
+                                              <Button 
+                                                variant="outline" 
+                                                size="sm" 
+                                                className="h-8 px-2"
+                                                onClick={() => startScanForMaterial(req.material_id)}
+                                                title="Scan rolls to set quantity"
+                                              >
+                                                <QrCode className="h-4 w-4" />
+                                              </Button>
+                                            )}
+                                            {!alt.enabled && (
+                                              <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                className="h-8 px-2 text-xs"
+                                                onClick={() => setAlt({ enabled: true, unit: alt.unit || '', qty: alt.qty || 0, factor: alt.factor || 1 })}
+                                              >
+                                                Different unit
+                                              </Button>
+                                            )}
+                                          </div>
+
+                                          {alt.enabled && (
+                                            <div className="flex flex-wrap items-center gap-2 pl-0 md:pl-10">
+                                              <Select value={alt.unit} onValueChange={(v) => setAlt({ unit: v })}>
+                                                <SelectTrigger className="h-8 w-28 text-sm">
+                                                  <SelectValue placeholder="Unit" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                  {['kg','meter','meters','m','yard','yards','yd','piece','pieces','pc','dozen','dz'].map(u => (
+                                                    <SelectItem key={u} value={u}>{u}</SelectItem>
+                                                  ))}
+                                                </SelectContent>
+                                              </Select>
                                               <Input
-                                                aria-label="Weight (kg)"
                                                 type="number"
-                                                min={0}
-                                                step={0.001}
+                                                min="0"
+                                                step="0.001"
                                                 className="h-8 w-24 text-sm"
-                                                value={kgVal}
-                                                placeholder="kg"
-                                                onChange={(e) => {
-                                                  const kg = Number(e.target.value) || 0;
-                                                  setLineKgState(prev => ({ ...prev, [key]: { kg } }));
-                                                  // Attach weight and derived factor into line notes
+                                                placeholder="Qty"
+                                                value={alt.qty || 0}
+                                                onChange={(e) => setAlt({ qty: Number(e.target.value) || 0 })}
+                                              />
+                                              <Input
+                                                type="number"
+                                                min="0"
+                                                step="0.0001"
+                                                className="h-8 w-28 text-sm"
+                                                placeholder="Factor"
+                                                value={alt.factor}
+                                                onChange={(e) => setAlt({ factor: Math.max(0, Number(e.target.value) || 0) })}
+                                              />
+                                              <Button
+                                                variant="secondary"
+                                                size="sm"
+                                                className="h-8"
+                                                onClick={() => {
+                                                  const baseQty = (Number(alt.qty) || 0) * (Number(alt.factor) || 0);
+                                                  if (!baseQty || baseQty <= 0) {
+                                                    toast({ title: 'Invalid Quantity', description: 'Provide alt quantity and conversion factor.', variant: 'destructive' });
+                                                    return;
+                                                  }
+                                                  const matId = String(req.material_id);
+                                                  const altUnitLabel = alt.unit || 'alt';
+                                                  const note = `Issued via alt unit: ${alt.qty} ${altUnitLabel} (1 ${altUnitLabel} = ${alt.factor} ${baseUnitLabel}) => ${baseQty.toFixed(3)} ${baseUnitLabel}`;
+                                                  updateIssuingQuantity(req.material_id, baseQty);
                                                   setFormData(prev => {
-                                                    const baseQty = Number(req.issuing_quantity) || 0;
-                                                    const notesFactor = kg > 0 && baseQty > 0 ? ` | 1 kg = ${(baseQty / kg).toFixed(4)} ${mat?.base_unit || 'unit'}` : '';
-                                                    const matId = String(req.material_id);
                                                     const exists = prev.lines.some(l => l.raw_material_id === matId);
-                                                    const updateNotes = (n?: string) => {
-                                                      const existing = (n || '').toString();
-                                                      const cleaned1 = existing.replace(/\s*\|?\s*Weight\s*\(?(?:kg)?\)?\s*[:=]\s*[\d.]+\s*kg?/i, '');
-                                                      const cleaned = cleaned1.replace(/\s*\|?\s*1\s*kg\s*=\s*[\d.]+\s*[a-zA-Z]+/i, '');
-                                                      const weightPart = kg > 0 ? `${cleaned ? ' | ' : ''}Weight: ${kg} kg` : '';
-                                                      return `${cleaned}${weightPart}${notesFactor}`;
-                                                    };
-                                                    if (exists) {
-                                                      return {
-                                                        ...prev,
-                                                        lines: prev.lines.map(l => l.raw_material_id === matId ? { ...l, notes: updateNotes(l.notes) } : l)
-                                                      };
-                                                    }
-                                                    // If no line yet, create one with current issuing qty
-                                                    if (baseQty > 0) {
-                                                      return {
-                                                        ...prev,
-                                                        lines: [...prev.lines, { raw_material_id: matId, quantity_issued: baseQty, batch_number: '', notes: updateNotes('') }]
-                                                      };
-                                                    }
-                                                    return prev;
+                                                    const lines = exists
+                                                      ? prev.lines.map(l => l.raw_material_id === matId ? { ...l, quantity_issued: baseQty, notes: note } : l)
+                                                      : [...prev.lines, { raw_material_id: matId, quantity_issued: baseQty, batch_number: '', notes: note }];
+                                                    return { ...prev, lines };
                                                   });
                                                 }}
-                                              />
-                                              <span className="text-xs text-gray-500">kg</span>
+                                              >
+                                                Apply
+                                              </Button>
+                                              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => setAlt({ enabled: false })}>Cancel</Button>
+                                              <div className="text-xs text-gray-500">
+                                                {(() => {
+                                                  const baseQty = (Number(alt.qty) || 0) * (Number(alt.factor) || 0);
+                                                  return baseQty > 0 ? `= ${baseQty.toFixed(3)} ${baseUnitLabel}` : '';
+                                                })()}
+                                              </div>
                                             </div>
-                                          );
-                                        }
-                                        return null;
-                                      })()}
-                                      {isFabricMaterialId(req.material_id) && (
-                                        <Button 
-                                          variant="outline" 
-                                          size="sm" 
-                                          className="h-8 px-2"
-                                          onClick={() => startScanForMaterial(req.material_id)}
-                                          title="Scan rolls to set quantity"
-                                        >
-                                          <QrCode className="h-4 w-4" />
-                                        </Button>
-                                      )}
-                                    </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })()
                                   )}
                                 </TableCell>
                                 <TableCell>
