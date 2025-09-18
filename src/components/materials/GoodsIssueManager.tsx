@@ -1289,19 +1289,24 @@ export const GoodsIssueManager: React.FC = () => {
         }
       }
 
-      // If current UI has category requirements loaded for this PO, pass them through
+      // If current UI has requirements loaded for this PO, pass category totals (both category-wise and regular rows)
       let categoryRequirementByName: Record<string, number> | undefined = undefined;
       if (bomMaterialRequirements?.length && issue.reference_number) {
         const relatesToCurrentPO = (selectedPurchaseOrder?.po_number || selectedPurchaseOrder?.name) === issue.reference_number;
         if (relatesToCurrentPO) {
-          categoryRequirementByName = {};
+          const totals: Record<string, number> = {};
           for (const req of bomMaterialRequirements) {
-            if (!req.category_id) continue;
-            const name = req.material_name
-              .replace(/^📁\s*/, '')
-              .replace(/\s*\(Category\)\s*$/, '');
-            categoryRequirementByName[name] = Number(req.required_quantity || 0);
+            if (req.category_id) {
+              const name = req.material_name.replace(/^📁\s*/, '').replace(/\s*\(Category\)\s*$/, '');
+              totals[name] = (totals[name] || 0) + Number(req.required_quantity || 0);
+            } else {
+              // Non-category row: find category name from rawMaterials
+              const mat = rawMaterials.find(m => m.id.toString() === req.material_id);
+              const cat = ((mat as any)?.category?.name || 'Uncategorized') as string;
+              totals[cat] = (totals[cat] || 0) + Number(req.required_quantity || 0);
+            }
           }
+          categoryRequirementByName = totals;
           if (Object.keys(categoryRequirementByName).length === 0) categoryRequirementByName = undefined;
         }
       }
@@ -1367,15 +1372,17 @@ export const GoodsIssueManager: React.FC = () => {
         }
       } catch {}
 
-      // Derive category total requirements from UI state (bomMaterialRequirements)
-      // Match names to the category group names used in PDF (plain category names)
+      // Derive category total requirements from UI state (both category-wise and regular rows)
       const categoryRequirementByName: Record<string, number> = {};
       for (const req of bomMaterialRequirements) {
-        if (!req.category_id) continue;
-        const name = req.material_name
-          .replace(/^📁\s*/, '')
-          .replace(/\s*\(Category\)\s*$/, '');
-        categoryRequirementByName[name] = Number(req.required_quantity || 0);
+        if (req.category_id) {
+          const name = req.material_name.replace(/^📁\s*/, '').replace(/\s*\(Category\)\s*$/, '');
+          categoryRequirementByName[name] = (categoryRequirementByName[name] || 0) + Number(req.required_quantity || 0);
+        } else {
+          const mat = rawMaterials.find(m => m.id.toString() === req.material_id);
+          const cat = ((mat as any)?.category?.name || 'Uncategorized') as string;
+          categoryRequirementByName[cat] = (categoryRequirementByName[cat] || 0) + Number(req.required_quantity || 0);
+        }
       }
 
       await Promise.resolve(
@@ -1788,6 +1795,62 @@ export const GoodsIssueManager: React.FC = () => {
                                         onChange={(e) => updateIssuingQuantity(req.material_id, parseFloat(e.target.value) || 0)}
                                         className={`w-24 ${isOverIssuing ? 'border-yellow-400 bg-yellow-50' : ''} ${isInsufficientStock ? 'border-red-400 bg-red-50' : ''}`}
                                       />
+                                      {(() => {
+                                        const mat = rawMaterials.find(m => m.id.toString() === req.material_id);
+                                        const baseUnit = (mat?.base_unit || '').toLowerCase();
+                                        const isBaseKg = baseUnit === 'kg' || baseUnit === 'kilogram' || baseUnit === 'kilograms';
+                                        if (!isBaseKg) {
+                                          const key = String(req.material_id);
+                                          const kgVal = (lineKgState[key]?.kg || 0);
+                                          return (
+                                            <div className="flex items-center space-x-1">
+                                              <Input
+                                                aria-label="Weight (kg)"
+                                                type="number"
+                                                min={0}
+                                                step={0.001}
+                                                className="h-8 w-24 text-sm"
+                                                value={kgVal}
+                                                placeholder="kg"
+                                                onChange={(e) => {
+                                                  const kg = Number(e.target.value) || 0;
+                                                  setLineKgState(prev => ({ ...prev, [key]: { kg } }));
+                                                  // Attach weight and derived factor into line notes
+                                                  setFormData(prev => {
+                                                    const baseQty = Number(req.issuing_quantity) || 0;
+                                                    const notesFactor = kg > 0 && baseQty > 0 ? ` | 1 kg = ${(baseQty / kg).toFixed(4)} ${mat?.base_unit || 'unit'}` : '';
+                                                    const matId = String(req.material_id);
+                                                    const exists = prev.lines.some(l => l.raw_material_id === matId);
+                                                    const updateNotes = (n?: string) => {
+                                                      const existing = (n || '').toString();
+                                                      const cleaned1 = existing.replace(/\s*\|?\s*Weight\s*\(?(?:kg)?\)?\s*[:=]\s*[\d.]+\s*kg?/i, '');
+                                                      const cleaned = cleaned1.replace(/\s*\|?\s*1\s*kg\s*=\s*[\d.]+\s*[a-zA-Z]+/i, '');
+                                                      const weightPart = kg > 0 ? `${cleaned ? ' | ' : ''}Weight: ${kg} kg` : '';
+                                                      return `${cleaned}${weightPart}${notesFactor}`;
+                                                    };
+                                                    if (exists) {
+                                                      return {
+                                                        ...prev,
+                                                        lines: prev.lines.map(l => l.raw_material_id === matId ? { ...l, notes: updateNotes(l.notes) } : l)
+                                                      };
+                                                    }
+                                                    // If no line yet, create one with current issuing qty
+                                                    if (baseQty > 0) {
+                                                      return {
+                                                        ...prev,
+                                                        lines: [...prev.lines, { raw_material_id: matId, quantity_issued: baseQty, batch_number: '', notes: updateNotes('') }]
+                                                      };
+                                                    }
+                                                    return prev;
+                                                  });
+                                                }}
+                                              />
+                                              <span className="text-xs text-gray-500">kg</span>
+                                            </div>
+                                          );
+                                        }
+                                        return null;
+                                      })()}
                                       {isFabricMaterialId(req.material_id) && (
                                         <Button 
                                           variant="outline" 
