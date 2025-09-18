@@ -96,6 +96,7 @@ export interface MultiProductBOMCreate {
       unit: string;
       waste_percentage: number;
     }[];
+    fabric_usage?: 'body' | 'gusset_1' | 'gusset_2' | null;
     notes?: string;
   }[];
 }
@@ -285,6 +286,7 @@ export class BOMService {
         quantity: line.quantity,
         unit: line.unit,
         waste_percentage: line.waste_percentage,
+        fabric_usage: line.fabric_usage || null,
         notes: line.notes,
         sort_order: line.sort_order
       });
@@ -465,6 +467,7 @@ export class BOMService {
           quantity: avgQuantity,
           unit: material.consumptions[0]?.unit || 'pieces',
           waste_percentage: avgWaste,
+          fabric_usage: material.fabric_usage || null,
           notes: detailedNotes
         })
         .select()

@@ -59,11 +59,33 @@ interface VariantConsumption {
   waste_percentage: number;
 }
 
+type FabricUsageOption = 'body' | 'gusset_1' | 'gusset_2';
+
+const FABRIC_USAGE_OPTIONS: { value: FabricUsageOption; label: string }[] = [
+  { value: 'body', label: 'Body' },
+  { value: 'gusset_1', label: 'Gusset 1' },
+  { value: 'gusset_2', label: 'Gusset 2' }
+];
+
+const isFabricMaterial = (material?: RawMaterialWithInventory | null) => {
+  const categoryName = material?.category?.name;
+  return typeof categoryName === 'string' && categoryName.toLowerCase().includes('fabric');
+};
+
+const createMaterialEntryId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `fabric-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
 interface SelectedRawMaterial {
+  entryId: string;
   raw_material_id: number;
   raw_material: RawMaterialWithInventory;
   variant_consumptions: VariantConsumption[];
   notes: string;
+  fabricUsage: FabricUsageOption | null;
 }
 
 interface MultiProductBOMCreatorProps {
@@ -122,6 +144,10 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
   
   // Category notes
   const [categoryNotes, setCategoryNotes] = useState<{[category_id: number]: string}>({});
+
+  const hasPendingFabricUsage = selectedRawMaterials.some(
+    (rm) => isFabricMaterial(rm.raw_material) && !rm.fabricUsage
+  );
 
   useEffect(() => {
     if (open) {
@@ -229,12 +255,31 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
 
 
   const handleAddRawMaterial = (rawMaterial: RawMaterialWithInventory) => {
-    const exists = selectedRawMaterials.find(rm => rm.raw_material_id === rawMaterial.id);
-    if (exists) return;
+    if (hasPendingFabricUsage) {
+      toast({
+        title: 'Select fabric usage',
+        description: 'Please choose whether the pending fabric is for the body, gusset 1, or gusset 2 before adding another material.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    const fabricMaterial = isFabricMaterial(rawMaterial);
+
+    if (!fabricMaterial) {
+      const exists = selectedRawMaterials.find(rm => rm.raw_material_id === rawMaterial.id);
+      if (exists) {
+        toast({
+          title: 'Already added',
+          description: 'This material is already part of the BOM. Adjust its consumption instead of adding it again.',
+          variant: 'destructive'
+        });
+        return;
+      }
+    }
 
     let variantConsumptions: VariantConsumption[] = [];
 
-    // Create consumption entries for all product variants
     variantConsumptions = productVariants.map(variant => ({
       variant_key: variant.variant_key,
       product_id: variant.product.id,
@@ -246,38 +291,70 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
       waste_percentage: 0
     }));
 
+    let defaultFabricUsage: FabricUsageOption | null = null;
+    if (fabricMaterial) {
+      const existingEntries = selectedRawMaterials.filter(rm => rm.raw_material_id === rawMaterial.id);
+      const usedUsages = new Set(
+        existingEntries
+          .map(entry => entry.fabricUsage)
+          .filter((value): value is FabricUsageOption => Boolean(value))
+      );
+      const availableUsage = FABRIC_USAGE_OPTIONS.find(option => !usedUsages.has(option.value));
+
+      if (availableUsage) {
+        defaultFabricUsage = availableUsage.value;
+      }
+    }
+
     const newRawMaterial: SelectedRawMaterial = {
+      entryId: createMaterialEntryId(),
       raw_material_id: rawMaterial.id,
       raw_material: rawMaterial,
       variant_consumptions: variantConsumptions,
-      notes: ''
+      notes: '',
+      fabricUsage: defaultFabricUsage
     };
 
     setSelectedRawMaterials(prev => {
       const updated = [...prev, newRawMaterial];
-      // Set current material index to the newly added material
       setCurrentMaterialIndex(updated.length - 1);
       return updated;
     });
   };
 
-  const handleRemoveRawMaterial = (rawMaterialId: number) => {
+  const handleRemoveRawMaterial = (entryId: string) => {
     setSelectedRawMaterials(prev => {
-      const filtered = prev.filter(rm => rm.raw_material_id !== rawMaterialId);
-      // Adjust current material index if necessary
+      const removalIndex = prev.findIndex(rm => rm.entryId === entryId);
+      const filtered = prev.filter(rm => rm.entryId !== entryId);
       if (filtered.length === 0) {
         setCurrentMaterialIndex(0);
-      } else if (currentMaterialIndex >= filtered.length) {
-        setCurrentMaterialIndex(filtered.length - 1);
+      } else if (removalIndex !== -1) {
+        setCurrentMaterialIndex(prevIndex => {
+          if (prevIndex > removalIndex) {
+            return Math.max(removalIndex, prevIndex - 1);
+          }
+          if (prevIndex >= filtered.length) {
+            return filtered.length - 1;
+          }
+          return prevIndex;
+        });
       }
       return filtered;
     });
   };
 
+  const handleFabricUsageChange = (entryId: string, usage: FabricUsageOption | null) => {
+    setSelectedRawMaterials(prev => prev.map(rm =>
+      rm.entryId === entryId
+        ? { ...rm, fabricUsage: usage }
+        : rm
+    ));
+  };
+
   // Bulk application functions
-  const applyQuantityToVariants = (rawMaterialId: number, quantity: number, targetType: 'all' | 'sizes' | 'colors', targetValues?: string[]) => {
+  const applyQuantityToVariants = (entryId: string, quantity: number, targetType: 'all' | 'sizes' | 'colors', targetValues?: string[]) => {
     setSelectedRawMaterials(prev => prev.map(rm => {
-      if (rm.raw_material_id !== rawMaterialId) return rm;
+      if (rm.entryId !== entryId) return rm;
 
       return {
         ...rm,
@@ -298,9 +375,9 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
     }));
   };
 
-  const applyWasteToVariants = (rawMaterialId: number, waste: number, targetType: 'all' | 'sizes' | 'colors', targetValues?: string[]) => {
+  const applyWasteToVariants = (entryId: string, waste: number, targetType: 'all' | 'sizes' | 'colors', targetValues?: string[]) => {
     setSelectedRawMaterials(prev => prev.map(rm => {
-      if (rm.raw_material_id !== rawMaterialId) return rm;
+      if (rm.entryId !== entryId) return rm;
 
       return {
         ...rm,
@@ -323,13 +400,13 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
 
   // Apply value from a specific variant to related variants
   const applyValueFromVariant = (
-    rawMaterialId: number, 
+    entryId: string, 
     sourceVariantKey: string, 
     field: 'quantity' | 'waste_percentage',
     targetType: 'all' | 'sizes' | 'colors'
   ) => {
     setSelectedRawMaterials(prev => prev.map(rm => {
-      if (rm.raw_material_id !== rawMaterialId) return rm;
+      if (rm.entryId !== entryId) return rm;
 
       // Find the source variant to get the value
       const sourceVariant = rm.variant_consumptions.find(vc => vc.variant_key === sourceVariantKey);
@@ -389,13 +466,13 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
   };
 
   const handleVariantConsumptionChange = (
-    rawMaterialId: number, 
+    entryId: string, 
     variantKey: string, 
     field: 'quantity' | 'waste_percentage', 
     value: number
   ) => {
     setSelectedRawMaterials(prev => prev.map(rm => {
-      if (rm.raw_material_id !== rawMaterialId) return rm;
+      if (rm.entryId !== entryId) return rm;
 
       return {
         ...rm,
@@ -419,6 +496,20 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
           variant: 'destructive'
         });
         return;
+      }
+
+      if (!isCategoryWiseBOM) {
+        const pendingFabricMaterials = selectedRawMaterials.filter(
+          (rm) => isFabricMaterial(rm.raw_material) && !rm.fabricUsage
+        );
+        if (pendingFabricMaterials.length > 0) {
+          toast({
+            title: 'Fabric usage required',
+            description: 'Please specify whether each fabric material is used for the body, gusset 1, or gusset 2 before creating the BOM.',
+            variant: 'destructive'
+          });
+          return;
+        }
       }
 
       setLoading(true);
@@ -470,6 +561,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
             unit: vc.unit,
             waste_percentage: vc.waste_percentage
           })),
+          fabric_usage: isFabricMaterial(rm.raw_material) ? rm.fabricUsage : null,
           notes: rm.notes
         }));
       }
@@ -833,6 +925,14 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
           </CardTitle>
         </CardHeader>
         <CardContent>
+          {hasPendingFabricUsage && !isCategoryWiseBOM && (
+            <Alert className="mb-4 bg-red-50 border-red-200">
+              <AlertTriangle className="h-4 w-4 text-red-600" />
+              <AlertDescription className="text-red-700 text-sm">
+                Select the fabric usage (Body, Gusset 1, or Gusset 2) for the highlighted fabric material before adding another item.
+              </AlertDescription>
+            </Alert>
+          )}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Available Raw Materials */}
             <div>
@@ -878,13 +978,18 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                   // Show individual materials
                   filteredRawMaterials.map((material) => {
                     const isSelected = selectedRawMaterials.some(rm => rm.raw_material_id === material.id);
+                    const fabricMaterial = isFabricMaterial(material);
+                    const disableAdd = !fabricMaterial && isSelected;
                     return (
                       <div
                         key={material.id}
                         className={`flex items-center justify-between p-3 rounded border transition-all ${
-                          isSelected ? 'bg-purple-50 border-purple-200' : 'bg-white border-gray-200 hover:bg-gray-50 cursor-pointer'
-                        }`}
-                        onClick={() => !isSelected && handleAddRawMaterial(material)}
+                          isSelected ? 'bg-purple-50 border-purple-200' : 'bg-white border-gray-200'
+                        } ${disableAdd ? 'cursor-not-allowed opacity-70' : 'hover:bg-gray-50 cursor-pointer'}`}
+                        onClick={() => {
+                          if (disableAdd) return;
+                          handleAddRawMaterial(material);
+                        }}
                       >
                         <div>
                           <div className="font-medium text-sm">{material.name}</div>
@@ -902,11 +1007,15 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                             )}
                           </div>
                         </div>
-                        {!isSelected && (
-                          <Button size="sm" variant="ghost" onClick={(e) => {
-                            e.stopPropagation();
-                            handleAddRawMaterial(material);
-                          }}>
+                        {!disableAdd && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleAddRawMaterial(material);
+                            }}
+                          >
                             <Plus className="h-4 w-4" />
                           </Button>
                         )}
@@ -978,40 +1087,75 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                   })
                 ) : (
                   // Show selected materials
-                  selectedRawMaterials.map((rm, index) => (
-                    <div 
-                      key={rm.raw_material_id} 
-                      className={`border rounded-lg p-3 cursor-pointer transition-all ${
-                        index === currentMaterialIndex 
-                          ? 'bg-purple-100 border-purple-300 ring-2 ring-purple-200' 
-                          : 'bg-purple-50 border-purple-200 hover:bg-purple-75'
-                      }`}
-                      onClick={() => setCurrentMaterialIndex(index)}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex-1">
-                          <div className="font-medium text-sm flex items-center space-x-2">
-                            <span>{rm.raw_material.name}</span>
-                            {index === currentMaterialIndex && (
-                              <Badge variant="secondary" className="text-xs">Current</Badge>
+                  selectedRawMaterials.map((rm, index) => {
+                    const fabricMaterial = isFabricMaterial(rm.raw_material);
+                    const fabricUsageMissing = fabricMaterial && !rm.fabricUsage;
+                    const usageLabel = rm.fabricUsage
+                      ? FABRIC_USAGE_OPTIONS.find((opt) => opt.value === rm.fabricUsage)?.label || rm.fabricUsage
+                      : null;
+                    return (
+                      <div 
+                        key={rm.entryId} 
+                        className={`border rounded-lg p-3 cursor-pointer transition-all ${
+                          index === currentMaterialIndex 
+                            ? 'bg-purple-100 border-purple-300 ring-2 ring-purple-200' 
+                            : 'bg-purple-50 border-purple-200 hover:bg-purple-75'
+                        }`}
+                        onClick={() => setCurrentMaterialIndex(index)}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex-1">
+                            <div className="font-medium text-sm flex items-center space-x-2">
+                              <span>{rm.raw_material.name}</span>
+                              {index === currentMaterialIndex && (
+                                <Badge variant="secondary" className="text-xs">Current</Badge>
+                              )}
+                              {fabricMaterial && (
+                                <Badge className="bg-orange-100 text-orange-800 border-orange-200 text-[10px] uppercase tracking-wide">
+                                  Fabric
+                                </Badge>
+                              )}
+                              {fabricMaterial && usageLabel && (
+                                <Badge className="bg-orange-200 text-orange-900 border-orange-300 text-[10px] uppercase tracking-wide">
+                                  {usageLabel}
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="text-xs text-gray-500 flex flex-wrap items-center gap-2 mt-1">
+                              <span>{rm.raw_material.code || 'No code'}</span>
+                              <span className="flex items-center space-x-1">
+                                <Package className="h-3 w-3" />
+                                <span>{rm.raw_material.base_unit}</span>
+                              </span>
+                              {rm.raw_material.cost_per_unit && (
+                                <span className="flex items-center space-x-1 text-green-600">
+                                  <DollarSign className="h-3 w-3" />
+                                  <span>LKR {rm.raw_material.cost_per_unit}</span>
+                                </span>
+                              )}
+                            </div>
+                            {fabricUsageMissing && (
+                              <div className="flex items-center space-x-1 text-[11px] text-red-700 mt-2">
+                                <AlertTriangle className="h-3 w-3" />
+                                <span>Usage required</span>
+                              </div>
                             )}
                           </div>
-                          <div className="text-xs text-gray-500">{rm.raw_material.code}</div>
+                          <Button 
+                            size="sm" 
+                            variant="ghost" 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRemoveRawMaterial(rm.entryId);
+                            }}
+                            className="text-red-600 hover:bg-red-100"
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
                         </div>
-                        <Button 
-                          size="sm" 
-                          variant="ghost" 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleRemoveRawMaterial(rm.raw_material_id);
-                          }}
-                          className="text-red-600 hover:bg-red-100"
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>
@@ -1175,11 +1319,13 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                 })()
               ) : (
                 // Material-based consumption
-                selectedRawMaterials.length > 0 && (() => {
+              selectedRawMaterials.length > 0 && (() => {
                   const rm = selectedRawMaterials[currentMaterialIndex];
                   if (!rm) return null;
+                  const fabricMaterial = isFabricMaterial(rm.raw_material);
+                  const fabricUsageMissing = fabricMaterial && !rm.fabricUsage;
                   return (
-                <div key={rm.raw_material_id} className="border border-gray-200 rounded-xl p-6 bg-gray-50/30">
+                <div key={rm.entryId} className="border border-gray-200 rounded-xl p-6 bg-gray-50/30">
                   <div className="flex items-center justify-between mb-6">
                     <div>
                       <h4 className="font-semibold text-lg flex items-center space-x-2">
@@ -1194,6 +1340,54 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                       </p>
                     </div>
                   </div>
+
+                  {fabricMaterial && (
+                    <div className={`mb-5 rounded-xl border p-4 ${
+                      fabricUsageMissing ? 'bg-red-50 border-red-200' : 'bg-orange-50 border-orange-200'
+                    }`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1 space-y-2">
+                          <Label className="text-sm font-semibold text-orange-800">Fabric Usage *</Label>
+                          <Select
+                            value={rm.fabricUsage ?? undefined}
+                            onValueChange={(value) => handleFabricUsageChange(rm.entryId, value as FabricUsageOption)}
+                          >
+                            <SelectTrigger className="bg-white border-orange-200 focus:border-orange-400 focus:ring-orange-200 h-9">
+                              <SelectValue placeholder="Select how this fabric is used" />
+                            </SelectTrigger>
+                            <SelectContent className="bg-white border-orange-200">
+                              {FABRIC_USAGE_OPTIONS.map((option) => (
+                                <SelectItem key={option.value} value={option.value} className="hover:bg-orange-50">
+                                  {option.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-gray-600">
+                            Identify whether this fabric is used for the main body or one of the gussets.
+                          </p>
+                          {fabricUsageMissing && (
+                            <div className="flex items-center space-x-2 text-xs text-red-700">
+                              <AlertTriangle className="h-3 w-3" />
+                              <span>Required before you can add another material.</span>
+                            </div>
+                          )}
+                        </div>
+                        {rm.fabricUsage && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleFabricUsageChange(rm.entryId, null)}
+                            className="h-8 text-xs text-orange-700 hover:text-orange-800"
+                          >
+                            <X className="h-3 w-3 mr-1" />
+                            Clear
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Bulk Application Controls */}
                   <div className="bg-white p-4 rounded-lg border border-gray-200 mb-4">
@@ -1233,8 +1427,8 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                             size="sm" 
                             variant="outline"
                             onClick={() => {
-                              applyQuantityToVariants(rm.raw_material_id, bulkQuantity, 'all');
-                              applyWasteToVariants(rm.raw_material_id, bulkWaste, 'all');
+                              applyQuantityToVariants(rm.entryId, bulkQuantity, 'all');
+                              applyWasteToVariants(rm.entryId, bulkWaste, 'all');
                             }}
                             className="h-8 text-xs bg-green-50 border-green-300 text-green-700 hover:bg-green-100"
                           >
@@ -1246,8 +1440,8 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                               size="sm" 
                               variant="outline"
                               onClick={() => {
-                                applyQuantityToVariants(rm.raw_material_id, bulkQuantity, 'sizes', uniqueSizes);
-                                applyWasteToVariants(rm.raw_material_id, bulkWaste, 'sizes', uniqueSizes);
+                                applyQuantityToVariants(rm.entryId, bulkQuantity, 'sizes', uniqueSizes);
+                                applyWasteToVariants(rm.entryId, bulkWaste, 'sizes', uniqueSizes);
                               }}
                               className="h-8 text-xs bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100"
                             >
@@ -1260,8 +1454,8 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                               size="sm" 
                               variant="outline"
                               onClick={() => {
-                                applyQuantityToVariants(rm.raw_material_id, bulkQuantity, 'colors', uniqueColors);
-                                applyWasteToVariants(rm.raw_material_id, bulkWaste, 'colors', uniqueColors);
+                                applyQuantityToVariants(rm.entryId, bulkQuantity, 'colors', uniqueColors);
+                                applyWasteToVariants(rm.entryId, bulkWaste, 'colors', uniqueColors);
                               }}
                               className="h-8 text-xs bg-purple-50 border-purple-300 text-purple-700 hover:bg-purple-100"
                             >
@@ -1320,7 +1514,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                                   step="0.01"
                                   value={vc.quantity}
                                   onChange={(e) => handleVariantConsumptionChange(
-                                    rm.raw_material_id,
+                                    rm.entryId,
                                     vc.variant_key,
                                     'quantity',
                                     parseFloat(e.target.value) || 0
@@ -1335,7 +1529,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                                   type="button"
                                   size="sm"
                                   variant="outline"
-                                  onClick={() => applyValueFromVariant(rm.raw_material_id, vc.variant_key, 'quantity', 'all')}
+                                  onClick={() => applyValueFromVariant(rm.entryId, vc.variant_key, 'quantity', 'all')}
                                   className="h-6 px-2 text-xs bg-green-50 border-green-300 text-green-700 hover:bg-green-100"
                                   title="Apply this quantity to all variants"
                                 >
@@ -1347,7 +1541,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                                     type="button"
                                     size="sm"
                                     variant="outline"
-                                    onClick={() => applyValueFromVariant(rm.raw_material_id, vc.variant_key, 'quantity', 'sizes')}
+                                    onClick={() => applyValueFromVariant(rm.entryId, vc.variant_key, 'quantity', 'sizes')}
                                     className="h-6 px-2 text-xs bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100"
                                     title={`Apply this quantity to all ${vc.size} size variants`}
                                   >
@@ -1360,7 +1554,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                                     type="button"
                                     size="sm"
                                     variant="outline"
-                                    onClick={() => applyValueFromVariant(rm.raw_material_id, vc.variant_key, 'quantity', 'colors')}
+                                    onClick={() => applyValueFromVariant(rm.entryId, vc.variant_key, 'quantity', 'colors')}
                                     className="h-6 px-2 text-xs bg-purple-50 border-purple-300 text-purple-700 hover:bg-purple-100"
                                     title={`Apply this quantity to all ${vc.color} color variants`}
                                   >
@@ -1382,7 +1576,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                                   step="0.1"
                                   value={vc.waste_percentage}
                                   onChange={(e) => handleVariantConsumptionChange(
-                                    rm.raw_material_id,
+                                    rm.entryId,
                                     vc.variant_key,
                                     'waste_percentage',
                                     parseFloat(e.target.value) || 0
@@ -1397,7 +1591,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                                   type="button"
                                   size="sm"
                                   variant="outline"
-                                  onClick={() => applyValueFromVariant(rm.raw_material_id, vc.variant_key, 'waste_percentage', 'all')}
+                                  onClick={() => applyValueFromVariant(rm.entryId, vc.variant_key, 'waste_percentage', 'all')}
                                   className="h-6 px-2 text-xs bg-green-50 border-green-300 text-green-700 hover:bg-green-100"
                                   title="Apply this waste % to all variants"
                                 >
@@ -1409,7 +1603,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                                     type="button"
                                     size="sm"
                                     variant="outline"
-                                    onClick={() => applyValueFromVariant(rm.raw_material_id, vc.variant_key, 'waste_percentage', 'sizes')}
+                                    onClick={() => applyValueFromVariant(rm.entryId, vc.variant_key, 'waste_percentage', 'sizes')}
                                     className="h-6 px-2 text-xs bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100"
                                     title={`Apply this waste % to all ${vc.size} size variants`}
                                   >
@@ -1422,7 +1616,7 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                                     type="button"
                                     size="sm"
                                     variant="outline"
-                                    onClick={() => applyValueFromVariant(rm.raw_material_id, vc.variant_key, 'waste_percentage', 'colors')}
+                                    onClick={() => applyValueFromVariant(rm.entryId, vc.variant_key, 'waste_percentage', 'colors')}
                                     className="h-6 px-2 text-xs bg-purple-50 border-purple-300 text-purple-700 hover:bg-purple-100"
                                     title={`Apply this waste % to all ${vc.color} color variants`}
                                   >
@@ -1440,12 +1634,12 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
 
                   {/* Notes */}
                   <div className="mt-4">
-                    <Label htmlFor={`notes-${rm.raw_material_id}`} className="text-sm font-medium">Notes</Label>
+                    <Label htmlFor={`notes-${rm.entryId}`} className="text-sm font-medium">Notes</Label>
                     <Textarea
-                      id={`notes-${rm.raw_material_id}`}
+                      id={`notes-${rm.entryId}`}
                       value={rm.notes}
                       onChange={(e) => setSelectedRawMaterials(prev => prev.map(material => 
-                        material.raw_material_id === rm.raw_material_id 
+                        material.entryId === rm.entryId 
                           ? { ...material, notes: e.target.value }
                           : material
                       ))}

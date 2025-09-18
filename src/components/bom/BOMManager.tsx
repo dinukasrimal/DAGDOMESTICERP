@@ -20,6 +20,12 @@ import { MultiProductBOMCreator } from './MultiProductBOMCreator';
 const bomService = new BOMService();
 const rawMaterialsService = new RawMaterialsService();
 
+const FABRIC_USAGE_LABELS: Record<'body' | 'gusset_1' | 'gusset_2', string> = {
+  body: 'Body',
+  gusset_1: 'Gusset 1',
+  gusset_2: 'Gusset 2'
+};
+
 interface BOMFormProps {
   formData: Partial<BOMHeaderInsert>;
   products: Product[];
@@ -1034,6 +1040,13 @@ const BOMContent: React.FC = () => {
                               <>
                                 <div className="font-medium text-gray-900">{line.raw_material?.name}</div>
                                 <div className="text-sm text-gray-500 font-mono">{line.raw_material?.code || 'No code'}</div>
+                                {line.fabric_usage && (
+                                  <div className="mt-2">
+                                    <Badge className="bg-orange-100 text-orange-800 border-orange-200 text-xs">
+                                      {FABRIC_USAGE_LABELS[line.fabric_usage as 'body' | 'gusset_1' | 'gusset_2'] || line.fabric_usage}
+                                    </Badge>
+                                  </div>
+                                )}
                               </>
                             )}
                           </div>

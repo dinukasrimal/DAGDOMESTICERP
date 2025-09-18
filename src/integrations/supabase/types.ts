@@ -111,6 +111,7 @@ export type Database = {
           bom_header_id: string | null
           category_id: number | null
           created_at: string | null
+          fabric_usage: 'body' | 'gusset_1' | 'gusset_2' | null
           id: string
           notes: string | null
           quantity: number
@@ -124,6 +125,7 @@ export type Database = {
           bom_header_id?: string | null
           category_id?: number | null
           created_at?: string | null
+          fabric_usage?: 'body' | 'gusset_1' | 'gusset_2' | null
           id?: string
           notes?: string | null
           quantity: number
@@ -137,6 +139,7 @@ export type Database = {
           bom_header_id?: string | null
           category_id?: number | null
           created_at?: string | null
+          fabric_usage?: 'body' | 'gusset_1' | 'gusset_2' | null
           id?: string
           notes?: string | null
           quantity?: number
