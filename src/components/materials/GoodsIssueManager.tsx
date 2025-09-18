@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { SearchableSelect } from '@/components/ui/searchable-select';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
@@ -768,6 +769,7 @@ export const GoodsIssueManager: React.FC = () => {
 
   // Handle BOM selection
   const handleBOMSelection = async (bomId: string) => {
+    if (!bomId) return;
     const bom = availableBOMs.find(b => String(b.id) === String(bomId));
     if (bom && selectedPurchaseOrder) {
       setSelectedBOM(bom);
@@ -958,7 +960,8 @@ export const GoodsIssueManager: React.FC = () => {
   };
 
   const handlePOSelection = async (orderId: string) => {
-    const order = purchaseOrders.find(o => o.id === orderId);
+    if (!orderId) return;
+    const order = purchaseOrders.find(o => String(o.id) === orderId);
     if (order) {
       setSelectedPurchaseOrder(order);
       setFormData(prev => ({
@@ -1595,44 +1598,31 @@ export const GoodsIssueManager: React.FC = () => {
                 {issueMode === 'po' && (
                   <div className="mt-4">
                     <Label>Purchase Order *</Label>
-                    <Select 
-                      value={selectedPurchaseOrder?.id || ''} 
-                      onValueChange={handlePOSelection}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select Purchase Order" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {purchaseOrders.map(order => {
-                          const productCount = order.products?.length || 0;
-                          const outstandingQty = order.outstanding_qty || order.pending_qty || 0;
-                          return (
-                            <SelectItem key={order.id} value={order.id}>
-                              <div className="flex justify-between items-center w-full">
-                                <span>{order.po_number}</span>
-                                <span className="text-sm text-gray-500 ml-2">
-                                  {productCount} products • Pending: {outstandingQty}
-                                </span>
-                              </div>
-                            </SelectItem>
-                          );
-                        })}
-                      </SelectContent>
-                    </Select>
+                    <SearchableSelect
+                      value={selectedPurchaseOrder?.id ? String(selectedPurchaseOrder.id) : ''}
+                      onChange={handlePOSelection}
+                      placeholder="Select Purchase Order"
+                      searchPlaceholder="Search purchase orders..."
+                      options={purchaseOrders.map(order => ({
+                        value: String(order.id),
+                        label: order.po_number || order.name || 'Unnamed PO',
+                        description: `${order.products?.length || 0} products • Pending: ${order.outstanding_qty || order.pending_qty || 0}`
+                      }))}
+                    />
 
                     {issueTab === 'trims' && (
                       <div className="mt-4">
                         <Label>Supplier *</Label>
-                        <Select value={selectedSupplier} onValueChange={setSelectedSupplier}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select supplier" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {suppliers.map(name => (
-                              <SelectItem key={name} value={name}>{name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <SearchableSelect
+                          value={selectedSupplier}
+                          onChange={setSelectedSupplier}
+                          placeholder="Select supplier"
+                          searchPlaceholder="Search suppliers..."
+                          options={suppliers.map(name => ({
+                            value: name,
+                            label: name
+                          }))}
+                        />
                       </div>
                     )}
                     
@@ -1652,29 +1642,17 @@ export const GoodsIssueManager: React.FC = () => {
                     {showBOMSelection && availableBOMs.length > 0 && (
                       <div className="mt-4">
                         <Label>Select BOM for Material Requirements *</Label>
-                        <Select 
-                          value={selectedBOM?.id ? String(selectedBOM.id) : ''} 
-                          onValueChange={handleBOMSelection}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select BOM to calculate material requirements" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {availableBOMs.map((bom) => (
-                              <SelectItem key={bom.id} value={String(bom.id)}>
-                                <div className="flex items-center space-x-2">
-                                  <Package className="h-3 w-3 text-blue-600" />
-                                  <div>
-                                    <span className="font-medium">{bom.name}</span>
-                                    <span className="text-xs text-gray-500 ml-2">
-                                      v{bom.version} • {bom.lines?.length || 0} materials
-                                    </span>
-                                  </div>
-                                </div>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <SearchableSelect
+                          value={selectedBOM?.id ? String(selectedBOM.id) : ''}
+                          onChange={handleBOMSelection}
+                          placeholder="Select BOM to calculate material requirements"
+                          searchPlaceholder="Search BOMs..."
+                          options={availableBOMs.map(bom => ({
+                            value: String(bom.id),
+                            label: bom.name,
+                            description: `v${bom.version} • ${bom.lines?.length || 0} materials`
+                          }))}
+                        />
                         
                         {selectedBOM && (
                           <div className="mt-2 p-3 bg-blue-50 rounded-lg border border-blue-200">

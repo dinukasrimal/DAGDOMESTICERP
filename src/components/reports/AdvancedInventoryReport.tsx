@@ -870,20 +870,25 @@ export const AdvancedInventoryReport: React.FC = () => {
   // Helper to calculate sales quantity (invoiced) for the same months in the previous year as the selected period
   function getSalesQtyForProduct(product: InventoryData, months: number): number {
     const currentDate = new Date();
-    const currentYear = currentDate.getFullYear();
-    const currentMonth = currentDate.getMonth(); // 0-based
-    // For planning, look at the same months in the previous year, but shifted forward by 1
-    // Example: if today is 2025/05 and months=3, get 2024/06, 2024/07, 2024/08
-    const previousYear = currentYear - 1;
-    const startMonth = (currentMonth + 1) % 12; // Next month
-    const targetMonths = Array.from({ length: months }, (_, i) => (startMonth + i) % 12);
+    const startOfNextMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1);
+    // Build the exact year/month pairs to compare against, ensuring wrapped months use the following year
+    const targetPeriods = Array.from({ length: months }, (_, i) => {
+      const periodDate = new Date(startOfNextMonth);
+      periodDate.setMonth(startOfNextMonth.getMonth() + i);
+      periodDate.setFullYear(periodDate.getFullYear() - 1);
+      return {
+        year: periodDate.getFullYear(),
+        month: periodDate.getMonth(),
+      };
+    });
+    const targetKeys = new Set(targetPeriods.map(({ year, month }) => `${year}-${month}`));
+
     let totalQty = 0;
     salesData.forEach(invoice => {
       const invoiceDate = new Date(invoice.date_order);
       const invoiceYear = invoiceDate.getFullYear();
       const invoiceMonth = invoiceDate.getMonth();
-      if (invoiceYear !== previousYear) return;
-      if (!targetMonths.includes(invoiceMonth)) return;
+      if (!targetKeys.has(`${invoiceYear}-${invoiceMonth}`)) return;
       if (invoice.order_lines && Array.isArray(invoice.order_lines)) {
         invoice.order_lines.forEach((line: any) => {
           const anyLine = line as any;

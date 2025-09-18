@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { SearchableSelect } from '@/components/ui/searchable-select';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
@@ -99,7 +99,7 @@ export const GoodsReceivedManager: React.FC = () => {
   };
 
   const handleSelectPO = (poId: string) => {
-    const po = pendingPOs.find(p => p.id === poId);
+    const po = pendingPOs.find(p => String(p.id) === poId);
     if (!po) return;
 
     setSelectedPO(po);
@@ -761,21 +761,17 @@ export const GoodsReceivedManager: React.FC = () => {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label htmlFor="purchase_order">Purchase Order *</Label>
-                <Select 
-                  value={formData.purchase_order_id} 
-                  onValueChange={handleSelectPO}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select purchase order" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {pendingPOs.map(po => (
-                      <SelectItem key={po.id} value={po.id}>
-                        {po.po_number} - {po.supplier?.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <SearchableSelect
+                  value={formData.purchase_order_id}
+                  onChange={handleSelectPO}
+                  placeholder="Select purchase order"
+                  searchPlaceholder="Search purchase orders..."
+                  options={pendingPOs.map(po => ({
+                    value: String(po.id),
+                    label: po.po_number || 'Unnamed PO',
+                    description: po.supplier?.name || 'Unknown supplier'
+                  }))}
+                />
               </div>
               <div>
                 <Label htmlFor="received_date">Received Date *</Label>
