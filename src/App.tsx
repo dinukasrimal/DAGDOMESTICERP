@@ -16,6 +16,7 @@ import { BOMManager } from "./components/bom/BOMManager";
 import { PurchaseOrderManager } from "./components/materials/PurchaseOrderManager";
 import { GoodsReceivedManager } from "./components/materials/GoodsReceivedManager";
 import { GoodsIssueManager } from "./components/materials/GoodsIssueManager";
+import MarkerRequests from "./pages/MarkerRequests";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -73,6 +74,11 @@ const App: React.FC = () => {
             <Route path="/goods-issue" element={
               <ProtectedRoute>
                 <GoodsIssueManager />
+              </ProtectedRoute>
+            } />
+            <Route path="/marker-requests" element={
+              <ProtectedRoute>
+                <MarkerRequests />
               </ProtectedRoute>
             } />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

@@ -1,10 +1,9 @@
 
 import React, { useState } from 'react';
-import { ProductionScheduler } from '../components/ProductionScheduler';
 import { ProductionPlanner } from '../components/ProductionPlanner';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Calendar, BarChart3, Package, FileText, Settings, Home, Users, TrendingUp, Sparkles, ArrowRight, ClipboardList, Factory, ShoppingCart, Truck, Minus } from 'lucide-react';
+import { BarChart3, Package, FileText, Settings, Home, Users, TrendingUp, Sparkles, ArrowRight, ClipboardList, Factory, ShoppingCart, Truck, Minus, Ruler } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 const Index: React.FC = () => {
@@ -12,17 +11,13 @@ const Index: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeView, setActiveView] = useState(() => {
     const view = searchParams.get('view');
-    return view && ['dashboard', 'scheduler', 'planner'].includes(view) ? view : 'dashboard';
+    return view && ['dashboard', 'planner'].includes(view) ? view : 'dashboard';
   });
 
   const sidebarItems = [
     { id: 'dashboard', label: 'Dashboard', icon: Home, onClick: () => {
       setActiveView('dashboard');
       setSearchParams({});
-    }},
-    { id: 'scheduler', label: 'Production Scheduler', icon: Calendar, onClick: () => {
-      setActiveView('scheduler');
-      setSearchParams({ view: 'scheduler' });
     }},
     { id: 'planner', label: 'Production Planner', icon: ClipboardList, onClick: () => {
       setActiveView('planner');
@@ -33,6 +28,7 @@ const Index: React.FC = () => {
     { id: 'purchase-orders', label: 'Purchase Orders', icon: ShoppingCart, onClick: () => navigate('/purchase-orders') },
     { id: 'goods-received', label: 'Goods Received', icon: Truck, onClick: () => navigate('/goods-received') },
     { id: 'goods-issue', label: 'Goods Issue', icon: Minus, onClick: () => navigate('/goods-issue') },
+    { id: 'marker-requests', label: 'Marker Requests', icon: Ruler, onClick: () => navigate('/marker-requests') },
     { id: 'reports', label: 'Reports & Analytics', icon: BarChart3, onClick: () => navigate('/reports') },
     { id: 'customers', label: 'Customers', icon: Users, onClick: () => {}, disabled: true },
     { id: 'settings', label: 'Settings', icon: Settings, onClick: () => {}, disabled: true },
@@ -41,7 +37,7 @@ const Index: React.FC = () => {
   // Listen for URL changes to update active view
   React.useEffect(() => {
     const view = searchParams.get('view');
-    if (view && ['dashboard', 'scheduler', 'planner'].includes(view)) {
+    if (view && ['dashboard', 'planner'].includes(view)) {
       setActiveView(view);
     } else {
       setActiveView('dashboard');
@@ -49,14 +45,6 @@ const Index: React.FC = () => {
   }, [searchParams]);
 
   const dashboardCards = [
-    {
-      title: 'Dynamic Visual Production Scheduler',
-      description: 'Manage production lines, orders, and scheduling with real-time updates',
-      icon: Calendar,
-      gradient: 'bg-gradient-to-br from-blue-500 via-blue-600 to-blue-700',
-      accentColor: 'from-blue-500/20 to-blue-600/20',
-      onClick: () => setActiveView('scheduler')
-    },
     {
       title: 'Production Planner',
       description: 'Drag & drop purchase orders to production lines for optimal planning',
@@ -112,6 +100,14 @@ const Index: React.FC = () => {
       gradient: 'bg-gradient-to-br from-red-500 via-red-600 to-red-700',
       accentColor: 'from-red-500/20 to-red-600/20',
       onClick: () => navigate('/goods-issue')
+    },
+    {
+      title: 'Marker Requests',
+      description: 'Build marker plans by combining purchase orders and layers',
+      icon: Ruler,
+      gradient: 'bg-gradient-to-br from-rose-500 via-rose-600 to-orange-600',
+      accentColor: 'from-rose-500/20 to-orange-500/20',
+      onClick: () => navigate('/marker-requests')
     }
   ];
 
@@ -200,14 +196,6 @@ const Index: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-6 gap-6">
               <Button 
                 variant="outline" 
-                className="h-24 flex flex-col items-center justify-center space-y-3 bg-white/80 hover:bg-white border-gray-200 hover:border-blue-300 hover:shadow-lg transition-all duration-300 group"
-                onClick={() => setActiveView('scheduler')}
-              >
-                <Calendar className="h-7 w-7 text-blue-600 group-hover:scale-110 transition-transform duration-300" />
-                <span className="font-medium text-gray-700 group-hover:text-blue-600 transition-colors">Production Schedule</span>
-              </Button>
-              <Button 
-                variant="outline" 
                 className="h-24 flex flex-col items-center justify-center space-y-3 bg-white/80 hover:bg-white border-gray-200 hover:border-indigo-300 hover:shadow-lg transition-all duration-300 group"
                 onClick={() => setActiveView('planner')}
               >
@@ -245,6 +233,14 @@ const Index: React.FC = () => {
               >
                 <ShoppingCart className="h-7 w-7 text-gray-600 group-hover:scale-110 transition-transform duration-300" />
                 <span className="font-medium text-gray-700 group-hover:text-gray-600 transition-colors">Inventory Status</span>
+              </Button>
+              <Button 
+                variant="outline" 
+                className="h-24 flex flex-col items-center justify-center space-y-3 bg-white/80 hover:bg-white border-gray-200 hover:border-rose-300 hover:shadow-lg transition-all duration-300 group"
+                onClick={() => navigate('/marker-requests')}
+              >
+                <Ruler className="h-7 w-7 text-rose-600 group-hover:scale-110 transition-transform duration-300" />
+                <span className="font-medium text-gray-700 group-hover:text-rose-600 transition-colors">Marker Requests</span>
               </Button>
             </div>
           </div>
@@ -300,7 +296,6 @@ const Index: React.FC = () => {
       {/* Main Content */}
       <div className="flex-1 overflow-auto">
         {activeView === 'dashboard' && renderDashboard()}
-        {activeView === 'scheduler' && <ProductionScheduler />}
         {activeView === 'planner' && <ProductionPlanner />}
       </div>
     </div>

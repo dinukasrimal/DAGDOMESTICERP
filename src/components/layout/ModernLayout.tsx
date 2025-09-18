@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Calendar, BarChart3, Package, FileText, Settings, Home, Users, Factory, ShoppingCart, Sparkles, ArrowLeft, ClipboardList, Truck, Minus } from 'lucide-react';
+import { BarChart3, Package, FileText, Settings, Home, Users, Factory, ShoppingCart, Sparkles, ArrowLeft, ClipboardList, Truck, Minus, Ruler } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 interface ModernLayoutProps {
@@ -23,13 +23,13 @@ export const ModernLayout: React.FC<ModernLayoutProps> = ({
 
   const sidebarItems = [
     { id: 'dashboard', label: 'Dashboard', icon: Home, path: '/', available: true, isSpecial: false },
-    { id: 'scheduler', label: 'Production Scheduler', icon: Calendar, path: '/', available: true, isSpecial: true, view: 'scheduler' },
     { id: 'planner', label: 'Production Planner', icon: ClipboardList, path: '/', available: true, isSpecial: true, view: 'planner' },
     { id: 'materials', label: 'Raw Materials', icon: Package, path: '/materials', available: true, isSpecial: false },
     { id: 'bom', label: 'Bill of Materials', icon: Factory, path: '/bom', available: true, isSpecial: false },
     { id: 'purchase-orders', label: 'Purchase Orders', icon: ShoppingCart, path: '/purchase-orders', available: true, isSpecial: false },
     { id: 'goods-received', label: 'Goods Received', icon: Truck, path: '/goods-received', available: true, isSpecial: false },
     { id: 'goods-issue', label: 'Goods Issue', icon: Minus, path: '/goods-issue', available: true, isSpecial: false },
+    { id: 'marker-requests', label: 'Marker Requests', icon: Ruler, path: '/marker-requests', available: true, isSpecial: false },
     { id: 'reports', label: 'Reports & Analytics', icon: BarChart3, path: '/reports', available: true, isSpecial: false },
     { id: 'customers', label: 'Customers', icon: Users, path: '/customers', available: false, isSpecial: false },
     { id: 'settings', label: 'Settings', icon: Settings, path: '/settings', available: false, isSpecial: false },

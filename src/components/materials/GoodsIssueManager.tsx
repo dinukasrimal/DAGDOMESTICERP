@@ -1899,22 +1899,32 @@ export const GoodsIssueManager: React.FC = () => {
                                                 size="sm"
                                                 className="h-8"
                                                 onClick={() => {
-                                                  const baseQty = (Number(alt.qty) || 0) * (Number(alt.factor) || 0);
+                                                  const altQty = Number(alt.qty) || 0;
+                                                  const altFactor = Number(alt.factor) || 0;
+                                                  const baseQty = altQty * altFactor;
                                                   if (!baseQty || baseQty <= 0) {
                                                     toast({ title: 'Invalid Quantity', description: 'Provide alt quantity and conversion factor.', variant: 'destructive' });
                                                     return;
                                                   }
                                                   const matId = String(req.material_id);
                                                   const altUnitLabel = alt.unit || 'alt';
-                                                  const note = `Issued via alt unit: ${alt.qty} ${altUnitLabel} (1 ${altUnitLabel} = ${alt.factor} ${baseUnitLabel}) => ${baseQty.toFixed(3)} ${baseUnitLabel}`;
+                                                  const altNote = `Issued via alt unit: ${altQty} ${altUnitLabel} (1 ${altUnitLabel} = ${altFactor} ${baseUnitLabel}) => ${baseQty.toFixed(3)} ${baseUnitLabel}`;
                                                   updateIssuingQuantity(req.material_id, baseQty);
                                                   setFormData(prev => {
-                                                    const exists = prev.lines.some(l => l.raw_material_id === matId);
-                                                    const lines = exists
-                                                      ? prev.lines.map(l => l.raw_material_id === matId ? { ...l, quantity_issued: baseQty, notes: note } : l)
-                                                      : [...prev.lines, { raw_material_id: matId, quantity_issued: baseQty, batch_number: '', notes: note }];
+                                                    const existingLine = prev.lines.find(l => l.raw_material_id === matId);
+                                                    // Preserve any previously stored requirement context (e.g., Total required) while refreshing the alt-unit snippet
+                                                    const existingNote = existingLine?.notes || `BOM-based requirement for ${req.material_name} • Total required: ${req.required_quantity} ${req.unit}`;
+                                                    const cleanedExisting = existingNote
+                                                      .replace(/\s*\|?\s*Issued via alt unit:.*$/i, '')
+                                                      .replace(/\s*\|?\s*Weight\s*\(?(?:kg)?\)?\s*[:=].*$/i, '')
+                                                      .trim();
+                                                    const combinedNote = [cleanedExisting, altNote].filter(Boolean).join(' | ');
+                                                    const lines = existingLine
+                                                      ? prev.lines.map(l => l.raw_material_id === matId ? { ...l, quantity_issued: baseQty, notes: combinedNote } : l)
+                                                      : [...prev.lines, { raw_material_id: matId, quantity_issued: baseQty, batch_number: '', notes: combinedNote }];
                                                     return { ...prev, lines };
                                                   });
+                                                  setAlt({ enabled: false });
                                                 }}
                                               >
                                                 Apply

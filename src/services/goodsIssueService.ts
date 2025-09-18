@@ -233,6 +233,21 @@ export class GoodsIssueService {
           const mat = matsMap.get(Number(mid));
           const wkg = Number((r as any).weight_kg || 0);
           const weightNote = !isNaN(wkg) && wkg > 0 ? `Weight: ${wkg} kg` : '';
+          let recoveredNote: string | undefined;
+          try {
+            const loc = (r as any).location || '';
+            const encodedMatch = loc.match(/LINE_NOTE:([^|]+)/i);
+            if (encodedMatch && encodedMatch[1]) {
+              recoveredNote = decodeURIComponent(encodedMatch[1]);
+            } else {
+              const rawMatch = loc.match(/LINE_NOTE_RAW:([^|]+)/i);
+              if (rawMatch && rawMatch[1]) recoveredNote = rawMatch[1];
+            }
+          } catch {}
+          let finalNote = recoveredNote || '';
+          if (weightNote) {
+            finalNote = finalNote ? `${finalNote} | ${weightNote}` : weightNote;
+          }
           return {
             id: `${id}-line-${idx}`,
             goods_issue_id: id,
@@ -240,7 +255,7 @@ export class GoodsIssueService {
             quantity_issued: qty,
             unit_cost: Number(r.unit_price || 0),
             batch_number: '',
-            notes: weightNote,
+            notes: finalNote,
             created_at: r.last_updated,
             raw_material: mat ? { id: String(mat.id), name: mat.name, code: mat.code, base_unit: mat.base_unit } : undefined,
           } as any;
@@ -327,6 +342,19 @@ export class GoodsIssueService {
         const parsed = parseKgAndFactor(line.notes);
         const weightKgVal = parsed.kg != null ? Math.max(0, parsed.kg) : null;
         const kgFactorVal = parsed.factor != null ? Math.max(0, parsed.factor) : null;
+        const baseLocationParts: string[] = ['Default Warehouse'];
+        if (categoryTotalsLine) baseLocationParts.push(categoryTotalsLine);
+        if (line.notes) {
+          try {
+            const encoded = encodeURIComponent(line.notes);
+            baseLocationParts.push(`LINE_NOTE:${encoded}`);
+          } catch {
+            // If encoding fails, fall back to raw note (best effort)
+            baseLocationParts.push(`LINE_NOTE_RAW:${line.notes}`);
+          }
+        }
+        const locationWithMetadata = baseLocationParts.join(' | ');
+
         const rowsBase = breakdown.map(slice => ({
           raw_material_id: Number(line.raw_material_id),
           quantity_on_hand: -Number(slice.qty),
@@ -334,8 +362,8 @@ export class GoodsIssueService {
           quantity_reserved: 0,
           unit_price: slice.unit_price,
           inventory_value: -Number(slice.qty) * Number(slice.unit_price || 0),
-          // Embed CATEGORY_TOTALS into location so fallback reconstruction can carry it
-          location: categoryTotalsLine ? `Default Warehouse | ${categoryTotalsLine}` : 'Default Warehouse',
+          // Embed metadata (category totals + line notes) into location so fallback reconstruction can recover requirements
+          location: locationWithMetadata,
           transaction_type: 'issue',
           transaction_ref: generatedNumber,
           last_updated: now,
