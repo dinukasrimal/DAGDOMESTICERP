@@ -20,3 +20,17 @@ export interface MarkerPurchaseOrder {
   pending_qty?: number;
   order_lines?: MarkerPurchaseOrderLine[];
 }
+
+export type FabricUsageOption = 'body' | 'gusset_1' | 'gusset_2';
+
+export interface MarkerFabricAssignment {
+  bom_id: string;
+  bom_name?: string | null;
+  fabric_usage: FabricUsageOption;
+  raw_material_id?: number | null;
+  raw_material_name?: string | null;
+  product_id?: number | null;
+  product_name?: string | null;
+  po_id?: string;
+  po_number?: string;
+}

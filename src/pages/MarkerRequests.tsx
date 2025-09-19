@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { useToast } from '@/hooks/use-toast';
 import { Ruler, Plus, Loader2, RefreshCw, Search } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
-import { MarkerPurchaseOrder, MarkerPurchaseOrderLine } from '@/types/marker';
+import { MarkerFabricAssignment, MarkerPurchaseOrder, MarkerPurchaseOrderLine } from '@/types/marker';
 
 const MarkerRequests: React.FC = () => {
   const { toast } = useToast();
@@ -124,6 +124,14 @@ const MarkerRequests: React.FC = () => {
       );
     });
   }, [markerRequests, searchTerm]);
+
+  const usedFabricAssignments = useMemo<MarkerFabricAssignment[]>(
+    () =>
+      markerRequests
+        .map(request => request.fabric_assignment)
+        .filter((assignment): assignment is MarkerFabricAssignment => Boolean(assignment)),
+    [markerRequests]
+  );
 
   const getBadgeVariantForType = (type: MarkerRequest['marker_type']) =>
     type === 'body' ? 'default' : 'secondary';
@@ -336,6 +344,7 @@ const MarkerRequests: React.FC = () => {
           <MarkerRequestForm
             key={formInstanceKey}
             purchaseOrders={purchaseOrders}
+            usedFabricAssignments={usedFabricAssignments}
             onRefreshPurchaseOrders={loadPurchaseOrders}
             onCreated={handleMarkerCreated}
             onClose={handleCloseDialog}

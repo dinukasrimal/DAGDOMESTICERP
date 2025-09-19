@@ -530,11 +530,11 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
             if (consumption.quantity > 0) {
               consumptions.push({
                 attribute_type: 'category',
-                attribute_value: variant.variant_key,
-                quantity: consumption.quantity,
-                unit: consumption.unit,
-                waste_percentage: consumption.waste_percentage
-              });
+            attribute_value: variant.product.name || variant.variant_key,
+            quantity: consumption.quantity,
+            unit: consumption.unit,
+            waste_percentage: consumption.waste_percentage
+          });
             }
           }
           
@@ -555,8 +555,8 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
           raw_material_id: rm.raw_material_id,
           consumption_type: 'general',
           consumptions: rm.variant_consumptions.map(vc => ({
-            attribute_type: (vc.size && vc.color ? 'general' : vc.size ? 'size' : vc.color ? 'color' : 'general'),
-            attribute_value: (vc.size && vc.color ? `${vc.size}-${vc.color}` : vc.size || vc.color || 'general'),
+            attribute_type: 'general',
+            attribute_value: vc.product_name || vc.variant_key,
             quantity: vc.quantity,
             unit: vc.unit,
             waste_percentage: vc.waste_percentage

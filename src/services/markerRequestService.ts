@@ -1,4 +1,5 @@
 import { supabase } from '@/integrations/supabase/client';
+import { MarkerFabricAssignment } from '@/types/marker';
 
 export interface MarkerRequestPayload {
   marker_number: string;
@@ -15,6 +16,7 @@ export interface MarkerRequestPayload {
   total_fabric_kg?: number | null;
   po_ids: string[];
   details?: Record<string, unknown> | null;
+  fabric_assignment?: MarkerFabricAssignment | null;
 }
 
 export interface MarkerRequest extends MarkerRequestPayload {
@@ -46,7 +48,14 @@ export class MarkerRequestService {
   }
 
   async createMarkerRequest(payload: MarkerRequestPayload): Promise<MarkerRequest> {
+    const mergedDetails = {
+      ...(payload.details ?? {}),
+      ...(payload.fabric_assignment ? { fabric_assignment: payload.fabric_assignment } : {}),
+    };
+    const detailsForInsert = Object.keys(mergedDetails).length ? mergedDetails : null;
+
     try {
+
       const { data, error } = await supabase
         .from('marker_requests')
         .insert({
@@ -63,7 +72,7 @@ export class MarkerRequestService {
           total_fabric_yards: payload.total_fabric_yards ?? null,
           total_fabric_kg: payload.total_fabric_kg ?? null,
           po_ids: payload.po_ids,
-          details: payload.details ?? null,
+          details: detailsForInsert,
         })
         .select('*')
         .single();
@@ -71,6 +80,12 @@ export class MarkerRequestService {
       if (error) {
         throw error;
       }
+
+      const details = (data as any)?.details ?? detailsForInsert;
+      const fabricAssignment =
+        (details?.fabric_assignment as MarkerFabricAssignment | undefined) ||
+        payload.fabric_assignment ||
+        null;
 
       return {
         ...(data as MarkerRequest),
@@ -87,13 +102,16 @@ export class MarkerRequestService {
         total_fabric_yards: payload.total_fabric_yards ?? null,
         total_fabric_kg: payload.total_fabric_kg ?? null,
         po_ids: payload.po_ids,
-        details: payload.details,
+        details,
+        fabric_assignment: fabricAssignment,
       };
     } catch (error: any) {
       const message = String(error?.message || '').toLowerCase();
 
       if (message.includes('relation') || message.includes('table') || message.includes('column')) {
         console.warn('marker_requests table missing; returning mock marker request.');
+        const fallbackDetails = detailsForInsert;
+
         return {
           id: `marker-${Date.now()}`,
           marker_number: payload.marker_number,
@@ -109,7 +127,8 @@ export class MarkerRequestService {
           total_fabric_yards: payload.total_fabric_yards ?? null,
           total_fabric_kg: payload.total_fabric_kg ?? null,
           po_ids: payload.po_ids,
-          details: payload.details,
+          details: fallbackDetails,
+          fabric_assignment: payload.fabric_assignment ?? null,
           created_at: new Date().toISOString(),
         };
       }
@@ -127,24 +146,42 @@ export class MarkerRequestService {
 
       if (error) throw error;
 
-      return (data || []).map((item: any) => ({
-        id: item.id,
-        marker_number: item.marker_number,
-        marker_type: item.marker_type,
-        width: Number(item.width) || 0,
-        layers: Number(item.layers) || 0,
-        efficiency: Number(item.efficiency) || 0,
-        pieces_per_marker: Number(item.pieces_per_marker) || 0,
-        marker_length_yards: Number(item.marker_length_yards) || 0,
-        marker_length_inches: Number(item.marker_length_inches) || 0,
-        measurement_type: (item.measurement_type as 'yard' | 'kg') || (item.details?.measurement_type as 'yard' | 'kg') || 'yard',
-        marker_gsm: item.marker_gsm != null ? Number(item.marker_gsm) : item.details?.marker_gsm ?? null,
-        total_fabric_yards: item.total_fabric_yards != null ? Number(item.total_fabric_yards) : item.details?.total_fabric_yards ?? null,
-        total_fabric_kg: item.total_fabric_kg != null ? Number(item.total_fabric_kg) : item.details?.total_fabric_kg ?? null,
-        po_ids: Array.isArray(item.po_ids) ? item.po_ids : [],
-        details: item.details ?? null,
-        created_at: item.created_at,
-      }));
+      return (data || []).map((item: any) => {
+        const details = item.details ?? null;
+        const fabricAssignment = details?.fabric_assignment as MarkerFabricAssignment | undefined;
+
+        return {
+          id: item.id,
+          marker_number: item.marker_number,
+          marker_type: item.marker_type,
+          width: Number(item.width) || 0,
+          layers: Number(item.layers) || 0,
+          efficiency: Number(item.efficiency) || 0,
+          pieces_per_marker: Number(item.pieces_per_marker) || 0,
+          marker_length_yards: Number(item.marker_length_yards) || 0,
+          marker_length_inches: Number(item.marker_length_inches) || 0,
+          measurement_type:
+            (item.measurement_type as 'yard' | 'kg') ||
+            (item.details?.measurement_type as 'yard' | 'kg') ||
+            'yard',
+          marker_gsm:
+            item.marker_gsm != null
+              ? Number(item.marker_gsm)
+              : item.details?.marker_gsm ?? null,
+          total_fabric_yards:
+            item.total_fabric_yards != null
+              ? Number(item.total_fabric_yards)
+              : item.details?.total_fabric_yards ?? null,
+          total_fabric_kg:
+            item.total_fabric_kg != null
+              ? Number(item.total_fabric_kg)
+              : item.details?.total_fabric_kg ?? null,
+          po_ids: Array.isArray(item.po_ids) ? item.po_ids : [],
+          details,
+          fabric_assignment: fabricAssignment ?? null,
+          created_at: item.created_at,
+        };
+      });
     } catch (error: any) {
       const message = String(error?.message || '').toLowerCase();
       if (message.includes('relation') || message.includes('table')) {
