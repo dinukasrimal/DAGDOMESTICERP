@@ -57,6 +57,13 @@ const FABRIC_USAGE_LABELS: Record<MarkerFabricUsage, string> = {
   gusset_1: 'Gusset 1',
 };
 
+type FabricRequirementSource = 'variant_notes' | 'bom_default';
+
+const REQUIREMENT_SOURCE_LABELS: Record<FabricRequirementSource, string> = {
+  variant_notes: 'Variant-specific consumption',
+  bom_default: 'Default BOM consumption',
+};
+
 interface FabricUsageOptionItem {
   key: string;
   usage: MarkerFabricUsage;
@@ -68,6 +75,18 @@ interface FabricUsageOptionItem {
   productName?: string | null;
   poId: string;
   poNumber: string;
+  pendingPieces?: number | null;
+  matchedVariantKey?: string | null;
+  consumptionPerPiece?: number | null;
+  consumptionUnit?: string | null;
+  wastePercentage?: number | null;
+  totalRequirement?: number | null;
+  baseRequirement?: number | null;
+  requirementSource?: FabricRequirementSource | null;
+  bomLineQuantity?: number | null;
+  bomLineUnit?: string | null;
+  bomLineWaste?: number | null;
+  bomLineNotes?: string | null;
 }
 
 interface MarkerRequestFormProps {
@@ -102,10 +121,191 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
   const [measurementType, setMeasurementType] = useState<'yard' | 'kg'>('yard');
   const [markerGsm, setMarkerGsm] = useState<string>('');
   const [fabricOptionsLoading, setFabricOptionsLoading] = useState(false);
-  const [fabricOptions, setFabricOptions] = useState<FabricUsageOptionItem[]>([]);
-  const [selectedFabricOption, setSelectedFabricOption] = useState<FabricUsageOptionItem | null>(null);
+  const [fabricOptionsByPo, setFabricOptionsByPo] = useState<Record<string, FabricUsageOptionItem[]>>({});
+  const [selectedFabricAssignments, setSelectedFabricAssignments] = useState<Record<string, FabricUsageOptionItem | null>>({});
   const [fabricAssignmentError, setFabricAssignmentError] = useState<string | null>(null);
-  const selectedFabricOptionRef = useRef<FabricUsageOptionItem | null>(null);
+  const previousFabricAssignmentsRef = useRef<Record<string, FabricUsageOptionItem | null>>({});
+
+  const formatQuantity = useCallback((value: number | null | undefined, decimals = 3) => {
+    if (value == null || Number.isNaN(value)) return '-';
+    return value.toLocaleString(undefined, {
+      maximumFractionDigits: decimals,
+      minimumFractionDigits: 0,
+    });
+  }, []);
+
+  const formatPercentage = useCallback((value: number | null | undefined) => {
+    if (value == null || Number.isNaN(value)) return '-';
+    return `${value.toFixed(1)}%`;
+  }, []);
+
+  const handleFabricAssignmentChange = useCallback(
+    (poId: string, optionKey: string | null) => {
+      setSelectedFabricAssignments(prev => {
+        const options = fabricOptionsByPo[poId] ?? [];
+        const updatedAssignment = optionKey ? options.find(option => option.key === optionKey) || null : null;
+        const next = { ...prev, [poId]: updatedAssignment };
+        previousFabricAssignmentsRef.current = next;
+        return next;
+      });
+    },
+    [fabricOptionsByPo]
+  );
+
+  const computeFabricDetail = useCallback(
+    (option: FabricUsageOptionItem) => {
+      const pendingPieces = option.pendingPieces ?? null;
+      let consumptionPerPiece = option.consumptionPerPiece ?? null;
+      const consumptionUnit =
+        option.consumptionUnit || option.bomLineUnit || (measurementType === 'kg' ? 'kg' : 'yard');
+      const wastePercentage = option.wastePercentage ?? option.bomLineWaste ?? null;
+      const baseRequirement = (() => {
+        if (option.baseRequirement != null) return option.baseRequirement;
+        if (pendingPieces != null) {
+          const sourceConsumption = consumptionPerPiece ?? option.bomLineQuantity ?? null;
+          if (sourceConsumption != null) {
+            return sourceConsumption * pendingPieces;
+          }
+        }
+        return null;
+      })();
+
+      if (baseRequirement != null && pendingPieces != null && pendingPieces > 0) {
+        consumptionPerPiece = baseRequirement / pendingPieces;
+      } else if (consumptionPerPiece == null) {
+        consumptionPerPiece = option.bomLineQuantity ?? null;
+      }
+
+      const totalRequirement =
+        option.totalRequirement ??
+        (baseRequirement != null
+          ? baseRequirement * (wastePercentage != null ? 1 + wastePercentage / 100 : 1)
+          : null);
+
+      const requirementSource =
+        option.requirementSource ??
+        (option.matchedVariantKey
+          ? 'variant_notes'
+          : option.bomLineQuantity != null
+          ? 'bom_default'
+          : null);
+
+      return {
+        pendingPieces,
+        consumptionPerPiece,
+        consumptionUnit,
+        wastePercentage,
+        baseRequirement,
+        totalRequirement,
+        requirementSource,
+        variantLabel: option.matchedVariantKey,
+        bomNotes: option.bomLineNotes,
+      } as const;
+    },
+    [measurementType]
+  );
+
+  const fabricRequirementSummary = useMemo(() => {
+    const entries = selectedPoIds
+      .map(poId => {
+        const option = selectedFabricAssignments[String(poId)];
+        if (!option) return null;
+        const detail = computeFabricDetail(option);
+        return {
+          poId: String(poId),
+          poNumber: option.poNumber,
+          bomName: option.bomName,
+          usage: option.usage,
+          option,
+          detail,
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+
+    if (!entries.length) {
+      return {
+        entries: [] as typeof entries,
+        entryMap: new Map<string, never>(),
+        aggregate: null as {
+          pendingPieces: number;
+          baseRequirement: number | null;
+          totalRequirement: number | null;
+        } | null,
+        usageSet: new Set<MarkerFabricUsage>(),
+        missingAssignments: selectedPoIds.map(String),
+      };
+    }
+
+    const usageSet = new Set<MarkerFabricUsage>();
+    let pendingSum = 0;
+    let baseSum: number | null = 0;
+    let totalSum: number | null = 0;
+
+    entries.forEach(entry => {
+      usageSet.add(entry.usage);
+      if (entry.detail.pendingPieces != null && !Number.isNaN(entry.detail.pendingPieces)) {
+        pendingSum += entry.detail.pendingPieces;
+      }
+      if (entry.detail.baseRequirement != null && !Number.isNaN(entry.detail.baseRequirement)) {
+        baseSum = (baseSum ?? 0) + entry.detail.baseRequirement;
+      }
+      if (entry.detail.totalRequirement != null && !Number.isNaN(entry.detail.totalRequirement)) {
+        totalSum = (totalSum ?? 0) + entry.detail.totalRequirement;
+      }
+    });
+
+    if (baseSum === 0) baseSum = entries.some(entry => entry.detail.baseRequirement != null) ? 0 : null;
+    if (totalSum === 0)
+      totalSum = entries.some(entry => entry.detail.totalRequirement != null) ? 0 : null;
+
+    const entryMap = new Map<string, (typeof entries)[number]>();
+    entries.forEach(entry => entryMap.set(entry.poId, entry));
+
+    const missingAssignments = selectedPoIds
+      .map(String)
+      .filter(poId => !selectedFabricAssignments[poId]);
+
+    return {
+      entries,
+      entryMap,
+      aggregate: {
+        pendingPieces: pendingSum,
+        baseRequirement: baseSum,
+        totalRequirement: totalSum,
+      },
+      usageSet,
+      missingAssignments,
+    };
+  }, [selectedPoIds, selectedFabricAssignments, computeFabricDetail]);
+
+  const assignmentValidationMessage = useMemo(() => {
+    if (!selectedPoIds.length) return null;
+    if (fabricAssignmentError) return null;
+    if (fabricRequirementSummary.missingAssignments.length) {
+      return 'Select a fabric usage assignment for each purchase order.';
+    }
+    if (fabricRequirementSummary.usageSet.size > 1) {
+      return 'All selected fabric usages must match; choose all Body or all Gusset fabrics for this marker.';
+    }
+    return null;
+  }, [fabricAssignmentError, fabricRequirementSummary.missingAssignments.length, fabricRequirementSummary.usageSet.size, selectedPoIds.length]);
+
+  const aggregateDetail = fabricRequirementSummary.aggregate;
+  const aggregateConsumptionPerPiece =
+    aggregateDetail && aggregateDetail.pendingPieces > 0 && aggregateDetail.baseRequirement != null
+      ? aggregateDetail.baseRequirement / aggregateDetail.pendingPieces
+      : null;
+  const aggregateConsumptionUnit =
+    fabricRequirementSummary.entries[0]?.detail.consumptionUnit || (measurementType === 'kg' ? 'kg' : 'yard');
+  const aggregateRequirementSource = (() => {
+    if (!fabricRequirementSummary.entries.length) return null;
+    const [first] = fabricRequirementSummary.entries;
+    const allMatch = fabricRequirementSummary.entries.every(
+      entry => entry.detail.requirementSource === first.detail.requirementSource
+    );
+    if (!allMatch) return null;
+    return first.detail.requirementSource ?? 'bom_default';
+  })();
 
   const generateMarkerNumber = async () => {
     try {
@@ -142,23 +342,25 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
   }, [usedFabricAssignments]);
 
   useEffect(() => {
-    selectedFabricOptionRef.current = selectedFabricOption;
-  }, [selectedFabricOption]);
+    previousFabricAssignmentsRef.current = selectedFabricAssignments;
+  }, [selectedFabricAssignments]);
 
   const isSupportedUsage = (usage: FabricUsageOption | null): usage is MarkerFabricUsage =>
     usage === 'body' || usage === 'gusset_1';
 
   useEffect(() => {
-    if (selectedFabricOption) {
-      setMarkerType(selectedFabricOption.usage === 'body' ? 'body' : 'gusset');
+    if (fabricRequirementSummary.usageSet.size === 1) {
+      const usage = Array.from(fabricRequirementSummary.usageSet)[0];
+      setMarkerType(usage === 'body' ? 'body' : 'gusset');
     }
-  }, [selectedFabricOption]);
+  }, [fabricRequirementSummary.usageSet]);
 
   const loadFabricUsageOptions = useCallback(async () => {
     if (!selectedPurchaseOrders.length) {
       setFabricOptionsLoading(false);
-      setFabricOptions([]);
-      setSelectedFabricOption(null);
+      setFabricOptionsByPo({});
+      setSelectedFabricAssignments({});
+      previousFabricAssignmentsRef.current = {};
       setFabricAssignmentError(null);
       return;
     }
@@ -173,6 +375,7 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
       productCodeUpper?: string | null;
       fullProductName: string;
       fullProductNameUpper: string;
+      pendingQuantity: number;
     };
 
     const contexts: MaterialContext[] = [];
@@ -239,6 +442,14 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
         const productNameUpper = normalizeName(primaryName);
         const productCodeUpper = bracketCode ? normalizeName(bracketCode) : '';
         const fullProductNameUpper = normalizeName(rawName);
+        const pendingQuantity = (() => {
+          if (typeof line.pending_qty === 'number' && !Number.isNaN(line.pending_qty)) {
+            return Math.max(0, Number(line.pending_qty));
+          }
+          const qty = Number(line.product_qty || 0);
+          const received = Number(line.qty_received || line.qty_delivered || line.qty_done || 0);
+          return Math.max(0, qty - received);
+        })();
 
         const context: MaterialContext = {
           poId,
@@ -250,6 +461,7 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
           productCodeUpper: productCodeUpper || null,
           fullProductName: rawName,
           fullProductNameUpper,
+          pendingQuantity,
         };
 
         registerContext(context);
@@ -266,8 +478,9 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
 
     if (!contexts.length) {
       setFabricOptionsLoading(false);
-      setFabricOptions([]);
-      setSelectedFabricOption(null);
+      setFabricOptionsByPo({});
+      setSelectedFabricAssignments({});
+      previousFabricAssignmentsRef.current = {};
       setFabricAssignmentError('No products were found in the selected purchase orders.');
       return;
     }
@@ -374,7 +587,10 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
         bom_lines(
           id,
           fabric_usage,
-          notes
+          notes,
+          quantity,
+          unit,
+          waste_percentage
         )
       `;
 
@@ -459,6 +675,9 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
                 id,
                 fabric_usage,
                 notes,
+                quantity,
+                unit,
+                waste_percentage,
                 bom_header:bom_headers!inner (
                   id,
                   name,
@@ -501,8 +720,24 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
 
       const optionMap = new Map<string, FabricUsageOptionItem>();
 
-      const extractNamesFromNotes = (notes?: string | null) => {
-        if (!notes) return [] as string[];
+      const parseNumber = (value?: string | null): number => {
+        if (!value) return NaN;
+        const cleaned = value.replace(/,/g, '').trim();
+        if (!cleaned) return NaN;
+        const parsed = Number(cleaned);
+        return Number.isFinite(parsed) ? parsed : NaN;
+      };
+
+      const normalizeNumeric = (value: unknown): number | null => {
+        if (value === null || value === undefined || value === '') return null;
+        const numeric = typeof value === 'number' ? value : Number(value);
+        return Number.isFinite(numeric) ? numeric : null;
+      };
+
+      const parseVariantConsumptions = (
+        notes?: string | null
+      ): Array<{ key: string; label: string; amount: number; unit: string | null; waste: number | null }> => {
+        if (!notes) return [];
         const marker = 'Variant consumptions:';
         const idx = notes.indexOf(marker);
         if (idx === -1) return [];
@@ -511,10 +746,35 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
         return section
           .split(';')
           .map(part => part.trim())
-          .map(entry => entry.split(':')[0].trim())
           .filter(Boolean)
-          .map(name => normalizeName(name));
+          .map(entry => {
+            const match = entry.match(/^(.*?):\s*([\d.,]+)\s*([a-zA-Z]+)?(?:\s*\(([-\d.,]+)%\s*waste\))?/);
+            if (!match) {
+              const [rawLabel] = entry.split(':');
+              const label = (rawLabel || entry).trim();
+              return {
+                key: normalizeName(label),
+                label,
+                amount: NaN,
+                unit: null,
+                waste: null,
+              };
+            }
+            const [, labelRaw, amountRaw, unitRaw, wasteRaw] = match;
+            const amount = parseNumber(amountRaw);
+            const waste = parseNumber(wasteRaw);
+            return {
+              key: normalizeName(labelRaw || ''),
+              label: (labelRaw || '').trim(),
+              amount: Number.isFinite(amount) ? amount : NaN,
+              unit: unitRaw ? unitRaw.trim().toLowerCase() : null,
+              waste: Number.isFinite(waste) ? waste : null,
+            };
+          });
       };
+
+      const extractNamesFromNotes = (notes?: string | null) =>
+        parseVariantConsumptions(notes).map(item => item.key);
 
       (bomData || []).forEach((bom: any) => {
         if (!bom?.id) return;
@@ -525,6 +785,11 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
           const usage = line?.fabric_usage as FabricUsageOption | null;
           if (!isSupportedUsage(usage)) return;
           if (usedFabricSet.has(`${bom.id}__${usage}`)) return;
+
+          const variantConsumptions = parseVariantConsumptions(line?.notes);
+          const variantMap = new Map(
+            variantConsumptions.map(item => [item.key, item])
+          );
 
           let contextsForLine = bomContexts;
           if (!contextsForLine.length) {
@@ -537,9 +802,129 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
 
           if (!contextsForLine.length) return;
 
+          const aggregatedByVariant = new Map<
+            string,
+            {
+              contexts: MaterialContext[];
+              variant: ReturnType<typeof parseVariantConsumptions>[number] | null;
+              pendingTotal: number;
+            }
+          >();
+
           contextsForLine.forEach(ctx => {
-            const key = `${bom.id}__${usage}__${ctx.poId}`;
-            if (optionMap.has(key)) return;
+            const candidateKeys = [
+              ctx.productNameUpper,
+              ctx.fullProductNameUpper,
+              ctx.productCodeUpper,
+            ].filter(Boolean) as string[];
+
+            let variantKey: string | null = null;
+            let matchedVariant: ReturnType<typeof parseVariantConsumptions>[number] | null = null;
+            for (const candidate of candidateKeys) {
+              if (!candidate) continue;
+              const variant = variantMap.get(candidate);
+              if (variant) {
+                matchedVariant = variant;
+                variantKey = candidate;
+                break;
+              }
+            }
+
+            const groupingKey = (variantKey || candidateKeys[0] || ctx.productNameUpper || 'default') + `__${ctx.poId}`;
+            const bucket = aggregatedByVariant.get(groupingKey) ?? {
+              contexts: [],
+              variant: matchedVariant,
+              pendingTotal: 0,
+            };
+            bucket.contexts.push(ctx);
+            if (Number.isFinite(ctx.pendingQuantity)) {
+              bucket.pendingTotal += Number(ctx.pendingQuantity);
+            }
+            if (!bucket.variant && matchedVariant) {
+              bucket.variant = matchedVariant;
+            }
+            aggregatedByVariant.set(groupingKey, bucket);
+          });
+
+          aggregatedByVariant.forEach((bucket, groupingKey) => {
+            const [, poId] = groupingKey.split('__');
+            const ctxSample = bucket.contexts[0];
+            if (!ctxSample) return;
+
+            const key = `${bom.id}__${usage}__${poId}`;
+            const matchedVariant = bucket.variant;
+            const bomLineQuantity = normalizeNumeric(line?.quantity);
+            const bomLineWaste = normalizeNumeric(line?.waste_percentage);
+            const bomLineUnit = typeof line?.unit === 'string' ? line.unit : null;
+            const baseConsumption = matchedVariant
+              ? matchedVariant.amount
+              : bomLineQuantity != null
+                ? bomLineQuantity
+                : NaN;
+            const pendingPieces = Number.isFinite(bucket.pendingTotal) ? bucket.pendingTotal : null;
+            const wastePercentage = matchedVariant?.waste ?? (bomLineWaste != null ? bomLineWaste : null);
+            const baseRequirementContribution =
+              pendingPieces != null && Number.isFinite(baseConsumption)
+                ? baseConsumption * pendingPieces
+                : null;
+            const totalRequirementContribution =
+              baseRequirementContribution != null
+                ? baseRequirementContribution * (wastePercentage != null ? 1 + wastePercentage / 100 : 1)
+                : null;
+
+            if (optionMap.has(key)) {
+              const existing = optionMap.get(key)!;
+              const existingBaseValue = existing.baseRequirement ?? null;
+              const existingTotalValue = existing.totalRequirement ?? null;
+              const combinedPending = (existing.pendingPieces ?? 0) + (pendingPieces ?? 0);
+              const combinedBaseValue =
+                (existingBaseValue ?? 0) + (baseRequirementContribution ?? 0);
+              const combinedTotalValue =
+                (existingTotalValue ?? 0) + (totalRequirementContribution ?? 0);
+              const hasBaseValue =
+                (existingBaseValue != null && !Number.isNaN(existingBaseValue)) ||
+                (baseRequirementContribution != null && !Number.isNaN(baseRequirementContribution));
+              const hasTotalValue =
+                (existingTotalValue != null && !Number.isNaN(existingTotalValue)) ||
+                (totalRequirementContribution != null && !Number.isNaN(totalRequirementContribution));
+
+              const combinedWaste =
+                existing.wastePercentage != null && wastePercentage != null && existing.wastePercentage !== wastePercentage
+                  ? null
+                  : existing.wastePercentage ?? wastePercentage ?? null;
+
+              const combinedVariantLabel = (() => {
+                if (!existing.matchedVariantKey) return matchedVariant?.label || null;
+                if (!matchedVariant?.label || existing.matchedVariantKey === matchedVariant.label) {
+                  return existing.matchedVariantKey;
+                }
+                if (existing.matchedVariantKey === 'Multiple variants') return 'Multiple variants';
+                return 'Multiple variants';
+              })();
+
+              optionMap.set(key, {
+                ...existing,
+                pendingPieces: combinedPending,
+                matchedVariantKey: combinedVariantLabel,
+                consumptionPerPiece:
+                  combinedPending > 0 && hasBaseValue
+                    ? combinedBaseValue / combinedPending
+                    : existing.consumptionPerPiece,
+                wastePercentage: combinedWaste,
+                baseRequirement: hasBaseValue ? combinedBaseValue : null,
+                totalRequirement: hasTotalValue ? combinedTotalValue : null,
+                requirementSource:
+                  matchedVariant || existing.requirementSource === 'variant_notes'
+                    ? 'variant_notes'
+                    : existing.requirementSource ?? (bomLineQuantity != null ? 'bom_default' : null),
+                consumptionUnit:
+                  existing.consumptionUnit || matchedVariant?.unit || bomLineUnit,
+                bomLineNotes:
+                  existing.bomLineNotes || (typeof line?.notes === 'string' ? line.notes : null),
+              });
+              return;
+            }
+
             optionMap.set(key, {
               key,
               usage,
@@ -547,40 +932,81 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
               bomName: bom.name || 'Unnamed BOM',
               rawMaterialId: undefined,
               rawMaterialName: undefined,
-              productId: ctx.productId,
-              productName: ctx.productName,
-              poId: ctx.poId,
-              poNumber: ctx.poNumber,
+              productId: ctxSample.productId,
+              productName: ctxSample.productName,
+              poId: ctxSample.poId,
+              poNumber: ctxSample.poNumber,
+              pendingPieces,
+              matchedVariantKey: matchedVariant?.label || null,
+              consumptionPerPiece:
+                pendingPieces != null && Number.isFinite(baseConsumption)
+                  ? baseConsumption
+                  : null,
+              consumptionUnit: matchedVariant?.unit || bomLineUnit,
+              wastePercentage: wastePercentage != null ? wastePercentage : null,
+              totalRequirement:
+                totalRequirementContribution != null ? Number(totalRequirementContribution) : null,
+              baseRequirement:
+                baseRequirementContribution != null ? Number(baseRequirementContribution) : null,
+              requirementSource: matchedVariant ? 'variant_notes' : bomLineQuantity != null ? 'bom_default' : null,
+              bomLineQuantity: bomLineQuantity != null ? bomLineQuantity : null,
+              bomLineUnit,
+              bomLineWaste: bomLineWaste != null ? bomLineWaste : null,
+              bomLineNotes: typeof line?.notes === 'string' ? line.notes : null,
             });
           });
         });
       });
 
-      const optionList = Array.from(optionMap.values()).sort((a, b) => {
-        const nameCompare = a.bomName.localeCompare(b.bomName);
-        if (nameCompare !== 0) return nameCompare;
-        return FABRIC_USAGE_LABELS[a.usage].localeCompare(FABRIC_USAGE_LABELS[b.usage]);
+      const optionsByPo: Record<string, FabricUsageOptionItem[]> = {};
+      optionMap.forEach(option => {
+        const list = optionsByPo[option.poId] ?? [];
+        list.push(option);
+        optionsByPo[option.poId] = list;
       });
 
-      setFabricOptions(optionList);
-      if (!optionList.length) {
-        setSelectedFabricOption(null);
+      selectedPurchaseOrders.forEach(po => {
+        const poId = String(po.id);
+        if (!optionsByPo[poId]) {
+          optionsByPo[poId] = [];
+        }
+      });
+
+      Object.values(optionsByPo).forEach(list =>
+        list.sort((a, b) => {
+          const nameCompare = a.bomName.localeCompare(b.bomName);
+          if (nameCompare !== 0) return nameCompare;
+          return FABRIC_USAGE_LABELS[a.usage].localeCompare(FABRIC_USAGE_LABELS[b.usage]);
+        })
+      );
+
+      const newAssignments: Record<string, FabricUsageOptionItem | null> = {};
+      const prevAssignments = previousFabricAssignmentsRef.current;
+
+      selectedPurchaseOrders.forEach(po => {
+        const options = optionsByPo[String(po.id)] ?? [];
+        const previous = prevAssignments[String(po.id)];
+        const stillValid = previous && options.some(option => option.key === previous.key);
+        newAssignments[String(po.id)] = stillValid ? previous : options[0] ?? null;
+      });
+
+      setFabricOptionsByPo(optionsByPo);
+      setSelectedFabricAssignments(newAssignments);
+      previousFabricAssignmentsRef.current = newAssignments;
+
+      const hasAnyOptions = Object.values(optionsByPo).some(list => list.length > 0);
+      if (!hasAnyOptions) {
         setFabricAssignmentError(
           'No matching BOM fabric usage options were found for the selected purchase orders.'
         );
       } else {
-        const previousSelection = selectedFabricOptionRef.current;
-        if (previousSelection) {
-          const stillValid = optionList.find(option => option.key === previousSelection.key);
-          setSelectedFabricOption(stillValid || optionList[0] || null);
-        } else {
-          setSelectedFabricOption(optionList[0]);
-        }
+        setFabricAssignmentError(null);
       }
     } catch (error: any) {
       console.error('Failed to load fabric usage options', error);
-      setFabricOptions([]);
-      setSelectedFabricOption(null);
+      setFabricOptionsByPo({});
+      setSelectedFabricAssignments({});
+      previousFabricAssignmentsRef.current = {};
       setFabricAssignmentError(error?.message || 'Failed to load fabric usage options.');
     } finally {
       setFabricOptionsLoading(false);
@@ -670,6 +1096,23 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
     return Number((markerLengthYardsTotal * layersNumber).toFixed(3));
   }, [measurementType, markerLengthYardsTotal, layersNumber]);
 
+  const markerRequestedQuantity = useMemo(() => {
+    if (!layersNumber || layersNumber <= 0) return null;
+
+    if (measurementType === 'yard') {
+      if (!markerLengthYardsTotal) return null;
+      return markerLengthYardsTotal * layersNumber;
+    }
+
+    if (measurementType === 'kg') {
+      if (!markerGsmValue || !widthMeters || !markerLengthMeters) return null;
+      const areaSqMeters = widthMeters * markerLengthMeters * layersNumber;
+      return (areaSqMeters * markerGsmValue) / 1000;
+    }
+
+    return null;
+  }, [layersNumber, measurementType, markerLengthYardsTotal, markerGsmValue, widthMeters, markerLengthMeters]);
+
   const handleTogglePo = (id: string) => {
     setSelectedPoIds(prev =>
       prev.includes(id) ? prev.filter(poId => poId !== id) : [...prev, id]
@@ -686,8 +1129,9 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
     setMarkerLengthInches('');
     setMarkerGsm('');
     setMeasurementType('yard');
-    setFabricOptions([]);
-    setSelectedFabricOption(null);
+    setFabricOptionsByPo({});
+    setSelectedFabricAssignments({});
+    previousFabricAssignmentsRef.current = {};
     setFabricAssignmentError(null);
     await generateMarkerNumber();
   };
@@ -725,10 +1169,28 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
       return;
     }
 
-    if (!fabricAssignmentError && fabricOptions.length > 0 && !selectedFabricOption) {
+    if (fabricAssignmentError) {
       toast({
-        title: 'Select fabric usage',
-        description: 'Choose which BOM fabric usage this marker request will cover.',
+        title: 'Fabric usage unavailable',
+        description: fabricAssignmentError,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (assignmentValidationMessage) {
+      toast({
+        title: 'Fabric assignment required',
+        description: assignmentValidationMessage,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!fabricRequirementSummary.entries.length) {
+      toast({
+        title: 'Fabric usage unavailable',
+        description: 'No matching BOM fabric usage options were found for the selected purchase orders.',
         variant: 'destructive',
       });
       return;
@@ -736,25 +1198,34 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
 
     setIsSubmitting(true);
     try {
-      const fabricAssignment = selectedFabricOption
-        ? {
-            bom_id: selectedFabricOption.bomId,
-            bom_name: selectedFabricOption.bomName,
-            fabric_usage: selectedFabricOption.usage,
-            raw_material_id: selectedFabricOption.rawMaterialId,
-            raw_material_name: selectedFabricOption.rawMaterialName ?? null,
-            product_id: selectedFabricOption.productId,
-            product_name: selectedFabricOption.productName,
-            po_id: selectedFabricOption.poId,
-            po_number: selectedFabricOption.poNumber,
-          }
-        : null;
+      const fabricAssignmentsPayload: MarkerFabricAssignment[] = fabricRequirementSummary.entries.map(entry => ({
+        bom_id: entry.option.bomId,
+        bom_name: entry.option.bomName,
+        fabric_usage: entry.option.usage,
+        raw_material_id: entry.option.rawMaterialId,
+        raw_material_name: entry.option.rawMaterialName ?? null,
+        product_id: entry.option.productId,
+        product_name: entry.option.productName,
+        po_id: entry.option.poId,
+        po_number: entry.option.poNumber,
+      }));
+
+      const fabricAssignment = fabricAssignmentsPayload[0] ?? null;
+
+      const resolvedMarkerType = fabricRequirementSummary.usageSet.size === 1
+        ? Array.from(fabricRequirementSummary.usageSet)[0] === 'body'
+          ? 'body'
+          : 'gusset'
+        : markerType;
+
+      const aggregateRequirement = fabricRequirementSummary.aggregate;
+      const aggregateUnit =
+        fabricRequirementSummary.entries[0]?.detail.consumptionUnit ||
+        (measurementType === 'kg' ? 'kg' : 'yard');
 
       const payload = {
         marker_number: markerNumber,
-        marker_type: fabricAssignment
-          ? (fabricAssignment.fabric_usage === 'body' ? 'body' : 'gusset')
-          : markerType,
+        marker_type: resolvedMarkerType,
         width: Number(width) || 0,
         layers: layersNumber,
         efficiency: Number(efficiency) || 0,
@@ -767,6 +1238,7 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
         total_fabric_kg: measurementType === 'kg' ? totalFabricKg : null,
         po_ids: selectedPoIds,
         fabric_assignment: fabricAssignment,
+        fabric_assignments: fabricAssignmentsPayload,
         details: {
           total_pending_pieces: totalPendingPieces,
           aggregated_lines: aggregatedLines,
@@ -778,6 +1250,15 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
           total_fabric_yards: measurementType === 'yard' ? totalFabricYards : undefined,
           total_fabric_kg: measurementType === 'kg' ? totalFabricKg : undefined,
           fabric_assignment: fabricAssignment || undefined,
+          fabric_assignments: fabricAssignmentsPayload,
+          fabric_requirement_summary: aggregateRequirement
+            ? {
+                pending_pieces: aggregateRequirement.pendingPieces,
+                net_requirement: aggregateRequirement.baseRequirement,
+                total_requirement: aggregateRequirement.totalRequirement,
+                unit: aggregateUnit,
+              }
+            : undefined,
         },
       };
 
@@ -805,8 +1286,9 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
     .map(id => purchaseOrders.find(po => po.id === id)?.po_number)
     .filter(Boolean) as string[];
 
-  const lockedMarkerType = selectedFabricOption
-    ? selectedFabricOption.usage === 'body'
+  const selectedUsageArray = Array.from(fabricRequirementSummary.usageSet);
+  const lockedMarkerType = selectedUsageArray.length === 1
+    ? selectedUsageArray[0] === 'body'
       ? 'body'
       : 'gusset'
     : null;
@@ -929,80 +1411,167 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
                 </div>
               )}
 
-              {(fabricOptionsLoading || fabricOptions.length > 0 || fabricAssignmentError) && (
-                <div className="space-y-3 rounded-lg border border-orange-200 bg-orange-50/40 p-4">
+              {(fabricOptionsLoading || selectedPurchaseOrders.length > 0 || fabricAssignmentError) && (
+                <div className="space-y-4 rounded-lg border border-orange-200 bg-orange-50/40 p-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <Label className="text-sm font-semibold text-orange-900">Fabric Usage Assignment</Label>
+                      <Label className="text-sm font-semibold text-orange-900">Fabric Usage Assignments</Label>
                       <p className="text-xs text-orange-700">
-                        Select which BOM fabric this marker request will consume.
+                        Choose the BOM fabric usage for each selected purchase order.
                       </p>
                     </div>
                     {fabricOptionsLoading && <Loader2 className="h-4 w-4 animate-spin text-orange-600" />}
                   </div>
 
-                  {fabricAssignmentError ? (
+                  {fabricAssignmentError && (
                     <Alert className="bg-white">
                       <AlertTriangle className="h-4 w-4" />
                       <AlertDescription className="text-sm text-orange-900">
                         {fabricAssignmentError}
                       </AlertDescription>
                     </Alert>
-                  ) : (
-                    <Select
-                      value={selectedFabricOption?.key}
-                      onValueChange={value => {
-                        const option = fabricOptions.find(opt => opt.key === value) || null;
-                        setSelectedFabricOption(option);
-                      }}
-                      disabled={fabricOptionsLoading || !fabricOptions.length}
-                    >
-                      <SelectTrigger className="bg-white">
-                        <SelectValue placeholder="Select fabric usage" />
-                      </SelectTrigger>
-                      <SelectContent className="max-h-64">
-                        {fabricOptions.map(option => (
-                          <SelectItem key={option.key} value={option.key}>
-                            <div className="flex flex-col">
-                              <span className="font-medium text-sm">
-                                {FABRIC_USAGE_LABELS[option.usage]} • {option.bomName}
-                              </span>
-                              <span className="text-xs text-muted-foreground">
-                                {option.productName || 'Product'} • PO {option.poNumber}
-                              </span>
-                              {option.rawMaterialName && (
-                                <span className="text-xs text-muted-foreground">
-                                  Fabric: {option.rawMaterialName}
-                                </span>
-                              )}
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
                   )}
 
-                  {selectedFabricOption && !fabricAssignmentError && (
-                    <div className="flex flex-wrap gap-2 text-xs text-orange-900">
-                      <Badge variant="outline" className="border-orange-300 text-orange-900">
-                        {FABRIC_USAGE_LABELS[selectedFabricOption.usage]}
-                      </Badge>
-                      <Badge variant="outline" className="border-orange-300 text-orange-900">
-                        {selectedFabricOption.bomName}
-                      </Badge>
-                      {selectedFabricOption.productName && (
-                        <Badge variant="outline" className="border-orange-300 text-orange-900">
-                          {selectedFabricOption.productName}
-                        </Badge>
-                      )}
-                      {selectedFabricOption.rawMaterialName && (
-                        <Badge variant="outline" className="border-orange-300 text-orange-900">
-                          {selectedFabricOption.rawMaterialName}
-                        </Badge>
-                      )}
-                      <Badge variant="outline" className="border-orange-300 text-orange-900">
-                        PO {selectedFabricOption.poNumber}
-                      </Badge>
+                  {!fabricAssignmentError && assignmentValidationMessage && (
+                    <Alert className="bg-white">
+                      <AlertTriangle className="h-4 w-4 text-orange-600" />
+                      <AlertDescription className="text-sm text-orange-900">
+                        {assignmentValidationMessage}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  <div className="grid gap-3">
+                    {selectedPurchaseOrders.map(po => {
+                      const poId = String(po.id);
+                      const options = fabricOptionsByPo[poId] ?? [];
+                      const selectedOption = selectedFabricAssignments[poId] ?? null;
+                      const entry = fabricRequirementSummary.entryMap.get(poId);
+                      return (
+                        <div key={poId} className="space-y-2 rounded-md border border-orange-100 bg-white/80 p-3">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-semibold text-orange-900">
+                                PO {po.po_number || poId}
+                              </p>
+                              <p className="text-xs text-orange-600">
+                                {selectedOption?.productName || 'Select a fabric usage'}
+                              </p>
+                            </div>
+                          </div>
+                          {options.length ? (
+                            <Select
+                              value={selectedOption?.key ?? ''}
+                              onValueChange={value => handleFabricAssignmentChange(poId, value)}
+                              disabled={fabricOptionsLoading}
+                            >
+                              <SelectTrigger className="bg-white">
+                                <SelectValue placeholder="Select fabric usage" />
+                              </SelectTrigger>
+                              <SelectContent className="max-h-64">
+                                {options.map(option => (
+                                  <SelectItem key={option.key} value={option.key}>
+                                    <div className="flex flex-col">
+                                      <span className="font-medium text-sm">
+                                        {FABRIC_USAGE_LABELS[option.usage]} • {option.bomName}
+                                      </span>
+                                      <span className="text-xs text-muted-foreground">
+                                        {option.productName || 'Product'} • PO {option.poNumber}
+                                      </span>
+                                      {option.rawMaterialName && (
+                                        <span className="text-xs text-muted-foreground">
+                                          Fabric: {option.rawMaterialName}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <Alert className="bg-white">
+                              <AlertDescription className="text-sm text-orange-900">
+                                No matching BOM fabric usage options were found for this purchase order.
+                              </AlertDescription>
+                            </Alert>
+                          )}
+
+                          {entry && (
+                            <div className="flex flex-wrap gap-2 text-xs text-orange-900">
+                              <Badge variant="outline" className="border-orange-300 text-orange-900">
+                                {FABRIC_USAGE_LABELS[entry.usage]}
+                              </Badge>
+                              <Badge variant="outline" className="border-orange-300 text-orange-900">
+                                {entry.bomName}
+                              </Badge>
+                              {entry.option.productName && (
+                                <Badge variant="outline" className="border-orange-300 text-orange-900">
+                                  {entry.option.productName}
+                                </Badge>
+                              )}
+                              {entry.option.rawMaterialName && (
+                                <Badge variant="outline" className="border-orange-300 text-orange-900">
+                                  {entry.option.rawMaterialName}
+                                </Badge>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {fabricRequirementSummary.entries.length > 0 && aggregateDetail && (
+                    <div className="rounded-md border border-slate-200 bg-white/70 p-4 shadow-sm">
+                      <div className="flex flex-col gap-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-semibold text-slate-900">Fabric Requirement</span>
+                          {aggregateRequirementSource && (
+                            <Badge variant="outline" className="border-slate-300 text-slate-700">
+                              {REQUIREMENT_SOURCE_LABELS[aggregateRequirementSource]}
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="space-y-1">
+                            <p className="text-xs text-muted-foreground">Total pending pieces</p>
+                            <p className="text-sm font-medium text-slate-900">
+                              {formatQuantity(aggregateDetail.pendingPieces, 0)} pcs
+                            </p>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-xs text-muted-foreground">Consumption per piece</p>
+                            <p className="text-sm font-medium text-slate-900">
+                              {formatQuantity(aggregateConsumptionPerPiece)} {aggregateConsumptionUnit}
+                            </p>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-xs text-muted-foreground">Net requirement</p>
+                            <p className="text-sm font-medium text-slate-900">
+                              {formatQuantity(aggregateDetail.baseRequirement)} {aggregateConsumptionUnit}
+                            </p>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-xs text-muted-foreground">Total requirement (with waste)</p>
+                            <p className="text-sm font-medium text-slate-900">
+                              {formatQuantity(aggregateDetail.totalRequirement)} {aggregateConsumptionUnit}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="space-y-2 border-t border-slate-100 pt-2">
+                          {fabricRequirementSummary.entries.map(entry => (
+                            <div key={entry.poId} className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-700">
+                              <span className="font-medium text-slate-900">
+                                PO {entry.poNumber}
+                              </span>
+                              <span>
+                                {formatQuantity(entry.detail.totalRequirement)}{' '}
+                                {entry.detail.consumptionUnit || (measurementType === 'kg' ? 'kg' : 'yard')}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1011,6 +1580,52 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
 
             <div className="space-y-4">
               <div className="grid gap-4 lg:grid-cols-2">
+                <div className="rounded-md border border-slate-200 bg-slate-50/60 p-4">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Totals</p>
+                  <div className="mt-2 grid gap-2 text-sm text-slate-900">
+                    <div className="flex items-center justify-between">
+                      <span>Total pending pieces</span>
+                      <span className="font-semibold">{formatQuantity(totalPendingPieces, 0)}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Layers</span>
+                      <span className="font-semibold">{layersNumber || '-'}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Marker length (yards)</span>
+                      <span className="font-semibold">{formatQuantity(markerLengthYardsTotal, 3)}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Pieces per marker</span>
+                      <span className="font-semibold">{formatQuantity(computedPiecesPerMarker, 2)}</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-md border border-slate-200 bg-slate-50/60 p-4">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Marker Requested Qty</p>
+                  <div className="mt-2 space-y-2 text-sm text-slate-900">
+                    <div className="flex items-center justify-between">
+                      <span>
+                        {measurementType === 'kg'
+                          ? 'Total fabric (kg)'
+                          : 'Total fabric (yards)'}
+                      </span>
+                      <span className="font-semibold">
+                        {formatQuantity(markerRequestedQuantity, measurementType === 'kg' ? 3 : 3)}
+                      </span>
+                    </div>
+                    {measurementType === 'kg' ? (
+                      <div className="text-xs text-muted-foreground">
+                        Based on width {formatQuantity(widthMeters, 3)} m, marker length {formatQuantity(markerLengthMeters, 3)} m,
+                        layers {layersNumber}, GSM {markerGsmValue || '-'}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-muted-foreground">
+                        Marker length {formatQuantity(markerLengthYardsTotal, 3)} yd × layers {layersNumber}
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <div className="space-y-2">
                   <Label>Measurement Mode</Label>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

@@ -17,6 +17,7 @@ export interface MarkerRequestPayload {
   po_ids: string[];
   details?: Record<string, unknown> | null;
   fabric_assignment?: MarkerFabricAssignment | null;
+  fabric_assignments?: MarkerFabricAssignment[] | null;
 }
 
 export interface MarkerRequest extends MarkerRequestPayload {
@@ -51,6 +52,7 @@ export class MarkerRequestService {
     const mergedDetails = {
       ...(payload.details ?? {}),
       ...(payload.fabric_assignment ? { fabric_assignment: payload.fabric_assignment } : {}),
+      ...(payload.fabric_assignments ? { fabric_assignments: payload.fabric_assignments } : {}),
     };
     const detailsForInsert = Object.keys(mergedDetails).length ? mergedDetails : null;
 
@@ -86,6 +88,10 @@ export class MarkerRequestService {
         (details?.fabric_assignment as MarkerFabricAssignment | undefined) ||
         payload.fabric_assignment ||
         null;
+      const fabricAssignments =
+        (details?.fabric_assignments as MarkerFabricAssignment[] | undefined) ||
+        payload.fabric_assignments ||
+        null;
 
       return {
         ...(data as MarkerRequest),
@@ -104,6 +110,7 @@ export class MarkerRequestService {
         po_ids: payload.po_ids,
         details,
         fabric_assignment: fabricAssignment,
+        fabric_assignments: fabricAssignments,
       };
     } catch (error: any) {
       const message = String(error?.message || '').toLowerCase();
@@ -129,6 +136,7 @@ export class MarkerRequestService {
           po_ids: payload.po_ids,
           details: fallbackDetails,
           fabric_assignment: payload.fabric_assignment ?? null,
+          fabric_assignments: payload.fabric_assignments ?? null,
           created_at: new Date().toISOString(),
         };
       }
@@ -149,6 +157,7 @@ export class MarkerRequestService {
       return (data || []).map((item: any) => {
         const details = item.details ?? null;
         const fabricAssignment = details?.fabric_assignment as MarkerFabricAssignment | undefined;
+        const fabricAssignments = details?.fabric_assignments as MarkerFabricAssignment[] | undefined;
 
         return {
           id: item.id,
@@ -179,6 +188,7 @@ export class MarkerRequestService {
           po_ids: Array.isArray(item.po_ids) ? item.po_ids : [],
           details,
           fabric_assignment: fabricAssignment ?? null,
+          fabric_assignments: fabricAssignments ?? null,
           created_at: item.created_at,
         };
       });

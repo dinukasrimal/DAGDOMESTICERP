@@ -127,9 +127,15 @@ const MarkerRequests: React.FC = () => {
 
   const usedFabricAssignments = useMemo<MarkerFabricAssignment[]>(
     () =>
-      markerRequests
-        .map(request => request.fabric_assignment)
-        .filter((assignment): assignment is MarkerFabricAssignment => Boolean(assignment)),
+      markerRequests.flatMap(request => {
+        const assignments: MarkerFabricAssignment[] = [];
+        if (Array.isArray(request.fabric_assignments) && request.fabric_assignments.length) {
+          assignments.push(...request.fabric_assignments);
+        } else if (request.fabric_assignment) {
+          assignments.push(request.fabric_assignment);
+        }
+        return assignments;
+      }),
     [markerRequests]
   );
 
@@ -289,42 +295,6 @@ const MarkerRequests: React.FC = () => {
           </div>
         </div>
 
-        <div className="bg-white/70 rounded-3xl border border-slate-200 shadow-sm">
-          <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Available Purchase Orders</h2>
-            {isPoLoading && <Loader2 className="h-4 w-4 animate-spin text-slate-500" />}
-          </div>
-          <div className="p-6">
-            {purchaseOrders.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No pending purchase orders found.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>PO Number</TableHead>
-                      <TableHead>Supplier</TableHead>
-                      <TableHead className="text-right">Pending Qty</TableHead>
-                      <TableHead className="text-right">Pending Lines</TableHead>
-                      <TableHead>Order Date</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {purchaseOrders.map(po => (
-                      <TableRow key={po.id}>
-                        <TableCell className="font-medium">{po.po_number || 'PO'}</TableCell>
-                        <TableCell>{po.partner_name || 'Unknown Supplier'}</TableCell>
-                        <TableCell className="text-right">{totalPendingForPO(po).toLocaleString()}</TableCell>
-                        <TableCell className="text-right">{pendingLineCount(po)}</TableCell>
-                        <TableCell>{po.order_date ? new Date(po.order_date).toLocaleDateString() : '—'}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </div>
-        </div>
       </div>
 
       <Dialog
