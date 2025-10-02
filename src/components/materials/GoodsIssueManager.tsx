@@ -63,6 +63,20 @@ const formatNumeric = (value: number | null | undefined, digits = 3): string | n
   });
 };
 
+const parseNumeric = (value: any): number | null => {
+  if (value == null) return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const cleaned = value.replace(/[^0-9.+-]/g, '');
+    if (!cleaned) return null;
+    const num = Number(cleaned);
+    return Number.isFinite(num) ? num : null;
+  }
+  return null;
+};
+
 const parseKgFromNotes = (notes?: string): { kg: number | null; factor: number | null } => {
   if (!notes) return { kg: null, factor: null };
   try {
@@ -85,6 +99,41 @@ const parseKgFromNotes = (notes?: string): { kg: number | null; factor: number |
     console.warn('Failed to parse weight from notes:', error);
   }
   return { kg: null, factor: null };
+};
+
+const extractMarkerFabricKg = (marker: MarkerRequest | null | undefined, details?: any): number | null => {
+  const markerPayload = marker as any;
+  const summary = details?.fabric_requirement_summary ?? markerPayload?.fabric_requirement_summary;
+  const requestedQty = details?.marker_requested_qty ?? markerPayload?.marker_requested_qty;
+  const summaryUnit = String(summary?.unit || '').toLowerCase();
+  const requestedUnit = String(requestedQty?.unit || '').toLowerCase();
+  const measurementUnitIsKg = String(markerPayload?.measurement_type || '').toLowerCase() === 'kg';
+
+  const candidates = [
+    parseNumeric(markerPayload?.total_fabric_kg),
+    parseNumeric(markerPayload?.fabric_total_kg),
+    parseNumeric(markerPayload?.total_fabric?.kg),
+    parseNumeric(markerPayload?.total_fabric),
+    parseNumeric(details?.total_fabric_kg),
+    parseNumeric(details?.fabric_total_kg),
+    parseNumeric(details?.total_fabric?.kg),
+    parseNumeric(details?.total_fabric),
+    parseNumeric(details?.fabric_total),
+    requestedUnit === 'kg' || measurementUnitIsKg ? parseNumeric(requestedQty?.total_fabric) : null,
+    summaryUnit === 'kg' || measurementUnitIsKg ? parseNumeric(summary?.total_requirement) : null,
+    summaryUnit === 'kg' || measurementUnitIsKg ? parseNumeric(summary?.net_requirement) : null,
+  ];
+  const resolved = candidates.find(value => value != null && value > 0) ?? null;
+  console.log('🎯 extractMarkerFabricKg', {
+    markerId: markerPayload?.id,
+    markerNumber: markerPayload?.marker_number,
+    measurementType: markerPayload?.measurement_type,
+    summary,
+    requestedQty,
+    candidates,
+    resolved,
+  });
+  return resolved;
 };
 
 type RequirementMode = 'bom' | 'marker';
@@ -149,6 +198,16 @@ const nameMatchesKey = (source?: string | null, keys?: Set<string>) => {
     if (key.includes(normalized)) return true;
   }
   return false;
+};
+
+const ordersMatch = (current: any[] = [], nextOrders: any[] = []): boolean => {
+  if (current.length !== nextOrders.length) return false;
+  for (let i = 0; i < current.length; i += 1) {
+    const currentId = current[i]?.id != null ? String(current[i].id) : '';
+    const nextId = nextOrders[i]?.id != null ? String(nextOrders[i].id) : '';
+    if (currentId !== nextId) return false;
+  }
+  return true;
 };
 
 const buildProductMatchKey = (
@@ -302,31 +361,70 @@ export const GoodsIssueManager: React.FC = () => {
     return summary ?? null;
   }, [markerDetails]);
   const markerRequestedQty = markerDetails?.marker_requested_qty as
-    | { total_fabric?: number; unit?: string }
+    | { total_fabric?: number | string; unit?: string }
     | null
     | undefined;
-  const markerTotalFabricKg = (markerDetails as any)?.total_fabric?.kg ?? null;
+  const markerTotalFabricKg = (() => {
+    const markerPayload = selectedMarkerRequest as any;
+    const details = markerDetails as any;
+    const summary = details?.fabric_requirement_summary ?? markerPayload?.fabric_requirement_summary;
+    const summaryUnit = String(summary?.unit || '').toLowerCase();
+    const requestedUnit = String(markerRequestedQty?.unit || '').toLowerCase();
+    const measurementUnitIsKg = String(selectedMarkerRequest?.measurement_type || '').toLowerCase() === 'kg';
+    const candidates = [
+      parseNumeric(markerPayload?.total_fabric_kg),
+      parseNumeric(markerPayload?.fabric_total_kg),
+      parseNumeric(markerPayload?.total_fabric?.kg),
+      parseNumeric(markerPayload?.total_fabric),
+      parseNumeric(details?.total_fabric_kg),
+      parseNumeric(details?.fabric_total_kg),
+      parseNumeric(details?.total_fabric?.kg),
+      parseNumeric(details?.total_fabric),
+      parseNumeric(details?.fabric_total),
+      requestedUnit === 'kg' || measurementUnitIsKg ? parseNumeric(markerRequestedQty?.total_fabric) : null,
+      summaryUnit === 'kg' || measurementUnitIsKg ? parseNumeric(summary?.total_requirement) : null,
+      summaryUnit === 'kg' || measurementUnitIsKg ? parseNumeric(summary?.net_requirement) : null,
+    ];
+    const resolved = candidates.find(num => num != null && num > 0) ?? null;
+    console.log('🎯 Marker fabric resolver', {
+      markerId: selectedMarkerRequest?.id,
+      markerNumber: selectedMarkerRequest?.marker_number,
+      measurementType: selectedMarkerRequest?.measurement_type,
+      summary,
+      requestedQty: markerRequestedQty,
+      candidates,
+      resolved,
+    });
+    return resolved;
+  })();
   const markerPendingPieces = markerDetails?.total_pending_pieces ?? markerRequirementSummary?.pending_pieces ?? null;
   const markerNetRequirement = markerRequirementSummary?.net_requirement ?? null;
   const markerRequirementUnit = (() => {
-    if ((markerDetails as any)?.total_fabric_kg != null) return 'kg';
+    if (markerTotalFabricKg != null) return 'kg';
     if (markerRequirementSummary?.unit) return markerRequirementSummary.unit;
     if (markerRequestedQty?.unit) return markerRequestedQty.unit;
     if ((selectedMarkerRequest?.measurement_type || '').toLowerCase() === 'kg') return 'kg';
     return 'yard';
   })();
   const markerTotalRequirement = (() => {
-    const detailKg = (markerDetails as any)?.total_fabric_kg;
-    if (detailKg != null) return detailKg;
-    if (selectedMarkerRequest?.total_fabric_kg != null) return selectedMarkerRequest.total_fabric_kg;
-    if (markerRequirementSummary?.total_requirement != null) return markerRequirementSummary.total_requirement;
-    if (markerRequestedQty?.total_fabric != null) return markerRequestedQty.total_fabric;
     if (markerTotalFabricKg != null) return markerTotalFabricKg;
+    const requestedTotal = parseNumeric(markerRequestedQty?.total_fabric);
+    if (requestedTotal != null) return requestedTotal;
+    if (markerRequirementSummary?.total_requirement != null) return markerRequirementSummary.total_requirement;
     if ((selectedMarkerRequest?.measurement_type || '').toLowerCase() === 'kg') {
-      return selectedMarkerRequest?.total_fabric_kg ?? null;
+      const num = parseNumeric(selectedMarkerRequest?.total_fabric_kg);
+      if (num != null) return num;
     }
-    return selectedMarkerRequest?.total_fabric_yards ?? null;
+    return parseNumeric(selectedMarkerRequest?.total_fabric_yards);
   })();
+  console.log('📏 Marker requirement resolved', {
+    markerId: selectedMarkerRequest?.id,
+    fabric_total_kg: parseNumeric(selectedMarkerRequest?.fabric_total_kg),
+    markerTotalFabricKg,
+    markerRequirementSummary,
+    markerRequestedQty,
+    markerTotalRequirement,
+  });
   const aggregatedPoBadges = useMemo(
     () =>
       linkedPurchaseOrders.map(po => ({
@@ -481,24 +579,18 @@ export const GoodsIssueManager: React.FC = () => {
   }, [computeRequirementCheck, formData.lines]);
 
   useEffect(() => {
-    if (issueTab !== 'fabric') {
-      if (requirementMode !== 'bom') {
+    if (issueTab === 'fabric') {
+      if (selectedMarkerRequest) {
+        if (requirementMode !== 'marker') setRequirementMode('marker');
+      } else if (selectedBOM) {
+        if (requirementMode !== 'bom') setRequirementMode('bom');
+      } else if (requirementMode !== 'bom') {
         setRequirementMode('bom');
       }
-      return;
+    } else if (requirementMode !== 'bom') {
+      setRequirementMode('bom');
     }
-
-    if (requirementMode === 'marker' && !selectedMarkerRequest) {
-      if (selectedBOM) {
-        setRequirementMode('bom');
-      }
-      return;
-    }
-
-    if (requirementMode === 'bom' && (!selectedBOM || bomMaterialRequirements.length === 0) && selectedMarkerRequest) {
-      setRequirementMode('marker');
-    }
-  }, [bomMaterialRequirements.length, issueTab, requirementMode, selectedBOM, selectedMarkerRequest]);
+  }, [issueTab, requirementMode, selectedBOM, selectedMarkerRequest]);
 
   useEffect(() => {
     if (issueTab === 'trims') return;
@@ -730,6 +822,56 @@ export const GoodsIssueManager: React.FC = () => {
       rawOrders: orders,
     };
   };
+
+  useEffect(() => {
+    const syncContextForTab = async () => {
+      if (issueTab === 'trims') {
+        if (!selectedPurchaseOrder) return;
+        const singleOrders = [selectedPurchaseOrder];
+        if (ordersMatch(linkedPurchaseOrders, singleOrders)) return;
+
+        setLinkedPurchaseOrders(singleOrders);
+        const context = buildPOContext(singleOrders);
+        if (context) {
+          setActivePOContext(context);
+          setSelectedBOM(null);
+          setBomMaterialRequirements([]);
+          setShowBOMSelection(false);
+          await loadAvailableBOMs(context);
+        }
+        return;
+      }
+
+      if (issueTab === 'fabric' && selectedMarkerRequest) {
+        const markerPoIds = Array.from(
+          new Set((selectedMarkerRequest.po_ids || []).map(id => String(id)).filter(Boolean))
+        );
+        const resolvedOrders = markerPoIds
+          .map(id => purchaseOrderMap.get(id))
+          .filter((po): po is any => Boolean(po));
+
+        if (!resolvedOrders.length && selectedPurchaseOrder) {
+          resolvedOrders.push(selectedPurchaseOrder);
+        }
+
+        if (!resolvedOrders.length) return;
+        if (ordersMatch(linkedPurchaseOrders, resolvedOrders)) return;
+
+        setLinkedPurchaseOrders(resolvedOrders);
+        const context = buildPOContext(resolvedOrders, selectedMarkerRequest);
+        if (context) {
+          setActivePOContext(context);
+          setSelectedBOM(null);
+          setBomMaterialRequirements([]);
+          setShowBOMSelection(false);
+          await loadAvailableBOMs(context, selectedMarkerRequest);
+        }
+      }
+    };
+
+    void syncContextForTab();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [issueTab, selectedPurchaseOrder, selectedMarkerRequest, purchaseOrderMap]);
 
   const loadActiveProductionOrders = async (): Promise<any[]> => {
     try {
@@ -1252,7 +1394,7 @@ export const GoodsIssueManager: React.FC = () => {
 
         if (filteredBoms.length === 1) {
           setSelectedBOM(filteredBoms[0]);
-          await calculateBOMBasedRequirements(filteredBoms[0], poContext);
+          await calculateBOMBasedRequirements(filteredBoms[0], poContext, marker);
         }
       } else {
         toast({
@@ -1382,7 +1524,7 @@ export const GoodsIssueManager: React.FC = () => {
   };
 
   // Calculate material requirements based on selected BOM and PO quantities
-  const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: any) => {
+const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: any, markerOverride?: MarkerRequest | null) => {
     try {
       const materialRequirements: typeof bomMaterialRequirements = [];
       
@@ -1392,11 +1534,13 @@ export const GoodsIssueManager: React.FC = () => {
       }
 
       // Load issued quantities so far for this PO, grouped by material
-      const poNumbers = purchaseOrder?.po_numbers?.length
-        ? purchaseOrder.po_numbers
-        : purchaseOrder?.po_number
-        ? [purchaseOrder.po_number]
-        : [];
+      const poNumbers = issueTab === 'trims'
+        ? (purchaseOrder?.po_number ? [purchaseOrder.po_number] : [])
+        : purchaseOrder?.po_numbers?.length
+          ? purchaseOrder.po_numbers
+          : purchaseOrder?.po_number
+            ? [purchaseOrder.po_number]
+            : [];
       const issuedMap = poNumbers.length
         ? await fetchIssuedSoFarForPO(poNumbers)
         : new Map<string, number>();
@@ -1560,12 +1704,79 @@ export const GoodsIssueManager: React.FC = () => {
         }
       }
 
+      let adjustedRequirements = materialRequirements;
+      const rawMarkerKg = markerOverride ? parseNumeric((markerOverride as any)?.total_fabric_kg) : null;
+      const markerRequirementForScaling = markerOverride
+        ? extractMarkerFabricKg(markerOverride, (markerOverride as any)?.details) ?? rawMarkerKg ?? markerTotalRequirement
+        : markerTotalRequirement;
+      const isFabricRequirement = (req: typeof materialRequirements[number]) =>
+        req.category_id ? isFabricCategory(req.category_id, req.material_name) : isFabricMaterialId(req.material_id);
+
+      if (issueTab === 'fabric' && (markerOverride || selectedMarkerRequest) && markerRequirementForScaling != null) {
+        const relevantRequirements = materialRequirements.filter(isFabricRequirement);
+        const totalRelevant = relevantRequirements.reduce((sum, req) => sum + (Number(req.required_quantity) || 0), 0);
+        console.log('🧮 Scaling BOM requirements (fabric subset)', {
+          markerRequirementForScaling,
+          totalRelevant,
+          relevantRequirements,
+        });
+
+        if (totalRelevant > 0) {
+          const scale = markerRequirementForScaling / totalRelevant;
+          adjustedRequirements = materialRequirements.map(req => {
+            if (!isFabricRequirement(req)) return req;
+            return {
+              ...req,
+              required_quantity: (Number(req.required_quantity) || 0) * scale
+            };
+          });
+        } else if (relevantRequirements.length > 0) {
+          adjustedRequirements = materialRequirements.map(req => {
+            if (!isFabricRequirement(req)) return req;
+            const isFirst = relevantRequirements[0] === req;
+            return {
+              ...req,
+              required_quantity: isFirst ? markerRequirementForScaling : 0
+            };
+          });
+        }
+
+        const scaledRelevantTotal = adjustedRequirements
+          .filter(isFabricRequirement)
+          .reduce((sum, req) => sum + (Number(req.required_quantity) || 0), 0);
+        if (markerRequirementForScaling > 0 && scaledRelevantTotal > 0 && Math.abs(scaledRelevantTotal - markerRequirementForScaling) > 1e-6) {
+          const ratio = markerRequirementForScaling / scaledRelevantTotal;
+          adjustedRequirements = adjustedRequirements.map(req => {
+            if (!isFabricRequirement(req)) return req;
+            return {
+              ...req,
+              required_quantity: (Number(req.required_quantity) || 0) * ratio
+            };
+          });
+        }
+
+        console.log('🧮 Scaled BOM requirements result (fabric subset)', {
+          markerRequirementForScaling,
+          adjustedRequirements,
+          totalAfterScale: adjustedRequirements
+            .filter(isFabricRequirement)
+            .reduce((sum, req) => sum + (Number(req.required_quantity) || 0), 0),
+        });
+      }
+
       // Filter based on tab
-      const filterFn = (req: typeof materialRequirements[number]) => {
-        const isFab = req.category_id ? isFabricCategory(req.category_id, req.material_name) : isFabricMaterialId(req.material_id);
+      const filterFn = (req: typeof adjustedRequirements[number]) => {
+        const isFab = isFabricRequirement(req);
         return issueTab === 'fabric' ? isFab : !isFab;
       };
-      const filtered = materialRequirements.filter(filterFn);
+      const filtered = adjustedRequirements.filter(filterFn);
+      console.log('📋 Final BOM requirements for UI', {
+        issueTab,
+        markerRequirementForScaling,
+        adjustedRequirements,
+        filtered,
+        totalFiltered: filtered.reduce((sum, req) => sum + (Number(req.required_quantity) || 0), 0),
+      });
       setBomMaterialRequirements(filtered);
 
       if (materialRequirements.length === 0) {
@@ -1594,10 +1805,7 @@ export const GoodsIssueManager: React.FC = () => {
     const bom = availableBOMs.find(b => String(b.id) === String(bomId));
     if (bom && activePOContext) {
       setSelectedBOM(bom);
-      await calculateBOMBasedRequirements(bom, activePOContext);
-      if (issueTab === 'fabric') {
-        setRequirementMode('bom');
-      }
+      await calculateBOMBasedRequirements(bom, activePOContext, selectedMarkerRequest);
     }
   };
 
@@ -1609,6 +1817,8 @@ export const GoodsIssueManager: React.FC = () => {
 
   const applyMarkerSelection = async (marker: MarkerRequest, fallbackOrder?: any) => {
     if (!marker) return;
+    console.log('🧾 Selected marker raw data:', marker);
+    console.log('🧾 Marker details keys:', marker?.details ? Object.keys(marker.details) : null);
 
     const markerPoIds = Array.from(new Set((marker.po_ids || []).map(id => String(id)).filter(Boolean)));
     const resolvedOrders = markerPoIds
@@ -1627,13 +1837,33 @@ export const GoodsIssueManager: React.FC = () => {
       return;
     }
 
-    setLinkedPurchaseOrders(resolvedOrders);
     setSelectedMarkerRequest(marker);
     setFormData(prev => ({
       ...prev,
       reference_number: marker.marker_number || prev.reference_number,
     }));
-    setSelectedPurchaseOrder(resolvedOrders[0]);
+
+    if (issueTab === 'trims') {
+      const effectiveOrder = fallbackOrder || selectedPurchaseOrder || resolvedOrders[0] || null;
+      const singleOrders = effectiveOrder ? [effectiveOrder] : [];
+      setLinkedPurchaseOrders(singleOrders);
+      setSelectedPurchaseOrder(effectiveOrder ?? null);
+
+      if (effectiveOrder) {
+        const context = buildPOContext(singleOrders);
+        if (context) {
+          setActivePOContext(context);
+          setSelectedBOM(null);
+          setBomMaterialRequirements([]);
+          setShowBOMSelection(false);
+          await loadAvailableBOMs(context);
+        }
+      }
+      return;
+    }
+
+    setLinkedPurchaseOrders(resolvedOrders);
+    setSelectedPurchaseOrder(fallbackOrder || resolvedOrders[0]);
 
     const context = buildPOContext(resolvedOrders, marker);
     if (context) {
@@ -2025,7 +2255,7 @@ export const GoodsIssueManager: React.FC = () => {
         setRawMaterials(mats);
         // Recompute BOM requirements view to refresh available stock columns
         if (selectedBOM && activePOContext) {
-          await calculateBOMBasedRequirements(selectedBOM, activePOContext);
+          await calculateBOMBasedRequirements(selectedBOM, activePOContext, selectedMarkerRequest);
         }
         window.dispatchEvent(new CustomEvent('inventory-updated'));
       } catch {}
@@ -2720,42 +2950,15 @@ export const GoodsIssueManager: React.FC = () => {
                   </div>
                 )}
 
-                {issueTab === 'fabric' && (selectedBOM || selectedMarkerRequest) && (
+                {issueTab === 'fabric' && selectedMarkerRequest && (
                   <div className="mt-4 space-y-2">
-                    <Label>Issue Against Requirement</Label>
-                    <div className="flex items-center gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={requirementMode === 'bom' ? 'default' : 'outline'}
-                        onClick={() => setRequirementMode('bom')}
-                        disabled={!selectedBOM || bomMaterialRequirements.length === 0}
-                      >
-                        BOM Requirement
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={requirementMode === 'marker' ? 'default' : 'outline'}
-                        onClick={() => setRequirementMode('marker')}
-                        disabled={!selectedMarkerRequest || markerTotalRequirement == null}
-                      >
-                        Marker Requirement
-                      </Button>
-                    </div>
-
+                    <Label>Marker Requirement</Label>
                     {requirementCheck.mode !== 'none' && (
                       <div className={`text-xs ${requirementCheck.needsApproval ? 'text-red-600' : 'text-muted-foreground'} space-y-1`}>
                         <div>
-                          {requirementCheck.mode === 'bom' ? (
-                            <span>
-                              Issuing against BOM requirement{requirementCheck.limit != null ? ` • Total required ${formatNumeric(requirementCheck.limit, 3) ?? requirementCheck.limit}` : ''}
-                            </span>
-                          ) : (
-                            <span>
-                              Issuing against marker requirement{requirementCheck.limit != null ? ` • Required ${formatNumeric(requirementCheck.limit, 3) ?? requirementCheck.limit} ${markerRequirementUnit || ''}` : ''}
-                            </span>
-                          )}
+                          <span>
+                            Issuing against marker requirement{requirementCheck.limit != null ? ` • Required ${formatNumeric(requirementCheck.limit, 3) ?? requirementCheck.limit} ${markerRequirementUnit || ''}` : ''}
+                          </span>
                           <span className="ml-2">
                             Issued {formatNumeric(requirementCheck.totalIssued, 3) ?? requirementCheck.totalIssued}
                             {requirementCheck.mode === 'marker' && markerRequirementUnit ? ` ${markerRequirementUnit}` : ''}
