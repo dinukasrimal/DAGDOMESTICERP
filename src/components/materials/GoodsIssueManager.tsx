@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { SearchableSelect } from '@/components/ui/searchable-select';
+import type { SearchableOption } from '@/components/ui/searchable-select';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
@@ -45,6 +46,7 @@ import { ModernLayout } from '../layout/ModernLayout';
 import { BarcodeScanner } from '@/components/ui/BarcodeScanner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { generateGoodsIssuePdf } from '@/lib/pdfUtils';
+import { cuttingSupplierService, CuttingSupplier } from '@/services/cuttingSupplierService';
 
 const goodsIssueService = new GoodsIssueService();
 const rawMaterialsService = new RawMaterialsService();
@@ -59,6 +61,106 @@ const formatNumeric = (value: number | null | undefined, digits = 3): string | n
     maximumFractionDigits: digits,
     minimumFractionDigits: 0,
   });
+};
+
+const parseKgFromNotes = (notes?: string): { kg: number | null; factor: number | null } => {
+  if (!notes) return { kg: null, factor: null };
+  try {
+    const text = notes.toString();
+    const weightMatch = text.match(/weight\s*\(?(?:kg)?\)?\s*[:=]\s*([\d.]+)/i);
+    if (weightMatch && weightMatch[1]) {
+      const kg = parseFloat(weightMatch[1]);
+      if (!Number.isNaN(kg) && kg >= 0) {
+        return { kg, factor: null };
+      }
+    }
+    const factorMatch = text.match(/1\s*kg\s*=\s*([\d.]+)\s*([a-z]+)/i);
+    if (factorMatch && factorMatch[1]) {
+      const factor = parseFloat(factorMatch[1]);
+      if (!Number.isNaN(factor) && factor > 0) {
+        return { kg: null, factor };
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to parse weight from notes:', error);
+  }
+  return { kg: null, factor: null };
+};
+
+type RequirementMode = 'bom' | 'marker';
+
+interface RequirementCheck {
+  mode: RequirementMode | 'none';
+  needsApproval: boolean;
+  details: string[];
+  limit: number | null;
+  totalIssued: number;
+}
+
+const requirementChecksEqual = (a: RequirementCheck, b: RequirementCheck): boolean => {
+  if (a.mode !== b.mode) return false;
+  if (a.needsApproval !== b.needsApproval) return false;
+  if (a.limit !== b.limit) return false;
+  if (Math.abs(a.totalIssued - b.totalIssued) > 1e-6) return false;
+  if (a.details.length !== b.details.length) return false;
+  for (let i = 0; i < a.details.length; i += 1) {
+    if (a.details[i] !== b.details[i]) return false;
+  }
+  return true;
+};
+
+const normalizeProductIdentifier = (input?: string | null) => {
+  if (!input) return '';
+  const stripped = input
+    .toString()
+    .replace(/^\[[^\]]+\]\s*/, '');
+  return stripped
+    .toString()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+};
+
+const extractCodeFromName = (input?: string | null) => {
+  if (!input) return null;
+  const match = input.toString().match(/^\[([^\]]+)\]/);
+  if (match && match[1]) {
+    return match[1].trim();
+  }
+  return null;
+};
+
+const buildProductBaseKey = (name?: string | null) => {
+  if (!name) return '';
+  const normalized = normalizeProductIdentifier(name);
+  if (!normalized) return '';
+  const base = normalized.replace(/\b\d+\b$/, '').trim();
+  return base;
+};
+
+const nameMatchesKey = (source?: string | null, keys?: Set<string>) => {
+  if (!source || !keys || keys.size === 0) return false;
+  const normalized = normalizeProductIdentifier(source);
+  if (!normalized) return false;
+  for (const key of keys) {
+    if (!key) continue;
+    if (normalized === key) return true;
+    if (normalized.includes(key)) return true;
+    if (key.includes(normalized)) return true;
+  }
+  return false;
+};
+
+const buildProductMatchKey = (
+  name?: string | null,
+  colour?: string | null,
+  size?: string | null
+) => {
+  const parts = [name, colour, size]
+    .map(part => (part ? normalizeProductIdentifier(part) : ''))
+    .filter(Boolean);
+  if (parts.length === 0) return '';
+  return parts.join(' ');
 };
 
 const ISSUE_TYPES = [
@@ -110,8 +212,17 @@ export const GoodsIssueManager: React.FC = () => {
   const [categorySelections, setCategorySelections] = useState<{[categoryId: string]: {materialId: number, quantity: number}[]}>({});
   const [issuedByMaterial, setIssuedByMaterial] = useState<Map<string, number>>(new Map());
   const { toast } = useToast();
-  const [suppliers, setSuppliers] = useState<string[]>([]);
-  const [selectedSupplier, setSelectedSupplier] = useState<string>('');
+  const [cuttingSuppliers, setCuttingSuppliers] = useState<CuttingSupplier[]>([]);
+  const [poSuppliers, setPoSuppliers] = useState<string[]>([]);
+  const [selectedSupplierId, setSelectedSupplierId] = useState<string>('');
+  const [legacySupplier, setLegacySupplier] = useState<string>('');
+  const selectedSupplierName = useMemo(() => {
+    if (issueTab === 'trims') {
+      return legacySupplier.trim();
+    }
+    const match = cuttingSuppliers.find(supplier => String(supplier.id) === selectedSupplierId);
+    return match?.name ?? '';
+  }, [issueTab, legacySupplier, cuttingSuppliers, selectedSupplierId]);
 
   // Fabric scanning state for Goods Issue (per raw material)
   const [giFabricRolls, setGiFabricRolls] = useState<{[materialId: string]: { barcode: string; weight: number; length?: number }[]}>({});
@@ -143,6 +254,15 @@ export const GoodsIssueManager: React.FC = () => {
   const [lineKgState, setLineKgState] = useState<Record<string, { kg: number }>>({});
   // Per-material alternate unit issuing state within category selection
   const [altIssueModes, setAltIssueModes] = useState<Record<string, { enabled: boolean; unit: string; qty: number; factor: number }>>({});
+
+  const [requirementMode, setRequirementMode] = useState<RequirementMode>('bom');
+  const [requirementCheck, setRequirementCheck] = useState<RequirementCheck>({
+    mode: 'none',
+    needsApproval: false,
+    details: [],
+    limit: null,
+    totalIssued: 0,
+  });
 
   const purchaseOrderMap = useMemo(() => new Map(purchaseOrders.map(order => [String(order.id), order])), [purchaseOrders]);
 
@@ -181,14 +301,32 @@ export const GoodsIssueManager: React.FC = () => {
       | undefined;
     return summary ?? null;
   }, [markerDetails]);
+  const markerRequestedQty = markerDetails?.marker_requested_qty as
+    | { total_fabric?: number; unit?: string }
+    | null
+    | undefined;
+  const markerTotalFabricKg = (markerDetails as any)?.total_fabric?.kg ?? null;
   const markerPendingPieces = markerDetails?.total_pending_pieces ?? markerRequirementSummary?.pending_pieces ?? null;
   const markerNetRequirement = markerRequirementSummary?.net_requirement ?? null;
-  const markerTotalRequirement = markerRequirementSummary?.total_requirement ??
-    (selectedMarkerRequest?.measurement_type === 'kg'
-      ? selectedMarkerRequest?.total_fabric_kg ?? null
-      : selectedMarkerRequest?.total_fabric_yards ?? null);
-  const markerRequirementUnit = markerRequirementSummary?.unit ??
-    (selectedMarkerRequest?.measurement_type === 'kg' ? 'kg' : 'yard');
+  const markerRequirementUnit = (() => {
+    if ((markerDetails as any)?.total_fabric_kg != null) return 'kg';
+    if (markerRequirementSummary?.unit) return markerRequirementSummary.unit;
+    if (markerRequestedQty?.unit) return markerRequestedQty.unit;
+    if ((selectedMarkerRequest?.measurement_type || '').toLowerCase() === 'kg') return 'kg';
+    return 'yard';
+  })();
+  const markerTotalRequirement = (() => {
+    const detailKg = (markerDetails as any)?.total_fabric_kg;
+    if (detailKg != null) return detailKg;
+    if (selectedMarkerRequest?.total_fabric_kg != null) return selectedMarkerRequest.total_fabric_kg;
+    if (markerRequirementSummary?.total_requirement != null) return markerRequirementSummary.total_requirement;
+    if (markerRequestedQty?.total_fabric != null) return markerRequestedQty.total_fabric;
+    if (markerTotalFabricKg != null) return markerTotalFabricKg;
+    if ((selectedMarkerRequest?.measurement_type || '').toLowerCase() === 'kg') {
+      return selectedMarkerRequest?.total_fabric_kg ?? null;
+    }
+    return selectedMarkerRequest?.total_fabric_yards ?? null;
+  })();
   const aggregatedPoBadges = useMemo(
     () =>
       linkedPurchaseOrders.map(po => ({
@@ -207,9 +345,175 @@ export const GoodsIssueManager: React.FC = () => {
     ? `${formatNumeric(markerPendingPieces, 0) ?? markerPendingPieces}`
     : null;
 
+  const bomRequirementMap = useMemo(() => {
+    const map = new Map<string, { required: number; name: string }>();
+    bomMaterialRequirements.forEach(req => {
+      if (!req.category_id) {
+        map.set(req.material_id, {
+          required: Number(req.required_quantity) || 0,
+          name: req.material_name,
+        });
+      }
+    });
+    return map;
+  }, [bomMaterialRequirements]);
+
+  const computeRequirementCheck = useCallback((lines: CreateGoodsIssueLine[]): RequirementCheck => {
+    if (issueTab !== 'fabric') {
+      return { mode: 'none', needsApproval: false, details: [], limit: null, totalIssued: 0 };
+    }
+
+    if (requirementMode === 'bom' && bomRequirementMap.size > 0) {
+      const details: string[] = [];
+      let needsApproval = false;
+      let totalIssued = 0;
+
+      lines.forEach(line => {
+        const quantity = Number(line.quantity_issued) || 0;
+        if (quantity <= 0) return;
+        const entry = bomRequirementMap.get(line.raw_material_id);
+        if (entry) {
+          totalIssued += quantity;
+          if (quantity > entry.required + 1e-6) {
+            needsApproval = true;
+            details.push(`${entry.name}: issued ${formatNumeric(quantity, 3) ?? quantity} > BOM ${formatNumeric(entry.required, 3) ?? entry.required}`);
+          }
+        }
+      });
+
+      const totalRequired = Array.from(bomRequirementMap.values()).reduce((sum, entry) => sum + entry.required, 0);
+
+      return {
+        mode: 'bom',
+        needsApproval,
+        details,
+        limit: totalRequired || null,
+        totalIssued,
+      };
+    }
+
+    if (requirementMode === 'marker' && markerTotalRequirement != null) {
+      const reqUnit = markerRequirementUnit?.toLowerCase?.() || '';
+      let totalIssued = 0;
+      const missingConversions: string[] = [];
+
+      lines.forEach(line => {
+        const quantity = Number(line.quantity_issued) || 0;
+        if (quantity <= 0) return;
+        const material = rawMaterials.find(m => m.id.toString() === line.raw_material_id);
+        const baseUnit = (material?.base_unit || (material as any)?.purchase_unit || '').toLowerCase();
+
+        if (reqUnit.includes('kg')) {
+          const parsed = parseKgFromNotes(line.notes);
+          if (parsed.kg != null && parsed.kg > 0) {
+            totalIssued += parsed.kg;
+            return;
+          }
+          if (parsed.factor && parsed.factor > 0) {
+            totalIssued += quantity / parsed.factor;
+            return;
+          }
+          if (baseUnit.includes('kg')) {
+            totalIssued += quantity;
+            return;
+          }
+          missingConversions.push(material?.name || line.raw_material_id);
+          return;
+        }
+
+        if (reqUnit.includes('yard') || reqUnit.includes('yd')) {
+          if (baseUnit.includes('yard') || baseUnit.includes('yd')) {
+            totalIssued += quantity;
+            return;
+          }
+          const parsed = parseKgFromNotes(line.notes);
+          if (parsed.factor && parsed.factor > 0 && parsed.kg != null && parsed.kg > 0) {
+            // When alt entry records weight and factor, convert weight to yards using factor (1 kg = X yards)
+            totalIssued += parsed.kg * parsed.factor;
+            return;
+          }
+          missingConversions.push(material?.name || line.raw_material_id);
+          return;
+        }
+
+        totalIssued += quantity;
+      });
+
+      const needsApproval = totalIssued > markerTotalRequirement + 1e-6;
+      const details: string[] = needsApproval
+        ? [`Issued ${formatNumeric(totalIssued, 3) ?? totalIssued} ${markerRequirementUnit} > marker requirement ${formatNumeric(markerTotalRequirement, 3) ?? markerTotalRequirement} ${markerRequirementUnit}`]
+        : [];
+      if (missingConversions.length) {
+        details.push(`Missing conversion for: ${missingConversions.join(', ')}`);
+      }
+
+      return {
+        mode: 'marker',
+        needsApproval,
+        details,
+        limit: markerTotalRequirement,
+        totalIssued,
+      };
+    }
+
+    return {
+      mode: 'none',
+      needsApproval: false,
+      details: [],
+      limit: null,
+      totalIssued: 0,
+    };
+  }, [bomRequirementMap, issueTab, markerRequirementUnit, markerTotalRequirement, rawMaterials, requirementMode]);
+
   useEffect(() => {
     loadInitialData();
   }, []);
+
+  useEffect(() => {
+    if (issueTab === 'trims' && selectedPurchaseOrder?.partner_name) {
+      setLegacySupplier(selectedPurchaseOrder.partner_name);
+    }
+  }, [issueTab, selectedPurchaseOrder]);
+
+  useEffect(() => {
+    const nextCheck = computeRequirementCheck(formData.lines);
+    setRequirementCheck(prev => requirementChecksEqual(prev, nextCheck) ? prev : nextCheck);
+  }, [computeRequirementCheck, formData.lines]);
+
+  useEffect(() => {
+    if (issueTab !== 'fabric') {
+      if (requirementMode !== 'bom') {
+        setRequirementMode('bom');
+      }
+      return;
+    }
+
+    if (requirementMode === 'marker' && !selectedMarkerRequest) {
+      if (selectedBOM) {
+        setRequirementMode('bom');
+      }
+      return;
+    }
+
+    if (requirementMode === 'bom' && (!selectedBOM || bomMaterialRequirements.length === 0) && selectedMarkerRequest) {
+      setRequirementMode('marker');
+    }
+  }, [bomMaterialRequirements.length, issueTab, requirementMode, selectedBOM, selectedMarkerRequest]);
+
+  useEffect(() => {
+    if (issueTab === 'trims') return;
+    if (!selectedPurchaseOrder || !selectedPurchaseOrder.partner_name) return;
+    if (!cuttingSuppliers.length) return;
+    if (selectedSupplierId) return;
+    const partnerName = selectedPurchaseOrder.partner_name.trim();
+    if (!partnerName) return;
+    const match = cuttingSuppliers.find(
+      supplier => supplier.name.toLowerCase() === partnerName.toLowerCase()
+    );
+    if (match) {
+      setSelectedSupplierId(String(match.id));
+    }
+  }, [cuttingSuppliers, selectedPurchaseOrder, selectedSupplierId, issueTab]);
 
   const loadMarkerRequests = async (): Promise<MarkerRequest[]> => {
     try {
@@ -240,16 +544,30 @@ export const GoodsIssueManager: React.FC = () => {
   const loadInitialData = async () => {
     try {
       setLoading(true);
-      const [issuesData, materialsData, purchaseOrdersData] = await Promise.all([
+      const suppliersPromise = cuttingSupplierService
+        .list()
+        .catch(error => {
+          console.error('Failed to load cutting suppliers', error);
+          toast({
+            title: 'Supplier Load Failed',
+            description: 'Unable to load cutting suppliers. You can still add a new one manually.',
+            variant: 'destructive',
+          });
+          return [] as CuttingSupplier[];
+        });
+
+      const [issuesData, materialsData, purchaseOrdersData, supplierData] = await Promise.all([
         goodsIssueService.getAllGoodsIssue(),
         rawMaterialsService.getRawMaterials(),
-        loadPurchaseOrders()
+        loadPurchaseOrders(),
+        suppliersPromise,
       ]);
       setGoodsIssues(issuesData);
       setRawMaterials(materialsData);
       setPurchaseOrders(purchaseOrdersData);
-      const uniqSuppliers = Array.from(new Set((purchaseOrdersData || []).map(o => o.partner_name).filter(Boolean)));
-      setSuppliers(uniqSuppliers as string[]);
+      setCuttingSuppliers(supplierData);
+      const uniqSuppliers = Array.from(new Set((purchaseOrdersData || []).map(o => o.partner_name).filter(Boolean))) as string[];
+      setPoSuppliers(uniqSuppliers);
       await loadMarkerRequests();
     } catch (error: any) {
       toast({
@@ -310,11 +628,57 @@ export const GoodsIssueManager: React.FC = () => {
                   line.quantity ??
                   line.order_qty ??
                   0;
+
+                let productId = line.product_id ?? line.id;
+                let productName = line.product_name || line.name || '';
+                const productArrayId = Array.isArray(line.product_id) ? line.product_id : null;
+                if (productArrayId) {
+                  if (productArrayId.length > 0 && productArrayId[0]) {
+                    productId = productArrayId[0];
+                  }
+                  if (!productName && productArrayId.length > 1 && typeof productArrayId[1] === 'string') {
+                    productName = productArrayId[1];
+                  }
+                }
+
+                let defaultCode =
+                  line.product_code ??
+                  line.product_default_code ??
+                  line.default_code ??
+                  line.product_sku ??
+                  line.sku ??
+                  undefined;
+
+                if (!defaultCode) {
+                  defaultCode = extractCodeFromName(productName || '') || undefined;
+                }
+
+                const colour =
+                  line.colour ??
+                  line.color ??
+                  line.product_colour ??
+                  line.product_color ??
+                  null;
+
+                const size =
+                  line.size ??
+                  line.product_size ??
+                  line.dimension ??
+                  null;
+
+                const matchKey = buildProductMatchKey(productName || undefined, colour, size);
+                const baseMatchKey = buildProductBaseKey(productName || undefined);
+
                 return ({
-                  id: line.product_id || line.id,
-                  name: line.product_name || line.name || 'Unknown Product',
+                  id: productId ?? line.id,
+                  name: productName || 'Unknown Product',
+                  default_code: defaultCode ? String(defaultCode) : null,
+                  colour,
+                  size,
                   quantity: Number(qty) || 0,
                   pending_qty: order.pending_qty || 0,
+                  match_key: matchKey,
+                  base_match_key: baseMatchKey,
                 });
               });
             }
@@ -529,24 +893,236 @@ export const GoodsIssueManager: React.FC = () => {
         return;
       }
 
+      const poProducts = poContext.products || [];
+      console.log('📦 Debug: PO product details', poProducts);
       const poProductIds = new Set<string>(
-        poContext.products.map((product: any) => String(product.id)).filter(Boolean)
+        poProducts
+          .map((product: any) => {
+            if (product?.id == null) return null;
+            return String(product.id);
+          })
+          .filter((id): id is string => Boolean(id))
       );
+      const poProductsById = new Map<string, any>();
+      poProducts.forEach((product: any) => {
+        if (product?.id != null) {
+          poProductsById.set(String(product.id), product);
+        }
+      });
       const poProductCodes = new Set<string>(
-        poContext.products
-          .map((product: any) => (product.default_code || product.code || '').toString().toLowerCase())
-          .filter(code => Boolean(code))
+        poProducts
+          .map((product: any) => (product.default_code || product.code || '')?.toString().toLowerCase())
+          .filter((code): code is string => Boolean(code))
       );
-      const poVariantTokens = new Set<string>(
-        poContext.products
-          .flatMap((product: any) =>
-            (product.name || '')
-              .toLowerCase()
-              .replace(/[\[\]()]/g, ' ')
-              .split(/\s+/)
-              .filter(token => token.length > 2)
-          )
+      const poProductMatchKeys = new Set<string>(
+        poProducts
+          .map((product: any) => product.match_key || buildProductMatchKey(product.name, product.colour, product.size))
+          .filter((key): key is string => Boolean(key))
       );
+      const poProductBaseKeys = new Set<string>(
+        poProducts
+          .map((product: any) => product.base_match_key || buildProductBaseKey(product.name))
+          .filter((key): key is string => Boolean(key))
+      );
+      const poProductNameKeys = new Set<string>(
+        poProducts
+          .map((product: any) => normalizeProductIdentifier(product.name))
+          .filter((key): key is string => Boolean(key))
+      );
+
+      console.log('🧮 Debug: PO product keys', {
+        ids: Array.from(poProductIds),
+        codes: Array.from(poProductCodes),
+        matchKeys: Array.from(poProductMatchKeys),
+        baseKeys: Array.from(poProductBaseKeys),
+        nameKeys: Array.from(poProductNameKeys),
+      });
+      const bomMatchesPOProducts = (bom: BOMWithLines) => {
+        const associatedProducts: Array<{
+          id?: number | string | null;
+          name?: string | null;
+          default_code?: string | null;
+          colour?: string | null;
+          size?: string | null;
+        }> = [];
+
+        if (Array.isArray(bom.products) && bom.products.length > 0) {
+          associatedProducts.push(...bom.products);
+        } else if (bom.product) {
+          associatedProducts.push(bom.product);
+        } else if (bom.product_id) {
+          const fallback = poProductsById.get(String(bom.product_id));
+          associatedProducts.push({
+            id: bom.product_id,
+            name: fallback?.name ?? null,
+            default_code: fallback?.default_code ?? fallback?.code ?? null,
+            colour: fallback?.colour ?? null,
+            size: fallback?.size ?? null,
+          });
+        }
+
+        const bomProductIds = (bom as any).product_ids;
+        if (Array.isArray(bomProductIds) && bomProductIds.length > 0) {
+          bomProductIds.forEach((id: any) => {
+            if (id == null) return;
+            const idStr = String(id);
+            const fallback = poProductsById.get(idStr);
+            associatedProducts.push({
+              id: idStr,
+              name: fallback?.name ?? null,
+              default_code: fallback?.default_code ?? fallback?.code ?? null,
+              colour: fallback?.colour ?? null,
+              size: fallback?.size ?? null,
+            });
+          });
+        }
+
+        const validProducts = associatedProducts.filter(prod => {
+          return Boolean(
+            (prod?.id != null && prod.id !== '') ||
+            (prod?.default_code && prod.default_code !== '') ||
+            (prod?.name && prod.name !== '')
+          );
+        });
+
+        if (validProducts.length === 0) {
+          const bomNameKey = buildProductBaseKey(bom.name);
+          const normalizedBomName = normalizeProductIdentifier(bom.name);
+          console.log('🔎 Debug: BOM has no explicit products, checking name/consumptions', {
+            bomName: bom.name,
+            bomNameKey,
+            normalizedBomName,
+          });
+          if (bomNameKey && (poProductBaseKeys.has(bomNameKey) || poProductNameKeys.has(bomNameKey) || nameMatchesKey(bomNameKey, poProductBaseKeys) || nameMatchesKey(bomNameKey, poProductNameKeys))) {
+            return true;
+          }
+
+          if (normalizedBomName && (poProductNameKeys.has(normalizedBomName) || poProductBaseKeys.has(normalizedBomName) || nameMatchesKey(normalizedBomName, poProductBaseKeys) || nameMatchesKey(normalizedBomName, poProductNameKeys))) {
+            return true;
+          }
+
+          const consumptionMatch = (bom.lines || []).some(line => {
+            const consumptions = (line as any)?.consumptions;
+            if (!Array.isArray(consumptions)) return false;
+            return consumptions.some((consumption: any) => {
+              const value = normalizeProductIdentifier(consumption?.attribute_value);
+              if (!value) return false;
+              const baseValue = buildProductBaseKey(consumption?.attribute_value);
+              const matches = poProductNameKeys.has(value) ||
+                poProductBaseKeys.has(value) ||
+                (baseValue && poProductBaseKeys.has(baseValue)) ||
+                nameMatchesKey(value, poProductBaseKeys) ||
+                nameMatchesKey(value, poProductNameKeys) ||
+                (baseValue && (nameMatchesKey(baseValue, poProductBaseKeys) || nameMatchesKey(baseValue, poProductNameKeys)));
+              if (matches) {
+                console.log('✅ Debug: BOM consumption matched PO product', {
+                  bomName: bom.name,
+                  consumption: consumption?.attribute_value,
+                  normalized: value,
+                  baseValue,
+                });
+              }
+              return poProductNameKeys.has(value) ||
+                poProductBaseKeys.has(value) ||
+                (baseValue && poProductBaseKeys.has(baseValue));
+            });
+          });
+
+          if (!consumptionMatch) {
+            const rawMaterialMatch = (bom.lines || []).some(line => {
+              const rawName = normalizeProductIdentifier((line as any)?.raw_material?.name);
+              const baseRaw = buildProductBaseKey((line as any)?.raw_material?.name);
+              const matched = nameMatchesKey(rawName, poProductNameKeys) ||
+                nameMatchesKey(rawName, poProductBaseKeys) ||
+                (baseRaw && (nameMatchesKey(baseRaw, poProductNameKeys) || nameMatchesKey(baseRaw, poProductBaseKeys)));
+              if (matched) {
+                console.log('✅ Debug: BOM raw material matched PO product keywords', {
+                  bomName: bom.name,
+                  rawMaterial: (line as any)?.raw_material?.name,
+                  normalizedRaw: rawName,
+                  baseRaw,
+                });
+              }
+              return matched;
+            });
+
+            if (!rawMaterialMatch) {
+              console.log('⛔ Debug: BOM consumption/raw materials did not match PO products', {
+                bomName: bom.name,
+                consumptions: (bom.lines || []).flatMap(line => (line as any)?.consumptions || []),
+                rawMaterials: (bom.lines || []).map(line => (line as any)?.raw_material?.name),
+              });
+            }
+
+            return rawMaterialMatch;
+          }
+
+          return consumptionMatch;
+        }
+
+        let anyMatch = false;
+
+        validProducts.forEach(prod => {
+          const id = prod.id != null ? String(prod.id) : null;
+          let codeValue = prod.default_code ?? (prod as any).code ?? null;
+          if (!codeValue && prod.name) {
+            codeValue = extractCodeFromName(prod.name);
+          }
+          const code = codeValue ? codeValue.toString().toLowerCase() : '';
+          const colourValue = (prod as any).colour ?? (prod as any).color ?? null;
+          const sizeValue = (prod as any).size ?? null;
+          const nameKey = buildProductMatchKey(prod.name, colourValue, sizeValue);
+          const baseKey = buildProductBaseKey(prod.name);
+          let fallbackKey = '';
+          let fallbackBaseKey = '';
+
+          if (!nameKey && id && poProductsById.has(id)) {
+            const poProduct = poProductsById.get(id);
+            fallbackKey =
+              poProduct?.match_key ||
+              buildProductMatchKey(
+                poProduct?.name,
+                poProduct?.colour ?? poProduct?.color,
+                poProduct?.size
+              );
+            fallbackBaseKey =
+              poProduct?.base_match_key ||
+              buildProductBaseKey(poProduct?.name);
+          }
+
+          const effectiveNameKey = nameKey || fallbackKey;
+          const effectiveBaseKey = baseKey || fallbackBaseKey;
+          const normalizedName = normalizeProductIdentifier(prod.name);
+
+          const idMatch = Boolean(id && poProductIds.has(id));
+          const codeMatch = Boolean(code && poProductCodes.has(code));
+          const nameMatch = Boolean(effectiveNameKey && poProductMatchKeys.has(effectiveNameKey));
+          const baseMatch = Boolean(effectiveBaseKey && poProductBaseKeys.has(effectiveBaseKey));
+          const nameKeyMatch = Boolean(normalizedName && (poProductNameKeys.has(normalizedName) || poProductBaseKeys.has(normalizedName) || nameMatchesKey(normalizedName, poProductNameKeys) || nameMatchesKey(normalizedName, poProductBaseKeys)));
+
+          if (idMatch || codeMatch || nameMatch || baseMatch || nameKeyMatch) {
+            console.log('✅ Debug: BOM product matched PO product', {
+              bomName: bom.name,
+              product: prod,
+              idMatch,
+              codeMatch,
+              nameMatch,
+              baseMatch,
+              nameKeyMatch,
+            });
+            anyMatch = true;
+          }
+        });
+
+        if (!anyMatch) {
+          console.log('⛔ Debug: BOM products did not match PO products', {
+            bomName: bom.name,
+            associatedProducts,
+          });
+        }
+
+        return anyMatch;
+      };
 
       console.log(`📋 Debug: Processing ${poContext.products.length} products`);
 
@@ -567,27 +1143,9 @@ export const GoodsIssueManager: React.FC = () => {
           console.log(`📊 Debug: Found ${bomList.length} BOMs for product ${product.id}:`, bomList);
           
           for (const bom of bomList) {
-            const bomProductMatches = () => {
-              if (bom.product_id && !poProductIds.has(String(bom.product_id))) return false;
-              if (bom.products && bom.products.length) {
-                return bom.products.some(prod => {
-                  const idMatch = prod.id && poProductIds.has(String(prod.id));
-                  const code = (prod.default_code || '').toLowerCase();
-                  const nameTokens = (prod.name || '')
-                    .toLowerCase()
-                    .replace(/[\[\]()]/g, ' ')
-                    .split(/\s+/)
-                    .filter(token => token.length > 2);
-                  const codeMatch = code && poProductCodes.has(code);
-                  const tokenMatch = nameTokens.some(token => poVariantTokens.has(token));
-                  return idMatch || codeMatch || tokenMatch;
-                });
-              }
-              return true;
-            };
-
-            if (!bomProductMatches()) {
-              console.log(`⏭️ Debug: Skipping BOM ${bom.name} (${bom.id}) due to variant mismatch`);
+            console.log('🔍 Debug: Evaluating direct BOM', { id: bom.id, name: bom.name, products: bom.products, product_id: bom.product_id });
+            if (!bomMatchesPOProducts(bom)) {
+              console.log(`⏭️ Debug: Skipping BOM ${bom.name} (${bom.id}) because it does not match PO products`);
               continue;
             }
 
@@ -602,6 +1160,7 @@ export const GoodsIssueManager: React.FC = () => {
           if (bomList.length === 0) {
             console.log(`🔍 Debug: No direct BOMs found, searching all BOMs for product name/code matches`);
             const allBOMs = await bomService.getAllBOMs();
+            console.log('📋 Debug: All BOM names:', allBOMs.map(b => ({ id: b.id, name: b.name, product_id: b.product_id }))); 
             console.log(`📋 Debug: Total BOMs in system: ${allBOMs.length}`);
             
             for (const bom of allBOMs) {
@@ -610,26 +1169,7 @@ export const GoodsIssueManager: React.FC = () => {
               const productCode = product.default_code?.toLowerCase() || '';
               const bomName = bom.name?.toLowerCase() || '';
 
-              const bomProductMatches = () => {
-                if (bom.product_id && !poProductIds.has(String(bom.product_id))) return false;
-                if (bom.products && bom.products.length) {
-                  return bom.products.some(prod => {
-                    const idMatch = prod.id && poProductIds.has(String(prod.id));
-                    const code = (prod.default_code || '').toLowerCase();
-                    const nameTokens = (prod.name || '')
-                      .toLowerCase()
-                      .replace(/[\[\]()]/g, ' ')
-                      .split(/\s+/)
-                      .filter(token => token.length > 2);
-                    const codeMatch = code && poProductCodes.has(code);
-                    const tokenMatch = nameTokens.some(token => poVariantTokens.has(token));
-                    return idMatch || codeMatch || tokenMatch;
-                  });
-                }
-                return true;
-              };
-
-              if (!bomProductMatches()) {
+              if (!bomMatchesPOProducts(bom)) {
                 continue;
               }
 
@@ -682,7 +1222,7 @@ export const GoodsIssueManager: React.FC = () => {
         for (const bomId of missingBomIds) {
           try {
             const bom = await bomService.getBOMById(bomId);
-            if (bom) {
+            if (bom && bomMatchesPOProducts(bom)) {
               bomSet.add(bom.id);
               boms.push(bom);
               console.log(`✅ Debug: Added BOM from marker assignment: ${bom.name} (${bom.id})`);
@@ -699,6 +1239,8 @@ export const GoodsIssueManager: React.FC = () => {
         filteredBoms = filteredBoms.filter(bom => preferredBomIds.has(String(bom.id)));
         console.log(`🎯 Debug: Filtered BOMs to marker assignments: ${filteredBoms.length}`);
       }
+
+      filteredBoms = filteredBoms.filter(bomMatchesPOProducts);
 
       setAvailableBOMs(filteredBoms);
       if (filteredBoms.length > 0) {
@@ -722,6 +1264,42 @@ export const GoodsIssueManager: React.FC = () => {
     } catch (error) {
       console.error('Failed to load available BOMs:', error);
       setAvailableBOMs([]);
+    }
+  };
+
+  const handleCreateSupplierOption = async (label: string): Promise<SearchableOption | null> => {
+    const trimmed = label.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const existing = cuttingSuppliers.find(
+      supplier => supplier.name.toLowerCase() === trimmed.toLowerCase()
+    );
+
+    if (existing) {
+      const value = String(existing.id);
+      setSelectedSupplierId(value);
+      return { value, label: existing.name };
+    }
+
+    try {
+      const created = await cuttingSupplierService.create(trimmed);
+      setCuttingSuppliers(prev => {
+        const next = [...prev, created];
+        return next.sort((a, b) => a.name.localeCompare(b.name));
+      });
+      const value = String(created.id);
+      setSelectedSupplierId(value);
+      toast({ title: 'Supplier Added', description: `${created.name} is now available for selection.` });
+      return { value, label: created.name };
+    } catch (error: any) {
+      toast({
+        title: 'Failed to add supplier',
+        description: error?.message || 'Unable to add supplier at the moment.',
+        variant: 'destructive',
+      });
+      return null;
     }
   };
 
@@ -974,7 +1552,7 @@ export const GoodsIssueManager: React.FC = () => {
               material_name: bomLine.raw_material.name,
               required_quantity: totalRequired,
               issued_so_far: issuedSoFar,
-              issuing_quantity: Math.max(0, totalRequired - issuedSoFar),
+              issuing_quantity: 0,
               unit: bomLine.raw_material.base_unit,
               available_quantity: availableQty
             });
@@ -999,18 +1577,9 @@ export const GoodsIssueManager: React.FC = () => {
       }
       
       // Auto-populate form lines based on BOM requirements
-      const autoLines: CreateGoodsIssueLine[] = filtered
-        .filter(req => !req.category_id) // do not auto-add category placeholder rows
-        .map(req => ({
-          raw_material_id: req.material_id,
-          quantity_issued: req.issuing_quantity,
-          batch_number: '',
-          notes: `BOM-based requirement for ${bom.name} • Total required: ${req.required_quantity} ${req.unit}`
-        }));
-      
       setFormData(prev => ({
         ...prev,
-        lines: autoLines
+        lines: []
       }));
 
     } catch (error) {
@@ -1026,6 +1595,9 @@ export const GoodsIssueManager: React.FC = () => {
     if (bom && activePOContext) {
       setSelectedBOM(bom);
       await calculateBOMBasedRequirements(bom, activePOContext);
+      if (issueTab === 'fabric') {
+        setRequirementMode('bom');
+      }
     }
   };
 
@@ -1096,6 +1668,9 @@ export const GoodsIssueManager: React.FC = () => {
     const marker = markerRequests.find(m => String(m.id) === String(markerId));
     if (marker) {
       await applyMarkerSelection(marker, fallbackOrder);
+      if (issueTab === 'fabric') {
+        setRequirementMode('marker');
+      }
     }
   };
 
@@ -1290,6 +1865,20 @@ export const GoodsIssueManager: React.FC = () => {
       setMarkerOptionsForPO([]);
       setLinkedPurchaseOrders([order]);
 
+      if (issueTab === 'trims') {
+        setLegacySupplier(order.partner_name || '');
+        setSelectedSupplierId('');
+      } else if (order.partner_name) {
+        const match = cuttingSuppliers.find(
+          supplier => supplier.name.toLowerCase() === order.partner_name.toLowerCase()
+        );
+        setSelectedSupplierId(match ? String(match.id) : '');
+        setLegacySupplier('');
+      } else {
+        setSelectedSupplierId('');
+        setLegacySupplier('');
+      }
+
       const context = buildPOContext([order]);
       if (context) {
         setActivePOContext(context);
@@ -1357,7 +1946,7 @@ export const GoodsIssueManager: React.FC = () => {
       }
 
       // For general issues, allow without PO/BOM; for trims, still require supplier
-      if (issueTab === 'trims' && !selectedSupplier) {
+      if (issueTab === 'trims' && !selectedSupplierName) {
         toast({ title: 'Validation Error', description: 'Please select a supplier for trims issue', variant: 'destructive' });
         return;
       }
@@ -1367,6 +1956,19 @@ export const GoodsIssueManager: React.FC = () => {
       if (cleanedLines.length === 0) {
         toast({ title: 'Validation Error', description: 'No valid line items to issue.', variant: 'destructive' });
         return;
+      }
+
+      const requirementResult = computeRequirementCheck(cleanedLines);
+      setRequirementCheck(prev => requirementChecksEqual(prev, requirementResult) ? prev : requirementResult);
+      let approvalNote: string | undefined;
+      if (requirementResult.needsApproval) {
+        toast({
+          title: 'Approval Required',
+          description: 'Issued quantities exceed the selected requirement. Issue will be saved with approval note.',
+          variant: 'destructive',
+        });
+        const detailText = requirementResult.details.length ? ` - ${requirementResult.details.join(' | ')}` : '';
+        approvalNote = `APPROVAL_PENDING: ${requirementMode.toUpperCase()}${detailText}`;
       }
 
       setLoading(true);
@@ -1399,15 +2001,21 @@ export const GoodsIssueManager: React.FC = () => {
         ? `Marker: ${selectedMarkerRequest.marker_number} (${selectedMarkerRequest.marker_type})`
         : undefined;
 
+      const requirementNote = requirementResult.mode !== 'none'
+        ? `Requirement Mode: ${requirementMode.toUpperCase()} | Issued=${formatNumeric(requirementResult.totalIssued, 3) ?? requirementResult.totalIssued}${requirementMode === 'marker' && markerRequirementUnit ? ` ${markerRequirementUnit}` : ''}${requirementResult.limit != null ? ` | Limit=${formatNumeric(requirementResult.limit, 3) ?? requirementResult.limit}${requirementMode === 'marker' && markerRequirementUnit ? ` ${markerRequirementUnit}` : ''}` : ''}${requirementResult.details.length && !requirementResult.needsApproval ? ` | ${requirementResult.details.join(' | ')}` : ''}`
+        : undefined;
+
       const newIssue = await goodsIssueService.createGoodsIssue({
         ...formData,
         reference_number: referenceNumber,
         lines: cleanedLines,
         notes: [
-          issueTab === 'trims' && selectedSupplier ? `Supplier: ${selectedSupplier}` : undefined,
+          issueTab === 'trims' && selectedSupplierName ? `Supplier: ${selectedSupplierName}` : undefined,
           categoryTotalsNote,
           markerNote,
           linkedPoNote,
+          requirementNote,
+          approvalNote,
         ].filter(Boolean).join('\n') || undefined,
       });
       setGoodsIssues(prev => [newIssue, ...prev]);
@@ -1770,7 +2378,7 @@ export const GoodsIssueManager: React.FC = () => {
       await Promise.resolve(
         generateGoodsIssuePdf(
           selectedIssue,
-          selectedSupplier || undefined,
+          selectedSupplierName || undefined,
           issuedMap,
           nameById,
           categoryById,
@@ -1989,21 +2597,52 @@ export const GoodsIssueManager: React.FC = () => {
                       }))}
                     />
 
-                    {issueTab === 'trims' && (
-                      <div className="mt-4">
-                        <Label>Supplier *</Label>
-                        <SearchableSelect
-                          value={selectedSupplier}
-                          onChange={setSelectedSupplier}
-                          placeholder="Select supplier"
-                          searchPlaceholder="Search suppliers..."
-                          options={suppliers.map(name => ({
-                            value: name,
-                            label: name
-                          }))}
-                        />
-                      </div>
-                    )}
+                    <div className="mt-4">
+                      {issueTab === 'fabric' ? (
+                        <>
+                          <Label>Cutting Supplier</Label>
+                          <SearchableSelect
+                            value={selectedSupplierId}
+                            onChange={setSelectedSupplierId}
+                            placeholder="Select cutting supplier"
+                            searchPlaceholder="Search or add cutting supplier..."
+                            allowCreate
+                            onCreateOption={handleCreateSupplierOption}
+                            createLabel={label => `Add "${label}"`}
+                            options={cuttingSuppliers.map(supplier => ({
+                              value: String(supplier.id),
+                              label: supplier.name
+                            }))}
+                          />
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Start typing to search or add a new cutting supplier.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <Label>Supplier *</Label>
+                          <SearchableSelect
+                            value={legacySupplier}
+                            onChange={setLegacySupplier}
+                            placeholder="Select supplier"
+                            searchPlaceholder="Search suppliers..."
+                            allowCreate
+                            onCreateOption={label => {
+                              const trimmed = label.trim();
+                              if (!trimmed) return null;
+                              setPoSuppliers(prev => (prev.includes(trimmed) ? prev : [...prev, trimmed]));
+                              setLegacySupplier(trimmed);
+                              return { value: trimmed, label: trimmed };
+                            }}
+                            createLabel={label => `Add "${label}"`}
+                            options={poSuppliers.map(name => ({
+                              value: name,
+                              label: name
+                            }))}
+                          />
+                        </>
+                      )}
+                    </div>
                     
                     {activePOContext && (
                       <div className="mt-2 p-3 bg-green-50 rounded-lg border border-green-200 space-y-2">
@@ -2059,11 +2698,11 @@ export const GoodsIssueManager: React.FC = () => {
                           )
                         )}
 
-                        {selectedMarkerRequest && (
-                          <div className="p-3 bg-rose-50 rounded-lg border border-rose-200 space-y-1">
-                            <p className="text-sm font-semibold text-rose-900">
-                              Marker {selectedMarkerRequest.marker_number}
-                            </p>
+                    {selectedMarkerRequest && (
+                      <div className="p-3 bg-rose-50 rounded-lg border border-rose-200 space-y-1">
+                        <p className="text-sm font-semibold text-rose-900">
+                          Marker {selectedMarkerRequest.marker_number}
+                        </p>
                             <p className="text-xs text-rose-700">
                               {selectedMarkerRequest.marker_type === 'body' ? 'Body' : 'Gusset'} marker • Measurement: {selectedMarkerRequest.measurement_type?.toUpperCase?.() || 'YARD'}
                             </p>
@@ -2076,16 +2715,75 @@ export const GoodsIssueManager: React.FC = () => {
                             {markerPendingPiecesText && (
                               <p className="text-xs text-rose-700">Pieces: {markerPendingPiecesText}</p>
                             )}
-                          </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {issueTab === 'fabric' && (selectedBOM || selectedMarkerRequest) && (
+                  <div className="mt-4 space-y-2">
+                    <Label>Issue Against Requirement</Label>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={requirementMode === 'bom' ? 'default' : 'outline'}
+                        onClick={() => setRequirementMode('bom')}
+                        disabled={!selectedBOM || bomMaterialRequirements.length === 0}
+                      >
+                        BOM Requirement
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={requirementMode === 'marker' ? 'default' : 'outline'}
+                        onClick={() => setRequirementMode('marker')}
+                        disabled={!selectedMarkerRequest || markerTotalRequirement == null}
+                      >
+                        Marker Requirement
+                      </Button>
+                    </div>
+
+                    {requirementCheck.mode !== 'none' && (
+                      <div className={`text-xs ${requirementCheck.needsApproval ? 'text-red-600' : 'text-muted-foreground'} space-y-1`}>
+                        <div>
+                          {requirementCheck.mode === 'bom' ? (
+                            <span>
+                              Issuing against BOM requirement{requirementCheck.limit != null ? ` • Total required ${formatNumeric(requirementCheck.limit, 3) ?? requirementCheck.limit}` : ''}
+                            </span>
+                          ) : (
+                            <span>
+                              Issuing against marker requirement{requirementCheck.limit != null ? ` • Required ${formatNumeric(requirementCheck.limit, 3) ?? requirementCheck.limit} ${markerRequirementUnit || ''}` : ''}
+                            </span>
+                          )}
+                          <span className="ml-2">
+                            Issued {formatNumeric(requirementCheck.totalIssued, 3) ?? requirementCheck.totalIssued}
+                            {requirementCheck.mode === 'marker' && markerRequirementUnit ? ` ${markerRequirementUnit}` : ''}
+                          </span>
+                        </div>
+                        {requirementCheck.needsApproval && requirementCheck.details.length > 0 && (
+                          <ul className="list-disc pl-5 space-y-1">
+                            {requirementCheck.details.map(detail => (
+                              <li key={detail}>{detail}</li>
+                            ))}
+                          </ul>
+                        )}
+                        {requirementCheck.needsApproval && requirementCheck.details.length === 0 && (
+                          <p>Issued quantities exceed the selected requirement.</p>
+                        )}
+                        {!requirementCheck.needsApproval && requirementCheck.mode !== 'none' && (
+                          <p>Issued quantities are within the selected requirement.</p>
                         )}
                       </div>
                     )}
-                    
-                    {/* BOM Selection */}
-                    {showBOMSelection && availableBOMs.length > 0 && (
-                      <div className="mt-4">
-                        <Label>Select BOM for Material Requirements *</Label>
-                        <SearchableSelect
+                  </div>
+                )}
+
+                {/* BOM Selection */}
+                {showBOMSelection && availableBOMs.length > 0 && (
+                  <div className="mt-4">
+                    <Label>Select BOM for Material Requirements *</Label>
+                    <SearchableSelect
                           value={selectedBOM?.id ? String(selectedBOM.id) : ''}
                           onChange={handleBOMSelection}
                           placeholder="Select BOM to calculate material requirements"
@@ -2858,7 +3556,6 @@ export const GoodsIssueManager: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
       {/* Full-Screen Barcode Scanner for Goods Issue */}
       <BarcodeScanner
         isOpen={giShowBarcodeCamera}
@@ -3080,7 +3777,7 @@ export const GoodsIssueManager: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      </div>
-    </ModernLayout>
-  );
+    </div>
+  </ModernLayout>
+);
 };

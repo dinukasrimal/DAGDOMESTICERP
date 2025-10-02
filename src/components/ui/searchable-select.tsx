@@ -28,6 +28,9 @@ interface SearchableSelectProps {
   searchPlaceholder?: string;
   disabled?: boolean;
   className?: string;
+  allowCreate?: boolean;
+  onCreateOption?: (label: string) => Promise<SearchableOption | null> | SearchableOption | null;
+  createLabel?: (label: string) => string;
 }
 
 export const SearchableSelect: React.FC<SearchableSelectProps> = ({
@@ -39,13 +42,49 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
   searchPlaceholder = 'Search...',
   disabled = false,
   className,
+  allowCreate = false,
+  onCreateOption,
+  createLabel,
 }) => {
   const [open, setOpen] = React.useState(false);
+  const [searchTerm, setSearchTerm] = React.useState('');
+  const [isCreating, setIsCreating] = React.useState(false);
   const selectedOption = options.find(option => option.value === value);
+
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+  const canCreate =
+    allowCreate &&
+    !disabled &&
+    normalizedSearch.length > 0 &&
+    !options.some(opt => opt.label.toLowerCase() === normalizedSearch || opt.value.toLowerCase() === normalizedSearch);
+
+  React.useEffect(() => {
+    if (!open) {
+      setSearchTerm('');
+    }
+  }, [open]);
 
   const handleSelect = (selectedValue: string) => {
     onChange(selectedValue);
     setOpen(false);
+    setSearchTerm('');
+  };
+
+  const handleCreateOption = async () => {
+    if (!canCreate || !onCreateOption) return;
+    const label = searchTerm.trim();
+    if (!label) return;
+    setIsCreating(true);
+    try {
+      const created = await onCreateOption(label);
+      if (created) {
+        onChange(created.value);
+        setOpen(false);
+        setSearchTerm('');
+      }
+    } finally {
+      setIsCreating(false);
+    }
   };
 
   return (
@@ -83,7 +122,17 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
           const haystack = `${option.label} ${option.description ?? ''}`.toLowerCase();
           return haystack.includes(search.toLowerCase()) ? 1 : 0;
         }}>
-          <CommandInput placeholder={searchPlaceholder} />
+          <CommandInput
+            placeholder={searchPlaceholder}
+            value={searchTerm}
+            onValueChange={setSearchTerm}
+            onKeyDown={event => {
+              if (event.key === 'Enter' && canCreate) {
+                event.preventDefault();
+                void handleCreateOption();
+              }
+            }}
+          />
           <CommandList>
             <CommandEmpty>{emptyLabel}</CommandEmpty>
             <CommandGroup>
@@ -109,6 +158,27 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
                   </div>
                 </CommandItem>
               ))}
+              {canCreate && (
+                <CommandItem
+                  value={`__create-${normalizedSearch}`}
+                  disabled={isCreating}
+                  onSelect={() => {
+                    void handleCreateOption();
+                  }}
+                >
+                  <Check className="mr-2 h-4 w-4 opacity-0" />
+                  <div className="flex flex-col">
+                    <span>
+                      {createLabel
+                        ? createLabel(searchTerm.trim())
+                        : `Add "${searchTerm.trim()}"`}
+                    </span>
+                    {isCreating && (
+                      <span className="text-xs text-muted-foreground">Saving…</span>
+                    )}
+                  </div>
+                </CommandItem>
+              )}
             </CommandGroup>
           </CommandList>
         </Command>
