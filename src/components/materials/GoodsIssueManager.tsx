@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -35,6 +35,8 @@ import {
   CreateGoodsIssue, 
   CreateGoodsIssueLine 
 } from '../../services/goodsIssueService';
+import { markerRequestService, MarkerRequest } from '@/services/markerRequestService';
+import { MarkerFabricAssignment } from '@/types/marker';
 import { RawMaterialsService, RawMaterialWithInventory } from '../../services/rawMaterialsService';
 import { PurchaseOrderService, PurchaseOrder } from '../../services/purchaseOrderService';
 import { supabase } from '@/integrations/supabase/client';
@@ -49,6 +51,16 @@ const rawMaterialsService = new RawMaterialsService();
 const purchaseOrderService = new PurchaseOrderService();
 const bomService = new BOMService();
 
+const formatNumeric = (value: number | null | undefined, digits = 3): string | null => {
+  if (value == null) return null;
+  const numeric = Number(value);
+  if (Number.isNaN(numeric)) return null;
+  return numeric.toLocaleString(undefined, {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: 0,
+  });
+};
+
 const ISSUE_TYPES = [
   { value: 'production', label: 'Production', icon: Factory, color: 'blue' },
   { value: 'maintenance', label: 'Maintenance', icon: Wrench, color: 'purple' },
@@ -62,6 +74,12 @@ export const GoodsIssueManager: React.FC = () => {
   const [rawMaterials, setRawMaterials] = useState<RawMaterialWithInventory[]>([]);
   const [productionOrders, setProductionOrders] = useState<any[]>([]);
   const [purchaseOrders, setPurchaseOrders] = useState<any[]>([]);
+  const [markerRequests, setMarkerRequests] = useState<MarkerRequest[]>([]);
+  const [markerRequestLoading, setMarkerRequestLoading] = useState(false);
+  const [markerOptionsForPO, setMarkerOptionsForPO] = useState<MarkerRequest[]>([]);
+  const [selectedMarkerRequest, setSelectedMarkerRequest] = useState<MarkerRequest | null>(null);
+  const [linkedPurchaseOrders, setLinkedPurchaseOrders] = useState<any[]>([]);
+  const [activePOContext, setActivePOContext] = useState<any | null>(null);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<GoodsIssue | null>(null);
   const [isViewDialogOpen, setIsViewDialogOpen] = useState(false);
@@ -126,9 +144,91 @@ export const GoodsIssueManager: React.FC = () => {
   // Per-material alternate unit issuing state within category selection
   const [altIssueModes, setAltIssueModes] = useState<Record<string, { enabled: boolean; unit: string; qty: number; factor: number }>>({});
 
+  const purchaseOrderMap = useMemo(() => new Map(purchaseOrders.map(order => [String(order.id), order])), [purchaseOrders]);
+
+  const markerSelectOptions = useMemo(
+    () =>
+      markerOptionsForPO.map(marker => {
+        const assignedPos = (marker.po_ids || [])
+          .map(id => purchaseOrderMap.get(String(id)))
+          .filter((po): po is any => Boolean(po))
+          .map(po => po.po_number || po.name || `PO ${po.id}`)
+          .join(', ');
+
+        const descriptionParts = [
+          marker.marker_type === 'body' ? 'Body Marker' : 'Gusset Marker',
+          (marker.measurement_type || 'yard').toUpperCase(),
+        ];
+        if (assignedPos) {
+          descriptionParts.push(`POs: ${assignedPos}`);
+        }
+
+        return {
+          value: String(marker.id),
+          label: marker.marker_number,
+          description: descriptionParts.join(' • '),
+        };
+      }),
+    [markerOptionsForPO, purchaseOrderMap]
+  );
+
+  const markerDetails = useMemo(() => (selectedMarkerRequest?.details as Record<string, any> | null) ?? null, [selectedMarkerRequest]);
+  const markerRequirementSummary = useMemo(() => {
+    if (!markerDetails) return null;
+    const summary = markerDetails.fabric_requirement_summary as
+      | { pending_pieces?: number; net_requirement?: number; total_requirement?: number; unit?: string }
+      | null
+      | undefined;
+    return summary ?? null;
+  }, [markerDetails]);
+  const markerPendingPieces = markerDetails?.total_pending_pieces ?? markerRequirementSummary?.pending_pieces ?? null;
+  const markerNetRequirement = markerRequirementSummary?.net_requirement ?? null;
+  const markerTotalRequirement = markerRequirementSummary?.total_requirement ??
+    (selectedMarkerRequest?.measurement_type === 'kg'
+      ? selectedMarkerRequest?.total_fabric_kg ?? null
+      : selectedMarkerRequest?.total_fabric_yards ?? null);
+  const markerRequirementUnit = markerRequirementSummary?.unit ??
+    (selectedMarkerRequest?.measurement_type === 'kg' ? 'kg' : 'yard');
+  const aggregatedPoBadges = useMemo(
+    () =>
+      linkedPurchaseOrders.map(po => ({
+        id: String(po.id),
+        label: po.po_number || po.name || `PO ${po.id}`,
+      })),
+    [linkedPurchaseOrders]
+  );
+  const markerRequirementText = markerTotalRequirement != null
+    ? `${formatNumeric(markerTotalRequirement, markerRequirementUnit === 'kg' ? 3 : 2) ?? markerTotalRequirement} ${markerRequirementUnit}`
+    : null;
+  const markerNetRequirementText = markerNetRequirement != null
+    ? `${formatNumeric(markerNetRequirement, markerRequirementUnit === 'kg' ? 3 : 2) ?? markerNetRequirement} ${markerRequirementUnit}`
+    : null;
+  const markerPendingPiecesText = markerPendingPieces != null
+    ? `${formatNumeric(markerPendingPieces, 0) ?? markerPendingPieces}`
+    : null;
+
   useEffect(() => {
     loadInitialData();
   }, []);
+
+  const loadMarkerRequests = async (): Promise<MarkerRequest[]> => {
+    try {
+      setMarkerRequestLoading(true);
+      const markers = await markerRequestService.getMarkerRequests();
+      setMarkerRequests(markers);
+      return markers;
+    } catch (error) {
+      console.error('Failed to load marker requests', error);
+      toast({
+        title: 'Marker Requests Unavailable',
+        description: 'Could not load marker requests. Marker-linked issuing may be limited.',
+        variant: 'destructive'
+      });
+      return [];
+    } finally {
+      setMarkerRequestLoading(false);
+    }
+  };
 
   // Refresh inventory when GRN posts
   useEffect(() => {
@@ -150,6 +250,7 @@ export const GoodsIssueManager: React.FC = () => {
       setPurchaseOrders(purchaseOrdersData);
       const uniqSuppliers = Array.from(new Set((purchaseOrdersData || []).map(o => o.partner_name).filter(Boolean)));
       setSuppliers(uniqSuppliers as string[]);
+      await loadMarkerRequests();
     } catch (error: any) {
       toast({
         title: 'Error',
@@ -236,6 +337,34 @@ export const GoodsIssueManager: React.FC = () => {
       console.error('Failed to load purchase orders:', error);
       return [];
     }
+  };
+
+  const buildPOContext = (orders: any[], marker?: MarkerRequest | null) => {
+    if (!orders || orders.length === 0) return null;
+    const poNumbers = Array.from(new Set(orders.map((po: any) => po.po_number).filter(Boolean)));
+    const flattenedProducts = orders.flatMap((po: any) =>
+      (po.products || []).map((product: any) => ({
+        ...product,
+        source_po_id: po.id,
+        source_po_number: po.po_number,
+      }))
+    );
+
+    return {
+      id: marker?.id ?? orders[0].id,
+      po_number: orders[0].po_number,
+      po_numbers: poNumbers,
+      marker_number: marker?.marker_number ?? null,
+      marker_type: marker?.marker_type ?? null,
+      measurement_type: marker?.measurement_type ?? null,
+      total_fabric_yards: marker?.total_fabric_yards ?? null,
+      total_fabric_kg: marker?.total_fabric_kg ?? null,
+      marker_details: marker?.details ?? null,
+      products: flattenedProducts,
+      supplier_name: orders[0].supplier_name,
+      outstanding_qty: orders.reduce((sum: number, po: any) => sum + Number(po.outstanding_qty || po.pending_qty || 0), 0),
+      rawOrders: orders,
+    };
   };
 
   const loadActiveProductionOrders = async (): Promise<any[]> => {
@@ -367,24 +496,62 @@ export const GoodsIssueManager: React.FC = () => {
   };
 
   // Load available BOMs for products in the selected PO
-  const loadAvailableBOMs = async (purchaseOrder: any) => {
+  const loadAvailableBOMs = async (poContext: any, marker?: MarkerRequest | null) => {
     try {
-      console.log('🔍 Debug: Loading BOMs for PO:', purchaseOrder.po_number);
-      console.log('📦 Debug: PO products:', purchaseOrder.products);
+      if (!poContext) {
+        setAvailableBOMs([]);
+        return;
+      }
+
+      const markerAssignments: MarkerFabricAssignment[] = [
+        ...(((marker?.fabric_assignments as MarkerFabricAssignment[] | null | undefined) ?? [])),
+        ...(marker?.fabric_assignment ? [marker.fabric_assignment] : []),
+      ].filter((assignment): assignment is MarkerFabricAssignment => Boolean(assignment && assignment.bom_id));
+
+      const preferredBomIds = new Set<string>(
+        (markerAssignments || [])
+          .map(assignment => assignment?.bom_id)
+          .filter((id): id is string => Boolean(id))
+      );
+
+      console.log('🔍 Debug: Loading BOMs for PO context:', {
+        marker: marker?.marker_number,
+        po_numbers: poContext.po_numbers || [poContext.po_number],
+      });
+      console.log('📦 Debug: PO products:', poContext.products);
       
       const bomSet = new Set<string>();
       const boms: BOMWithLines[] = [];
       
-      if (!purchaseOrder.products || purchaseOrder.products.length === 0) {
+      if (!poContext.products || poContext.products.length === 0) {
         console.log('❌ Debug: No products found in PO');
         setAvailableBOMs([]);
         return;
       }
 
-      console.log(`📋 Debug: Processing ${purchaseOrder.products.length} products`);
+      const poProductIds = new Set<string>(
+        poContext.products.map((product: any) => String(product.id)).filter(Boolean)
+      );
+      const poProductCodes = new Set<string>(
+        poContext.products
+          .map((product: any) => (product.default_code || product.code || '').toString().toLowerCase())
+          .filter(code => Boolean(code))
+      );
+      const poVariantTokens = new Set<string>(
+        poContext.products
+          .flatMap((product: any) =>
+            (product.name || '')
+              .toLowerCase()
+              .replace(/[\[\]()]/g, ' ')
+              .split(/\s+/)
+              .filter(token => token.length > 2)
+          )
+      );
+
+      console.log(`📋 Debug: Processing ${poContext.products.length} products`);
 
       // Get BOMs for all products in the PO
-      for (const product of purchaseOrder.products) {
+      for (const product of poContext.products) {
         console.log('🔄 Debug: Processing product:', product);
         
         if (!product.id) {
@@ -400,6 +567,30 @@ export const GoodsIssueManager: React.FC = () => {
           console.log(`📊 Debug: Found ${bomList.length} BOMs for product ${product.id}:`, bomList);
           
           for (const bom of bomList) {
+            const bomProductMatches = () => {
+              if (bom.product_id && !poProductIds.has(String(bom.product_id))) return false;
+              if (bom.products && bom.products.length) {
+                return bom.products.some(prod => {
+                  const idMatch = prod.id && poProductIds.has(String(prod.id));
+                  const code = (prod.default_code || '').toLowerCase();
+                  const nameTokens = (prod.name || '')
+                    .toLowerCase()
+                    .replace(/[\[\]()]/g, ' ')
+                    .split(/\s+/)
+                    .filter(token => token.length > 2);
+                  const codeMatch = code && poProductCodes.has(code);
+                  const tokenMatch = nameTokens.some(token => poVariantTokens.has(token));
+                  return idMatch || codeMatch || tokenMatch;
+                });
+              }
+              return true;
+            };
+
+            if (!bomProductMatches()) {
+              console.log(`⏭️ Debug: Skipping BOM ${bom.name} (${bom.id}) due to variant mismatch`);
+              continue;
+            }
+
             if (!bomSet.has(bom.id)) {
               bomSet.add(bom.id);
               boms.push(bom);
@@ -418,7 +609,30 @@ export const GoodsIssueManager: React.FC = () => {
               const productName = product.name?.toLowerCase() || '';
               const productCode = product.default_code?.toLowerCase() || '';
               const bomName = bom.name?.toLowerCase() || '';
-              
+
+              const bomProductMatches = () => {
+                if (bom.product_id && !poProductIds.has(String(bom.product_id))) return false;
+                if (bom.products && bom.products.length) {
+                  return bom.products.some(prod => {
+                    const idMatch = prod.id && poProductIds.has(String(prod.id));
+                    const code = (prod.default_code || '').toLowerCase();
+                    const nameTokens = (prod.name || '')
+                      .toLowerCase()
+                      .replace(/[\[\]()]/g, ' ')
+                      .split(/\s+/)
+                      .filter(token => token.length > 2);
+                    const codeMatch = code && poProductCodes.has(code);
+                    const tokenMatch = nameTokens.some(token => poVariantTokens.has(token));
+                    return idMatch || codeMatch || tokenMatch;
+                  });
+                }
+                return true;
+              };
+
+              if (!bomProductMatches()) {
+                continue;
+              }
+
               // Extract meaningful words from names (remove brackets, dashes, etc.)
               const getCleanWords = (text: string) => {
                 return text.replace(/[\[\]()-]/g, ' ').split(/\s+/).filter(word => word.length > 1);
@@ -460,14 +674,44 @@ export const GoodsIssueManager: React.FC = () => {
       }
       
       console.log(`🎯 Debug: Total BOMs found: ${boms.length}`, boms);
-      
-      setAvailableBOMs(boms);
-      if (boms.length > 0) {
+
+      if (preferredBomIds.size) {
+        const bomIdsPresent = new Set(boms.map(b => String(b.id)));
+        const missingBomIds = Array.from(preferredBomIds).filter(id => !bomIdsPresent.has(id));
+
+        for (const bomId of missingBomIds) {
+          try {
+            const bom = await bomService.getBOMById(bomId);
+            if (bom) {
+              bomSet.add(bom.id);
+              boms.push(bom);
+              console.log(`✅ Debug: Added BOM from marker assignment: ${bom.name} (${bom.id})`);
+            }
+          } catch (error) {
+            console.warn(`⚠️ Debug: Failed to fetch BOM ${bomId} from marker assignment`, error);
+          }
+        }
+      }
+
+      let filteredBoms = boms;
+
+      if (preferredBomIds.size) {
+        filteredBoms = filteredBoms.filter(bom => preferredBomIds.has(String(bom.id)));
+        console.log(`🎯 Debug: Filtered BOMs to marker assignments: ${filteredBoms.length}`);
+      }
+
+      setAvailableBOMs(filteredBoms);
+      if (filteredBoms.length > 0) {
         setShowBOMSelection(true);
         toast({
           title: 'BOMs Found',
-          description: `Found ${boms.length} available BOMs for products in this purchase order. Please select a BOM to calculate material requirements.`
+          description: `Found ${filteredBoms.length} available BOMs for the selected context. Please select a BOM to calculate material requirements.`
         });
+
+        if (filteredBoms.length === 1) {
+          setSelectedBOM(filteredBoms[0]);
+          await calculateBOMBasedRequirements(filteredBoms[0], poContext);
+        }
       } else {
         toast({
           title: 'No BOMs Found',
@@ -482,78 +726,81 @@ export const GoodsIssueManager: React.FC = () => {
   };
 
   // Helper: fetch total issued quantity per material for a given PO
-  const fetchIssuedSoFarForPO = async (poNumber: string): Promise<Map<string, number>> => {
-    try {
-      const { data: issues, error: issueErr } = await supabase
-        .from('goods_issue')
-        .select('id')
-        .eq('reference_number', poNumber)
-        .eq('status', 'issued');
-      if (!issueErr && issues && issues.length > 0) {
-        const issueIds = issues.map(i => i.id);
-        const { data: lines, error: linesErr } = await supabase
-          .from('goods_issue_lines')
-          .select('raw_material_id, quantity_issued')
-          .in('goods_issue_id', issueIds);
-        if (!linesErr && lines) {
-          const map = new Map<string, number>();
-          for (const l of lines) {
-            const key = l.raw_material_id?.toString();
-            if (!key) continue;
-            map.set(key, (map.get(key) || 0) + (Number(l.quantity_issued) || 0));
-          }
-          return map;
-        }
-      }
+  const fetchIssuedSoFarForPO = async (poNumberOrNumbers: string | string[]): Promise<Map<string, number>> => {
+    const poNumbers = (Array.isArray(poNumberOrNumbers) ? poNumberOrNumbers : [poNumberOrNumbers])
+      .filter((value): value is string => Boolean(value));
 
-      // Fallback: derive from raw_material_inventory if it has po_number + transaction_type
-      // Attempt with transaction_type filter first
-      let map = new Map<string, number>();
-      let rmiErr: any = null;
-      try {
-        const { data, error } = await supabase
-          .from('raw_material_inventory')
-          .select('raw_material_id, quantity_available, quantity_on_hand, transaction_type, po_number')
-          .eq('transaction_type', 'issue')
-          .eq('po_number', poNumber);
-        rmiErr = error;
-        if (!error && data) {
-          for (const row of data) {
-            const key = String((row as any).raw_material_id);
-            const qty = Math.abs(Number((row as any).quantity_available ?? (row as any).quantity_on_hand ?? 0));
-            map.set(key, (map.get(key) || 0) + qty);
-          }
-          if (map.size) return map;
-        }
-      } catch (e) {
-        rmiErr = e;
-      }
+    const aggregate = new Map<string, number>();
+    if (!poNumbers.length) return aggregate;
 
-      // If transaction_type isn't available, fall back to negative rows by po_number only
+    for (const poNumber of poNumbers) {
       try {
-        const { data, error } = await supabase
-          .from('raw_material_inventory')
-          .select('raw_material_id, quantity_available, quantity_on_hand, po_number')
-          .eq('po_number', poNumber);
-        if (!error && data) {
-          const fallback = new Map<string, number>();
-          for (const row of data) {
-            const qoh = Number((row as any).quantity_on_hand ?? 0);
-            const qav = Number((row as any).quantity_available ?? 0);
-            // Count only negative ledger rows as issued
-            const isNeg = qoh < 0 || qav < 0;
-            if (!isNeg) continue;
-            const key = String((row as any).raw_material_id);
-            const qty = Math.abs(qoh !== 0 ? qoh : qav);
-            fallback.set(key, (fallback.get(key) || 0) + qty);
+        const { data: issues, error: issueErr } = await supabase
+          .from('goods_issue')
+          .select('id')
+          .eq('reference_number', poNumber)
+          .eq('status', 'issued');
+
+        if (!issueErr && issues && issues.length > 0) {
+          const issueIds = issues.map(i => i.id);
+          const { data: lines, error: linesErr } = await supabase
+            .from('goods_issue_lines')
+            .select('raw_material_id, quantity_issued')
+            .in('goods_issue_id', issueIds);
+          if (!linesErr && lines) {
+            for (const l of lines) {
+              const key = l.raw_material_id?.toString();
+              if (!key) continue;
+              aggregate.set(key, (aggregate.get(key) || 0) + (Number(l.quantity_issued) || 0));
+            }
+            continue;
           }
-          if (fallback.size) return fallback;
         }
-      } catch {}
-      return new Map();
-    } catch {
-      return new Map();
+
+        // Fallback: derive from raw_material_inventory if it has po_number + transaction_type
+        try {
+          const { data, error } = await supabase
+            .from('raw_material_inventory')
+            .select('raw_material_id, quantity_available, quantity_on_hand, transaction_type, po_number')
+            .eq('transaction_type', 'issue')
+            .eq('po_number', poNumber);
+          if (!error && data) {
+            for (const row of data) {
+              const key = String((row as any).raw_material_id);
+              const qty = Math.abs(Number((row as any).quantity_available ?? (row as any).quantity_on_hand ?? 0));
+              aggregate.set(key, (aggregate.get(key) || 0) + qty);
+            }
+            if (data.length) continue;
+          }
+        } catch {
+        }
+
+        // If transaction_type isn't available, fall back to negative rows by po_number only
+        try {
+          const { data, error } = await supabase
+            .from('raw_material_inventory')
+            .select('raw_material_id, quantity_available, quantity_on_hand, po_number')
+            .eq('po_number', poNumber);
+          if (!error && data) {
+            for (const row of data) {
+              const qoh = Number((row as any).quantity_on_hand ?? 0);
+              const qav = Number((row as any).quantity_available ?? 0);
+              const isNeg = qoh < 0 || qav < 0;
+              if (!isNeg) continue;
+              const key = String((row as any).raw_material_id);
+              const qty = Math.abs(qoh !== 0 ? qoh : qav);
+              aggregate.set(key, (aggregate.get(key) || 0) + qty);
+            }
+          }
+        } catch {
+          // ignore fallback errors per PO
+        }
+      } catch {
+        // ignore single PO errors and continue
+      }
     }
+
+    return aggregate;
   };
 
   // Calculate material requirements based on selected BOM and PO quantities
@@ -567,8 +814,13 @@ export const GoodsIssueManager: React.FC = () => {
       }
 
       // Load issued quantities so far for this PO, grouped by material
-      const issuedMap = purchaseOrder?.po_number
-        ? await fetchIssuedSoFarForPO(purchaseOrder.po_number)
+      const poNumbers = purchaseOrder?.po_numbers?.length
+        ? purchaseOrder.po_numbers
+        : purchaseOrder?.po_number
+        ? [purchaseOrder.po_number]
+        : [];
+      const issuedMap = poNumbers.length
+        ? await fetchIssuedSoFarForPO(poNumbers)
         : new Map<string, number>();
       // Keep a copy for rendering per-material issued in category selections
       setIssuedByMaterial(new Map(issuedMap));
@@ -771,9 +1023,79 @@ export const GoodsIssueManager: React.FC = () => {
   const handleBOMSelection = async (bomId: string) => {
     if (!bomId) return;
     const bom = availableBOMs.find(b => String(b.id) === String(bomId));
-    if (bom && selectedPurchaseOrder) {
+    if (bom && activePOContext) {
       setSelectedBOM(bom);
-      await calculateBOMBasedRequirements(bom, selectedPurchaseOrder);
+      await calculateBOMBasedRequirements(bom, activePOContext);
+    }
+  };
+
+  const resolveMarkerOptionsForOrder = (order: any): MarkerRequest[] => {
+    if (!order || !order.id) return [];
+    const orderId = String(order.id);
+    return markerRequests.filter(marker => Array.isArray(marker.po_ids) && marker.po_ids.some(poId => String(poId) === orderId));
+  };
+
+  const applyMarkerSelection = async (marker: MarkerRequest, fallbackOrder?: any) => {
+    if (!marker) return;
+
+    const markerPoIds = Array.from(new Set((marker.po_ids || []).map(id => String(id)).filter(Boolean)));
+    const resolvedOrders = markerPoIds
+      .map(id => purchaseOrderMap.get(id))
+      .filter((po): po is any => Boolean(po));
+
+    if (!resolvedOrders.length && fallbackOrder) {
+      resolvedOrders.push(fallbackOrder);
+    }
+
+    if (!resolvedOrders.length) {
+      toast({
+        title: 'Marker Purchase Orders Missing',
+        description: `Could not resolve purchase orders for marker ${marker.marker_number}.`
+      });
+      return;
+    }
+
+    setLinkedPurchaseOrders(resolvedOrders);
+    setSelectedMarkerRequest(marker);
+    setFormData(prev => ({
+      ...prev,
+      reference_number: marker.marker_number || prev.reference_number,
+    }));
+    setSelectedPurchaseOrder(resolvedOrders[0]);
+
+    const context = buildPOContext(resolvedOrders, marker);
+    if (context) {
+      setActivePOContext(context);
+
+      setSelectedBOM(null);
+      setBomMaterialRequirements([]);
+      setShowBOMSelection(false);
+
+      await loadAvailableBOMs(context, marker);
+    }
+  };
+
+  const handleMarkerSelectionChange = async (markerId: string, fallbackOrder?: any) => {
+    if (!markerId) {
+      setSelectedMarkerRequest(null);
+      if (fallbackOrder) {
+        const context = buildPOContext([fallbackOrder]);
+        if (context) {
+          setActivePOContext(context);
+          setLinkedPurchaseOrders([fallbackOrder]);
+          setSelectedBOM(null);
+          setBomMaterialRequirements([]);
+          setShowBOMSelection(false);
+
+          await loadAvailableBOMs(context);
+        }
+      }
+      return;
+    }
+
+    const marker = markerRequests.find(m => String(m.id) === String(markerId));
+    if (marker) {
+      await applyMarkerSelection(marker, fallbackOrder);
     }
   };
 
@@ -964,6 +1286,14 @@ export const GoodsIssueManager: React.FC = () => {
     const order = purchaseOrders.find(o => String(o.id) === orderId);
     if (order) {
       setSelectedPurchaseOrder(order);
+      setSelectedMarkerRequest(null);
+      setMarkerOptionsForPO([]);
+      setLinkedPurchaseOrders([order]);
+
+      const context = buildPOContext([order]);
+      if (context) {
+        setActivePOContext(context);
+      }
       setFormData(prev => ({
         ...prev,
         // Tie issues to this PO so issued-so-far can be computed
@@ -978,7 +1308,25 @@ export const GoodsIssueManager: React.FC = () => {
       setShowBOMSelection(false);
 
       // Load available BOMs for the products in this PO
-      await loadAvailableBOMs(order);
+      if (context) {
+        await loadAvailableBOMs(context);
+      }
+
+      const markersForOrder = resolveMarkerOptionsForOrder(order);
+      setMarkerOptionsForPO(markersForOrder);
+
+      if (markersForOrder.length === 1) {
+        await applyMarkerSelection(markersForOrder[0], order);
+        toast({
+          title: 'Marker Linked',
+          description: `Marker ${markersForOrder[0].marker_number} auto-selected for this purchase order.`,
+        });
+      } else if (markersForOrder.length > 1) {
+        toast({
+          title: 'Select Marker Request',
+          description: 'Multiple marker requests found for this purchase order. Please choose one to continue.',
+        });
+      }
     }
   };
 
@@ -995,6 +1343,15 @@ export const GoodsIssueManager: React.FC = () => {
           title: 'Validation Error',
           description: 'Please add at least one line item',
           variant: 'destructive'
+        });
+        return;
+      }
+
+      if (issueTab === 'fabric' && markerSelectOptions.length > 0 && !selectedMarkerRequest) {
+        toast({
+          title: 'Select Marker Request',
+          description: 'Multiple marker requests are available. Please choose which marker to issue against.',
+          variant: 'destructive',
         });
         return;
       }
@@ -1028,14 +1385,29 @@ export const GoodsIssueManager: React.FC = () => {
         if (parts.length) categoryTotalsNote = `CATEGORY_TOTALS: ${parts.join(' | ')}`;
       }
 
-      // Ensure reference_number carries the selected PO number for ledger linkage
+      const referenceNumber = formData.reference_number
+        || selectedMarkerRequest?.marker_number
+        || activePOContext?.marker_number
+        || selectedPurchaseOrder?.po_number
+        || selectedPurchaseOrder?.name;
+
+      const linkedPoNote = selectedMarkerRequest && linkedPurchaseOrders.length
+        ? `POs: ${linkedPurchaseOrders.map(po => po.po_number || po.name).filter(Boolean).join(', ')}`
+        : undefined;
+
+      const markerNote = selectedMarkerRequest
+        ? `Marker: ${selectedMarkerRequest.marker_number} (${selectedMarkerRequest.marker_type})`
+        : undefined;
+
       const newIssue = await goodsIssueService.createGoodsIssue({
         ...formData,
-        reference_number: formData.reference_number || selectedPurchaseOrder?.po_number || selectedPurchaseOrder?.name,
+        reference_number: referenceNumber,
         lines: cleanedLines,
         notes: [
           issueTab === 'trims' && selectedSupplier ? `Supplier: ${selectedSupplier}` : undefined,
           categoryTotalsNote,
+          markerNote,
+          linkedPoNote,
         ].filter(Boolean).join('\n') || undefined,
       });
       setGoodsIssues(prev => [newIssue, ...prev]);
@@ -1044,8 +1416,8 @@ export const GoodsIssueManager: React.FC = () => {
         const mats = await rawMaterialsService.getRawMaterials();
         setRawMaterials(mats);
         // Recompute BOM requirements view to refresh available stock columns
-        if (selectedBOM && selectedPurchaseOrder) {
-          await calculateBOMBasedRequirements(selectedBOM, selectedPurchaseOrder);
+        if (selectedBOM && activePOContext) {
+          await calculateBOMBasedRequirements(selectedBOM, activePOContext);
         }
         window.dispatchEvent(new CustomEvent('inventory-updated'));
       } catch {}
@@ -1295,7 +1667,14 @@ export const GoodsIssueManager: React.FC = () => {
       // If current UI has requirements loaded for this PO, pass category totals (both category-wise and regular rows)
       let categoryRequirementByName: Record<string, number> | undefined = undefined;
       if (bomMaterialRequirements?.length && issue.reference_number) {
-        const relatesToCurrentPO = (selectedPurchaseOrder?.po_number || selectedPurchaseOrder?.name) === issue.reference_number;
+        const referenceCandidates = [
+          selectedMarkerRequest?.marker_number,
+          ...(activePOContext?.po_numbers || []),
+          activePOContext?.marker_number,
+          selectedPurchaseOrder?.po_number,
+          selectedPurchaseOrder?.name,
+        ].filter(Boolean) as string[];
+        const relatesToCurrentPO = referenceCandidates.includes(issue.reference_number || '');
         if (relatesToCurrentPO) {
           const totals: Record<string, number> = {};
           for (const req of bomMaterialRequirements) {
@@ -1626,15 +2005,79 @@ export const GoodsIssueManager: React.FC = () => {
                       </div>
                     )}
                     
-                    {selectedPurchaseOrder && (
-                      <div className="mt-2 p-3 bg-green-50 rounded-lg border border-green-200">
-                        <p className="text-sm text-green-800">
-                          <strong>Selected PO:</strong> {selectedPurchaseOrder.po_number} 
-                          {selectedPurchaseOrder.supplier_name && ` • ${selectedPurchaseOrder.supplier_name}`}
+                    {activePOContext && (
+                      <div className="mt-2 p-3 bg-green-50 rounded-lg border border-green-200 space-y-2">
+                        <div className="flex flex-wrap items-center gap-2 text-sm text-green-800">
+                          <strong>Included POs:</strong>
+                          {aggregatedPoBadges.length ? (
+                            aggregatedPoBadges.map(po => (
+                              <Badge
+                                key={po.id}
+                                variant="outline"
+                                className="text-xs border-green-300 text-green-800 bg-white/60"
+                              >
+                                {po.label}
+                              </Badge>
+                            ))
+                          ) : (
+                            <span className="text-xs text-green-700">No linked purchase orders</span>
+                          )}
+                        </div>
+                        <p className="text-xs text-green-700">
+                          Products: {activePOContext.products?.length || 0} • Pending Qty: {formatNumeric(activePOContext.outstanding_qty ?? 0, 0) ?? '0'}
                         </p>
-                        <p className="text-xs text-green-600 mt-1">
-                          Products: {selectedPurchaseOrder.products?.length || 0} • Pending Qty: {selectedPurchaseOrder.outstanding_qty || selectedPurchaseOrder.pending_qty || 0}
-                        </p>
+                        {(activePOContext.supplier_name || linkedPurchaseOrders[0]?.supplier_name) && (
+                          <p className="text-xs text-green-600">
+                            Supplier: {activePOContext.supplier_name || linkedPurchaseOrders[0]?.supplier_name}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {issueTab === 'fabric' && selectedPurchaseOrder && (
+                      <div className="mt-4 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <Label>Marker Request{markerSelectOptions.length ? ' *' : ''}</Label>
+                          {markerRequestLoading && (
+                            <span className="text-xs text-muted-foreground">Loading…</span>
+                          )}
+                        </div>
+                        {markerSelectOptions.length ? (
+                          <SearchableSelect
+                            value={selectedMarkerRequest?.id ? String(selectedMarkerRequest.id) : ''}
+                            onChange={(value) => handleMarkerSelectionChange(value, selectedPurchaseOrder)}
+                            placeholder="Select marker request"
+                            searchPlaceholder="Search marker requests..."
+                            options={markerSelectOptions}
+                            disabled={markerRequestLoading}
+                          />
+                        ) : (
+                          !markerRequestLoading && (
+                            <p className="text-xs text-muted-foreground">
+                              No marker requests linked to this purchase order.
+                            </p>
+                          )
+                        )}
+
+                        {selectedMarkerRequest && (
+                          <div className="p-3 bg-rose-50 rounded-lg border border-rose-200 space-y-1">
+                            <p className="text-sm font-semibold text-rose-900">
+                              Marker {selectedMarkerRequest.marker_number}
+                            </p>
+                            <p className="text-xs text-rose-700">
+                              {selectedMarkerRequest.marker_type === 'body' ? 'Body' : 'Gusset'} marker • Measurement: {selectedMarkerRequest.measurement_type?.toUpperCase?.() || 'YARD'}
+                            </p>
+                            {markerRequirementText && (
+                              <p className="text-xs text-rose-700">
+                                Total requirement: {markerRequirementText}
+                                {markerNetRequirementText ? ` • Net: ${markerNetRequirementText}` : ''}
+                              </p>
+                            )}
+                            {markerPendingPiecesText && (
+                              <p className="text-xs text-rose-700">Pieces: {markerPendingPiecesText}</p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                     
@@ -2430,6 +2873,29 @@ export const GoodsIssueManager: React.FC = () => {
         onDone={handleFinishScanningGI}
         onClose={handleFinishScanningGI}
       >
+        {selectedMarkerRequest && (
+          <div className="absolute top-4 left-4 right-4 z-[2147483646] pointer-events-none">
+            <div className="inline-flex max-w-full flex-col gap-1 rounded-lg bg-black/70 px-4 py-3 text-white shadow-lg">
+              <span className="text-sm font-semibold">
+                Marker {selectedMarkerRequest.marker_number}
+              </span>
+              {markerRequirementText && (
+                <span className="text-xs">
+                  Requirement: {markerRequirementText}
+                  {markerNetRequirementText ? ` • Net ${markerNetRequirementText}` : ''}
+                </span>
+              )}
+              {markerPendingPiecesText && (
+                <span className="text-xs">Pieces: {markerPendingPiecesText}</span>
+              )}
+              {aggregatedPoBadges.length > 0 && (
+                <span className="text-[11px] text-white/80">
+                  POs: {aggregatedPoBadges.map(po => po.label).join(', ')}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
         {giShowWeightEntry && giScannedBarcode && (
           <div 
             className="absolute inset-0 flex items-center justify-center bg-black/50"
