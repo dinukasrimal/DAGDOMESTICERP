@@ -23,7 +23,8 @@ import {
   ArrowUp,
   ArrowDown,
   Grid3X3,
-  List
+  List,
+  Download
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { downloadElementAsPdf, generatePlanningReportPdf } from '@/lib/pdfUtils';
@@ -88,6 +89,17 @@ interface ExpandedPurchases {
   [key: string]: boolean;
 }
 
+interface SupplierIncomingLine {
+  poNumber: string;
+  supplier: string;
+  ordered: number;
+  received: number;
+  pending: number;
+}
+
+type SupplierIncomingMap = Record<string, SupplierIncomingLine[]>;
+type NextMonthProduct = InventoryData & { __categoryName?: string };
+
 // Define a type for raw inventory rows from Supabase, including product_id as optional
 interface RawInventoryRow {
   id: string;
@@ -151,6 +163,33 @@ function sortProductsBySize(products: any[]): any[] {
     return getSizeSortValue(sizeA) - getSizeSortValue(sizeB);
   });
 }
+
+const normalizeLineProductId = (line: any): string | number | undefined => {
+  if (!line) return undefined;
+  if (Array.isArray(line.product_id)) {
+    return line.product_id[0];
+  }
+  if (typeof line.product_id === 'string' || typeof line.product_id === 'number') {
+    return line.product_id;
+  }
+  return undefined;
+};
+
+const doesLineMatchProduct = (line: any, product: InventoryData): boolean => {
+  const lineProductId = normalizeLineProductId(line);
+  if (product.product_id && lineProductId && String(lineProductId) === String(product.product_id)) {
+    return true;
+  }
+  if (
+    (!product.product_id || !lineProductId) &&
+    line?.product_name &&
+    product.product_name &&
+    line.product_name.toLowerCase().includes(product.product_name.toLowerCase())
+  ) {
+    return true;
+  }
+  return false;
+};
 
 export const AdvancedInventoryReport: React.FC = () => {
   const { toast } = useToast();
@@ -830,41 +869,35 @@ export const AdvancedInventoryReport: React.FC = () => {
     }
   };
 
+  const getSupplierIncomingMap = React.useCallback((product: InventoryData): SupplierIncomingMap => {
+    const supplierIncomingMap: SupplierIncomingMap = {};
+    purchaseData.forEach(po => {
+      if (po.is_on_hold) return;
+      if (!po.order_lines) return;
+      po.order_lines.forEach(line => {
+        if (!doesLineMatchProduct(line, product)) return;
+        const pending = Math.max(0, (line.product_qty || 0) - (line.qty_received || 0));
+        if (pending <= 0) return;
+        const supplier = po.partner_name || 'Unknown Supplier';
+        if (!supplierIncomingMap[supplier]) supplierIncomingMap[supplier] = [];
+        supplierIncomingMap[supplier].push({
+          poNumber: po.name || po.id || 'Unknown PO',
+          supplier,
+          ordered: Number(line.product_qty) || 0,
+          received: Number(line.qty_received) || 0,
+          pending
+        });
+      });
+    });
+    return supplierIncomingMap;
+  }, [purchaseData]);
+
   // Helper to calculate sum of pending for a product (excluding held POs)
   function getPendingIncomingForProduct(product: InventoryData): number {
-    let sum = 0;
-    purchaseData.forEach(po => {
-      // Skip if PO is on hold
-      if (po.is_on_hold) return;
-      
-      if (po.order_lines) {
-        po.order_lines.forEach(line => {
-          const anyLine = line as any;
-          let lineProductId = undefined;
-          if (Array.isArray(anyLine.product_id)) {
-            lineProductId = anyLine.product_id[0];
-          } else if (typeof anyLine.product_id === 'string' || typeof anyLine.product_id === 'number') {
-            lineProductId = anyLine.product_id;
-          }
-          let match = false;
-          if (product.product_id && lineProductId && String(lineProductId) === String(product.product_id)) {
-            match = true;
-          } else if (
-            (!product.product_id || !lineProductId) &&
-            anyLine.product_name &&
-            product.product_name &&
-            anyLine.product_name.toLowerCase().includes(product.product_name.toLowerCase())
-          ) {
-            match = true;
-          }
-          const pending = Math.max(0, anyLine.product_qty - anyLine.qty_received);
-          if (match && pending > 0) {
-            sum += pending;
-          }
-        });
-      }
-    });
-    return sum;
+    const supplierIncomingMap = getSupplierIncomingMap(product);
+    return Object.values(supplierIncomingMap).reduce((supplierSum, lines) => 
+      supplierSum + lines.reduce((lineSum, line) => lineSum + line.pending, 0)
+    , 0);
   }
 
   // Helper to calculate sales quantity (invoiced) for the same months in the previous year as the selected period
@@ -917,6 +950,147 @@ export const AdvancedInventoryReport: React.FC = () => {
     });
     return totalQty;
   }
+
+  const filteredNextMonthCategories = React.useMemo(() => {
+    const trimmedSearch = categorySearch.trim().toLowerCase();
+    return categoryAnalysis
+      .filter(category => category.products && category.products.length > 0)
+      .filter(category => {
+        const categoryName = category.category || 'Uncategorized';
+        const matchesSearch = trimmedSearch === '' || categoryName.toLowerCase().includes(trimmedSearch);
+        const isHidden = hiddenCategories.includes(categoryName);
+        const inGlobalFilter = globalCategoryFilter.length === 0 || globalCategoryFilter.includes(categoryName);
+        return matchesSearch && !isHidden && inGlobalFilter;
+      });
+  }, [categoryAnalysis, categorySearch, hiddenCategories, globalCategoryFilter]);
+
+  const urgentNextMonthProducts = React.useMemo<NextMonthProduct[]>(() => {
+    return filteredNextMonthCategories.flatMap(category =>
+      category.products
+        .filter(product => {
+          const salesQty = getSalesQtyForProduct(product, 1);
+          return salesQty > 0 && product.quantity_on_hand < salesQty;
+        })
+        .map(product => ({
+          ...product,
+          product_category: product.product_category || category.category,
+          __categoryName: category.category
+        }) as NextMonthProduct)
+    );
+  }, [filteredNextMonthCategories, salesData]);
+
+  const sortedUrgentNextMonthProducts = React.useMemo<NextMonthProduct[]>(
+    () => sortNextMonthProducts(urgentNextMonthProducts) as NextMonthProduct[],
+    [
+      urgentNextMonthProducts,
+      nextMonthSortColumn,
+      nextMonthSortDirection,
+      showCategorized,
+      secondarySortColumn,
+      salesData,
+      purchaseData
+    ]
+  );
+
+  const supplierColumns = React.useMemo(() => {
+    const suppliers = new Set<string>();
+    urgentNextMonthProducts.forEach(product => {
+      const supplierMap = getSupplierIncomingMap(product);
+      Object.keys(supplierMap).forEach(name => suppliers.add(name));
+    });
+    return Array.from(suppliers).sort((a, b) => a.localeCompare(b));
+  }, [urgentNextMonthProducts, getSupplierIncomingMap]);
+
+  const escapeCsvValue = (value: string | number | null | undefined) => {
+    if (value === null || value === undefined) return '';
+    const str = String(value);
+    if (/[",\n]/.test(str)) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+
+  const handleNextMonthCsvExport = React.useCallback(() => {
+    if (sortedUrgentNextMonthProducts.length === 0) {
+      toast({
+        title: 'No Data',
+        description: 'No urgent next month planning rows to export.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    if (typeof window === 'undefined') {
+      toast({
+        title: 'Export Unavailable',
+        description: 'CSV export is only available in the browser.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    const headers = [
+      'Product',
+      'Category',
+      'Sales Quantity (Invoiced)',
+      'Current Stock',
+      'Stock/Sales Ratio',
+      'Incoming',
+      'Stock + Incoming',
+      'Needs Urgent',
+      ...supplierColumns.map(name => `Supplier - ${name}`)
+    ];
+
+    const rows = sortedUrgentNextMonthProducts.map(product => {
+      const salesQty = getSalesQtyForProduct(product, 1);
+      const incoming = getPendingIncomingForProduct(product);
+      const stockPlusIncoming = product.quantity_on_hand + incoming;
+      const urgentQty = Math.max(0, salesQty - product.quantity_on_hand);
+      const ratio = salesQty > 0 ? (product.quantity_on_hand / salesQty).toFixed(2) : 'N/A';
+      const supplierMap = getSupplierIncomingMap(product);
+      const supplierValues = supplierColumns.map(supplier => {
+        const lines = supplierMap[supplier] || [];
+        return lines.map(line => `${line.poNumber} - ${line.pending}`).join(' | ');
+      });
+      return [
+        product.product_name,
+        product.product_category || (product as any).__categoryName || '',
+        salesQty,
+        product.quantity_on_hand,
+        ratio,
+        incoming,
+        stockPlusIncoming,
+        urgentQty > 0 ? urgentQty : 'OK',
+        ...supplierValues
+      ];
+    });
+
+    const csvContent = [headers, ...rows]
+      .map(row => row.map(escapeCsvValue).join(','))
+      .join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `next-month-planning-analysis-${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    toast({
+      title: 'Export Complete',
+      description: 'Next Month Planning Analysis exported to CSV.',
+    });
+  }, [
+    sortedUrgentNextMonthProducts,
+    supplierColumns,
+    toast,
+    getPendingIncomingForProduct,
+    getSalesQtyForProduct,
+    getSupplierIncomingMap
+  ]);
 
   // Add Collapse All button and PO search box above tables
   <div className="flex items-center justify-between mb-4">
@@ -1467,49 +1641,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                         const needsPlanning = Math.max(0, salesQty - stockWithIncoming);
                         const isIncomingExpanded = expandedIncoming[product.id];
                         // Find all purchase order lines (not on hold) for this product
-                        const supplierIncomingMap: { [supplier: string]: any[] } = {};
-                        purchaseData.forEach(po => {
-                          // Skip if PO is on hold
-                          if (po.is_on_hold) return;
-                          
-                          if (po.order_lines) {
-                            po.order_lines.forEach(line => {
-                              // Normalize product_id for robust matching
-                              const anyLine = line as any;
-                              let lineProductId = undefined;
-                              if (Array.isArray(anyLine.product_id)) {
-                                lineProductId = anyLine.product_id[0];
-                              } else if (typeof anyLine.product_id === 'string' || typeof anyLine.product_id === 'number') {
-                                lineProductId = anyLine.product_id;
-                              }
-                              let match = false;
-                              if (product.product_id && lineProductId && String(lineProductId) === String(product.product_id)) {
-                                match = true;
-                              } else if (
-                                (!product.product_id || !lineProductId) &&
-                                line.product_name &&
-                                product.product_name &&
-                                line.product_name.toLowerCase().includes(product.product_name.toLowerCase())
-                              ) {
-                                match = true;
-                              }
-                              if (match) {
-                                const pending = Math.max(0, anyLine.product_qty - anyLine.qty_received);
-                                if (pending > 0) {
-                                  const supplier = po.partner_name || 'Unknown Supplier';
-                                  if (!supplierIncomingMap[supplier]) supplierIncomingMap[supplier] = [];
-                                  supplierIncomingMap[supplier].push({
-                                    poNumber: po.name,
-                                    supplier,
-                                    ordered: anyLine.product_qty,
-                                    received: anyLine.qty_received,
-                                    pending
-                                  });
-                                }
-                              }
-                            });
-                          }
-                        });
+                        const supplierIncomingMap = getSupplierIncomingMap(product);
                         return (
                           <React.Fragment key={product.id}>
                             <tr className="bg-gray-50">
@@ -1680,8 +1812,8 @@ export const AdvancedInventoryReport: React.FC = () => {
                 </PopoverContent>
                  </Popover>
                </div>
-             </div>
-            <div className="flex items-center space-x-2">
+            </div>
+           <div className="flex items-center space-x-2">
               <Button
                 variant={showCategorized ? "default" : "outline"}
                 size="sm"
@@ -1699,6 +1831,15 @@ export const AdvancedInventoryReport: React.FC = () => {
               >
                 <List className="h-4 w-4" />
                 <span>Products Only</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleNextMonthCsvExport}
+                className="flex items-center space-x-1"
+              >
+                <Download className="h-4 w-4" />
+                <span>Export CSV</span>
               </Button>
              </div>
              {!showCategorized && (
@@ -1789,20 +1930,18 @@ export const AdvancedInventoryReport: React.FC = () => {
                       {getSortIcon('urgent', nextMonthSortColumn, nextMonthSortDirection)}
                     </button>
                   </th>
+                  {supplierColumns.map(supplier => (
+                    <th key={`supplier-header-${supplier}`} className="border p-2 text-left">
+                      {supplier}
+                    </th>
+                  ))}
                   <th className="border p-2 text-center">Action</th>
                 </tr>
               </thead>
               <tbody>
                 {showCategorized ? (
                   // Categorized view - show categories with expandable products
-                  categoryAnalysis
-                    .filter(category => category.products && category.products.length > 0)
-                    .filter(category =>
-                      (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
-                      !hiddenCategories.includes(category.category) &&
-                      (globalCategoryFilter.length === 0 || globalCategoryFilter.includes(category.category))
-                    )
-                    .map((category, index) => (
+                  filteredNextMonthCategories.map((category, index) => (
                     <React.Fragment key={category.category}>
                       <tr 
                         className="hover:bg-gray-50 cursor-pointer"
@@ -1838,6 +1977,11 @@ export const AdvancedInventoryReport: React.FC = () => {
                             }, 0) : 'OK'}
                           </span>
                         </td>
+                        {supplierColumns.map(supplier => (
+                          <td key={`${category.category}-${supplier}`} className="border p-2 text-left text-xs text-muted-foreground">
+                            —
+                          </td>
+                        ))}
                         <td className="border p-2 text-center">
                           {!category.expanded && (
                             (() => {
@@ -1874,50 +2018,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                         const stockWithIncoming = product.quantity_on_hand + availableIncoming;
                         const urgentQty = Math.max(0, salesQty - product.quantity_on_hand);
                         const isIncomingExpanded = expandedIncoming[product.id];
-                        // Find all purchase order lines (not on hold) for this product
-                        const supplierIncomingMap: { [supplier: string]: any[] } = {};
-                        purchaseData.forEach(po => {
-                          // Skip if PO is on hold
-                          if (po.is_on_hold) return;
-                          
-                          if (po.order_lines) {
-                            po.order_lines.forEach(line => {
-                              // Normalize product_id for robust matching
-                              const anyLine = line as any;
-                              let lineProductId = undefined;
-                              if (Array.isArray(anyLine.product_id)) {
-                                lineProductId = anyLine.product_id[0];
-                              } else if (typeof anyLine.product_id === 'string' || typeof anyLine.product_id === 'number') {
-                                lineProductId = anyLine.product_id;
-                              }
-                              let match = false;
-                              if (product.product_id && lineProductId && String(lineProductId) === String(product.product_id)) {
-                                match = true;
-                              } else if (
-                                (!product.product_id || !lineProductId) &&
-                                line.product_name &&
-                                product.product_name &&
-                                line.product_name.toLowerCase().includes(product.product_name.toLowerCase())
-                              ) {
-                                match = true;
-                              }
-                              if (match) {
-                                const pending = Math.max(0, anyLine.product_qty - anyLine.qty_received);
-                                if (pending > 0) {
-                                  const supplier = po.partner_name || 'Unknown Supplier';
-                                  if (!supplierIncomingMap[supplier]) supplierIncomingMap[supplier] = [];
-                                  supplierIncomingMap[supplier].push({
-                                    poNumber: po.name,
-                                    supplier,
-                                    ordered: anyLine.product_qty,
-                                    received: anyLine.qty_received,
-                                    pending
-                                  });
-                                }
-                              }
-                            });
-                          }
-                        });
+                        const supplierIncomingMap = getSupplierIncomingMap(product);
                         return (
                           <React.Fragment key={product.id}>
                             <tr className="bg-gray-50">
@@ -1947,6 +2048,24 @@ export const AdvancedInventoryReport: React.FC = () => {
                                   {urgentQty > 0 ? urgentQty : 'OK'}
                                 </span>
                               </td>
+                              {supplierColumns.map(supplier => {
+                                const supplierLines = supplierIncomingMap[supplier] || [];
+                                return (
+                                  <td key={`${product.id}-${supplier}`} className="border p-2 text-left text-xs">
+                                    {supplierLines.length > 0 ? (
+                                      <div className="space-y-1">
+                                        {supplierLines.map((line, idx) => (
+                                          <div key={idx}>
+                                            {line.poNumber} - {line.pending}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <span className="text-muted-foreground">—</span>
+                                    )}
+                                  </td>
+                                );
+                              })}
                               <td className="border p-2 text-center text-sm">
                                 <Button
                                   size="sm"
@@ -1962,7 +2081,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                             </tr>
                             {isIncomingExpanded && (
                               <tr className="bg-blue-50">
-                                <td colSpan={10} className="border p-2 pl-12 text-xs">
+                                <td colSpan={9 + supplierColumns.length} className="border p-2 pl-12 text-xs">
                                   <div className="font-semibold mb-1">Incoming Breakdown for {product.product_name} (Supplier-wise):</div>
                                   {Object.entries(supplierIncomingMap)
                                     .filter(([_, lines]) => lines.length > 0)
@@ -2005,25 +2124,12 @@ export const AdvancedInventoryReport: React.FC = () => {
                   ))
                 ) : (
                   // Uncategorized view - show all products directly
-                  sortNextMonthProducts(
-                    categoryAnalysis
-                      .filter(category => category.products && category.products.length > 0)
-                      .filter(category =>
-                        (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
-                        !hiddenCategories.includes(category.category) &&
-                        (globalCategoryFilter.length === 0 || globalCategoryFilter.includes(category.category))
-                      )
-                      .flatMap(category => 
-                        category.products.filter(product => {
-                          const salesQty = getSalesQtyForProduct(product, 1);
-                          return salesQty > 0 && product.quantity_on_hand < salesQty;
-                        })
-                      )
-                  ).map((product) => {
+                  sortedUrgentNextMonthProducts.map((product) => {
                     const salesQty = getSalesQtyForProduct(product, 1);
                     const availableIncoming = getPendingIncomingForProduct(product);
                     const stockWithIncoming = product.quantity_on_hand + availableIncoming;
                     const urgentQty = Math.max(0, salesQty - product.quantity_on_hand);
+                    const supplierIncomingMap = getSupplierIncomingMap(product);
 
                     return (
                       <React.Fragment key={product.id}>
@@ -2054,6 +2160,24 @@ export const AdvancedInventoryReport: React.FC = () => {
                               {urgentQty > 0 ? urgentQty : 'OK'}
                             </span>
                           </td>
+                          {supplierColumns.map(supplier => {
+                            const supplierLines = supplierIncomingMap[supplier] || [];
+                            return (
+                              <td key={`${product.id}-${supplier}`} className="border p-2 text-left text-xs">
+                                {supplierLines.length > 0 ? (
+                                  <div className="space-y-1">
+                                    {supplierLines.map((line, idx) => (
+                                      <div key={idx}>
+                                        {line.poNumber} - {line.pending}
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="text-muted-foreground">—</span>
+                                )}
+                              </td>
+                            );
+                          })}
                           <td className="border p-2 text-center text-sm">
                             <Button
                               size="sm"
@@ -2070,89 +2194,41 @@ export const AdvancedInventoryReport: React.FC = () => {
                         {/* Add incoming details expansion for products-only view */}
                         {expandedIncoming[product.id] && (
                           <tr className="bg-blue-50">
-                            <td colSpan={9} className="border p-2 pl-4 text-xs">
+                            <td colSpan={9 + supplierColumns.length} className="border p-2 pl-4 text-xs">
                               <div className="font-semibold mb-1">Incoming Breakdown for {product.product_name} (Supplier-wise):</div>
-                              {(() => {
-                                // Find all purchase order lines (not on hold) for this product
-                                const supplierIncomingMap: { [supplier: string]: any[] } = {};
-                                purchaseData.forEach(po => {
-                                  // Skip if PO is on hold
-                                  if (po.is_on_hold) return;
-                                  
-                                  if (po.order_lines) {
-                                    po.order_lines.forEach(line => {
-                                      // Normalize product_id for robust matching
-                                      const anyLine = line as any;
-                                      let lineProductId = undefined;
-                                      if (Array.isArray(anyLine.product_id)) {
-                                        lineProductId = anyLine.product_id[0];
-                                      } else if (typeof anyLine.product_id === 'string' || typeof anyLine.product_id === 'number') {
-                                        lineProductId = anyLine.product_id;
-                                      }
-                                      let match = false;
-                                      if (product.product_id && lineProductId && String(lineProductId) === String(product.product_id)) {
-                                        match = true;
-                                      } else if (
-                                        (!product.product_id || !lineProductId) &&
-                                        line.product_name &&
-                                        product.product_name &&
-                                        line.product_name.toLowerCase().includes(product.product_name.toLowerCase())
-                                      ) {
-                                        match = true;
-                                      }
-                                      if (match) {
-                                        const pending = Math.max(0, anyLine.product_qty - anyLine.qty_received);
-                                        if (pending > 0) {
-                                          const supplier = po.partner_name || 'Unknown Supplier';
-                                          if (!supplierIncomingMap[supplier]) supplierIncomingMap[supplier] = [];
-                                          supplierIncomingMap[supplier].push({
-                                            poNumber: po.name,
-                                            supplier,
-                                            ordered: anyLine.product_qty,
-                                            received: anyLine.qty_received,
-                                            pending
-                                          });
-                                        }
-                                      }
-                                    });
-                                  }
-                                });
-                                return (
-                                  <>
-                                    {Object.entries(supplierIncomingMap)
-                                      .filter(([_, lines]) => lines.length > 0)
-                                      .map(([supplier, lines]) => (
-                                        <div key={supplier} className="mb-2">
-                                          <div className="font-semibold">Supplier: {supplier}</div>
-                                          <table className="w-full text-xs mb-1">
-                                            <thead>
-                                              <tr>
-                                                <th className="border p-1 text-left">PO Number</th>
-                                                <th className="border p-1 text-right">Ordered Qty</th>
-                                                <th className="border p-1 text-right">Received</th>
-                                                <th className="border p-1 text-right">Pending</th>
-                                              </tr>
-                                            </thead>
-                                            <tbody>
-                                              {lines.map((line, idx) => (
-                                                <tr key={idx}>
-                                                  <td className="border p-1">{line.poNumber}</td>
-                                                  <td className="border p-1 text-right">{line.ordered}</td>
-                                                  <td className="border p-1 text-right">{line.received}</td>
-                                                  <td className="border p-1 text-right">{line.pending}</td>
-                                                </tr>
-                                              ))}
-                                            </tbody>
-                                          </table>
-                                        </div>
-                                      ))}
-                                    {Object.values(supplierIncomingMap).flat().length === 0 && (
-                                      <div>No incoming purchase orders (not on hold) for this product.</div>
-                                    )}
-                                    <div className="text-muted-foreground">* Only purchase orders not on hold are included in this calculation.</div>
-                                  </>
-                                );
-                              })()}
+                              <>
+                                {Object.entries(supplierIncomingMap)
+                                  .filter(([_, lines]) => lines.length > 0)
+                                  .map(([supplier, lines]) => (
+                                    <div key={supplier} className="mb-2">
+                                      <div className="font-semibold">Supplier: {supplier}</div>
+                                      <table className="w-full text-xs mb-1">
+                                        <thead>
+                                          <tr>
+                                            <th className="border p-1 text-left">PO Number</th>
+                                            <th className="border p-1 text-right">Ordered Qty</th>
+                                            <th className="border p-1 text-right">Received</th>
+                                            <th className="border p-1 text-right">Pending</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {lines.map((line, idx) => (
+                                            <tr key={idx}>
+                                              <td className="border p-1">{line.poNumber}</td>
+                                              <td className="border p-1 text-right">{line.ordered}</td>
+                                              <td className="border p-1 text-right">{line.received}</td>
+                                              <td className="border p-1 text-right">{line.pending}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  ))}
+                                {Object.values(supplierIncomingMap).flat().length === 0 && (
+                                  <div>No incoming purchase orders (not on hold) for this product.</div>
+                                )}
+                                <div className="text-muted-foreground">* Only purchase orders not on hold are included in this calculation.</div>
+                              </>
                             </td>
                           </tr>
                         )}
@@ -2264,50 +2340,7 @@ export const AdvancedInventoryReport: React.FC = () => {
                         const salesQty = getSalesQtyForProduct(product, 1);
                         const priority = product.quantity_on_hand / salesQty;
                         const availableIncoming = getPendingIncomingForProduct(product);
-                        // Supplier breakdown
-                        const supplierIncomingMap: { [supplier: string]: any[] } = {};
-                        purchaseData.forEach(po => {
-                          // Skip if PO is on hold
-                          if (po.is_on_hold) return;
-                          
-                          if (po.order_lines) {
-                            po.order_lines.forEach(line => {
-                              // Normalize product_id for robust matching
-                              const anyLine = line as any;
-                              let lineProductId = undefined;
-                              if (Array.isArray(anyLine.product_id)) {
-                                lineProductId = anyLine.product_id[0];
-                              } else if (typeof anyLine.product_id === 'string' || typeof anyLine.product_id === 'number') {
-                                lineProductId = anyLine.product_id;
-                              }
-                              let match = false;
-                              if (product.product_id && lineProductId && String(lineProductId) === String(product.product_id)) {
-                                match = true;
-                              } else if (
-                                (!product.product_id || !lineProductId) &&
-                                line.product_name &&
-                                product.product_name &&
-                                line.product_name.toLowerCase().includes(product.product_name.toLowerCase())
-                              ) {
-                                match = true;
-                              }
-                              if (match) {
-                                const pending = Math.max(0, anyLine.product_qty - anyLine.qty_received);
-                                if (pending > 0) {
-                                  const supplier = po.partner_name || 'Unknown Supplier';
-                                  if (!supplierIncomingMap[supplier]) supplierIncomingMap[supplier] = [];
-                                  supplierIncomingMap[supplier].push({
-                                    poNumber: po.name,
-                                    supplier,
-                                    ordered: anyLine.product_qty,
-                                    received: anyLine.qty_received,
-                                    pending
-                                  });
-                                }
-                              }
-                            });
-                          }
-                        });
+                        const supplierIncomingMap = getSupplierIncomingMap(product);
                         return (
                           <tr key={product.id}>
                             <td className="border p-3">{product.product_name}</td>
