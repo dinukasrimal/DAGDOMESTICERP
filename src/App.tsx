@@ -17,6 +17,9 @@ import { PurchaseOrderManager } from "./components/materials/PurchaseOrderManage
 import { GoodsReceivedManager } from "./components/materials/GoodsReceivedManager";
 import { GoodsIssueManager } from "./components/materials/GoodsIssueManager";
 import MarkerRequests from "./pages/MarkerRequests";
+import CuttingRecords from "./pages/CuttingRecords";
+import CutIssueRecords from "./pages/CutIssueRecords";
+import SewingOutputRecords from "./pages/SewingOutputRecords";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -79,6 +82,21 @@ const App: React.FC = () => {
             <Route path="/marker-requests" element={
               <ProtectedRoute>
                 <MarkerRequests />
+              </ProtectedRoute>
+            } />
+            <Route path="/cutting-records" element={
+              <ProtectedRoute>
+                <CuttingRecords />
+              </ProtectedRoute>
+            } />
+            <Route path="/cut-issue-records" element={
+              <ProtectedRoute>
+                <CutIssueRecords />
+              </ProtectedRoute>
+            } />
+            <Route path="/sewing-output" element={
+              <ProtectedRoute>
+                <SewingOutputRecords />
               </ProtectedRoute>
             } />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

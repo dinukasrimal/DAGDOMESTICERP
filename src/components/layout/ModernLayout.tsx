@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { BarChart3, Package, FileText, Settings, Home, Users, Factory, ShoppingCart, Sparkles, ArrowLeft, ClipboardList, Truck, Minus, Ruler } from 'lucide-react';
+import { BarChart3, Package, FileText, Settings, Home, Users, Factory, ShoppingCart, Sparkles, ArrowLeft, ClipboardList, Truck, Minus, Ruler, Scissors, ScissorsSquare, Shirt } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 interface ModernLayoutProps {
@@ -29,6 +29,9 @@ export const ModernLayout: React.FC<ModernLayoutProps> = ({
     { id: 'purchase-orders', label: 'Purchase Orders', icon: ShoppingCart, path: '/purchase-orders', available: true, isSpecial: false },
     { id: 'goods-received', label: 'Goods Received', icon: Truck, path: '/goods-received', available: true, isSpecial: false },
     { id: 'goods-issue', label: 'Goods Issue', icon: Minus, path: '/goods-issue', available: true, isSpecial: false },
+    { id: 'cutting-records', label: 'Cutting Records', icon: Scissors, path: '/cutting-records', available: true, isSpecial: false },
+    { id: 'cut-issue-records', label: 'Cut Issue Records', icon: ScissorsSquare, path: '/cut-issue-records', available: true, isSpecial: false },
+    { id: 'sewing-output', label: 'Sewing Output', icon: Shirt, path: '/sewing-output', available: true, isSpecial: false },
     { id: 'marker-requests', label: 'Marker Requests', icon: Ruler, path: '/marker-requests', available: true, isSpecial: false },
     { id: 'reports', label: 'Reports & Analytics', icon: BarChart3, path: '/reports', available: true, isSpecial: false },
     { id: 'customers', label: 'Customers', icon: Users, path: '/customers', available: false, isSpecial: false },
