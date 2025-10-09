@@ -1,13 +1,24 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Switch } from '@/components/ui/switch';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { TrendingUp, TrendingDown, Calendar, DollarSign, Package, X, Target, ChevronUp, ChevronDown } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { getTargetsForAnalytics, calculateTargetVsActual, TargetData } from '@/services/targetService';
+import { useToast } from '@/hooks/use-toast';
+import {
+  fetchCustomerMergeData,
+  ensureMergeGroup,
+  addCustomerMergeMembers,
+  upsertInvoiceMerges,
+  deleteInvoiceMerge,
+  deactivateMergeGroup,
+} from '@/services/customerMergeService';
 
 interface SalesData {
   id: string;
@@ -40,7 +51,197 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   const [targetData, setTargetData] = useState<TargetData[]>([]);
   const [showTargetComparison, setShowTargetComparison] = useState(false);
   const [targetMonths, setTargetMonths] = useState<string[]>(['all']);
+  const [mergedCustomerGroups, setMergedCustomerGroups] = useState<Record<string, string[]>>({});
+  const [customerMergeSelection, setCustomerMergeSelection] = useState<string[]>([]);
+  const [primaryCustomer, setPrimaryCustomer] = useState<string>('');
+  const [invoiceMergeMode, setInvoiceMergeMode] = useState(false);
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<string[]>([]);
+  const [invoiceAssignments, setInvoiceAssignments] = useState<Record<string, string>>({});
+  const [customerMergeGroupIds, setCustomerMergeGroupIds] = useState<Record<string, string>>({});
+  const [invoiceMergeGroupIds, setInvoiceMergeGroupIds] = useState<Record<string, string>>({});
+  const [isLoadingMergeData, setIsLoadingMergeData] = useState(false);
+  const [isApplyingMerge, setIsApplyingMerge] = useState(false);
+  const { toast } = useToast();
   
+  const mergedCustomerLookup = useMemo(() => {
+    const lookup: Record<string, string> = {};
+    Object.entries(mergedCustomerGroups).forEach(([alias, members]) => {
+      lookup[alias] = alias;
+      members.forEach(member => {
+        lookup[member] = alias;
+      });
+    });
+    return lookup;
+  }, [mergedCustomerGroups]);
+
+  const getMergedCustomerName = useCallback((name: string) => {
+    return mergedCustomerLookup[name] || name;
+  }, [mergedCustomerLookup]);
+
+  const getCustomerMembers = useCallback((name: string) => {
+    if (!name) return [];
+    if (mergedCustomerGroups[name]) {
+      return mergedCustomerGroups[name];
+    }
+    return [name];
+  }, [mergedCustomerGroups]);
+
+  const mergedSalesData = useMemo(() => {
+    return salesData.map(item => {
+      const assignedPrimary = invoiceAssignments[item.id];
+      const normalizedName = assignedPrimary || getMergedCustomerName(item.partner_name);
+      return {
+        ...item,
+        partner_name: normalizedName
+      };
+    });
+  }, [salesData, getMergedCustomerName, invoiceAssignments]);
+
+  const mergeOptions = useMemo(() => {
+    const names = new Set<string>();
+    salesData.forEach(item => names.add(item.partner_name));
+    Object.keys(mergedCustomerGroups).forEach(alias => names.add(alias));
+    Object.values(invoiceAssignments).forEach(alias => names.add(alias));
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [salesData, mergedCustomerGroups, invoiceAssignments]);
+
+  const resolveMergeSelection = useCallback((entries: string[]) => {
+    const resolved = new Set<string>();
+    entries.forEach(entry => {
+      getCustomerMembers(entry).forEach(member => resolved.add(member));
+    });
+    return Array.from(resolved);
+  }, [getCustomerMembers]);
+
+  const uniqueList = useCallback((items: string[]) => Array.from(new Set(items)), []);
+
+  const resolvedMergeMembers = useMemo(
+    () => resolveMergeSelection(customerMergeSelection),
+    [customerMergeSelection, resolveMergeSelection]
+  );
+
+  const invoiceCandidateCustomers = useMemo(() => {
+    return new Set(resolvedMergeMembers);
+  }, [resolvedMergeMembers]);
+
+  const availableInvoiceOptions = useMemo(() => {
+    if (!invoiceMergeMode || !primaryCustomer) return [];
+    if (invoiceCandidateCustomers.size === 0) return [];
+    return salesData
+      .filter(invoice => invoiceCandidateCustomers.has(invoice.partner_name))
+      .filter(invoice => !invoiceAssignments[invoice.id] || invoiceAssignments[invoice.id] === primaryCustomer)
+      .map(invoice => ({
+        id: invoice.id,
+        name: invoice.name || invoice.id,
+        customer: invoice.partner_name,
+        amount: invoice.amount_total,
+        date: invoice.date_order
+      }))
+      .sort((a, b) => {
+        const aTime = a.date ? new Date(a.date).getTime() : 0;
+        const bTime = b.date ? new Date(b.date).getTime() : 0;
+        return bTime - aTime;
+      });
+  }, [invoiceMergeMode, primaryCustomer, invoiceCandidateCustomers, salesData, invoiceAssignments]);
+
+  const availableInvoiceOptionIds = useMemo(
+    () => new Set(availableInvoiceOptions.map(option => option.id)),
+    [availableInvoiceOptions]
+  );
+
+  const assignedInvoicesByPrimary = useMemo(() => {
+    const map: Record<string, SalesData[]> = {};
+    salesData.forEach(invoice => {
+      const assigned = invoiceAssignments[invoice.id];
+      if (!assigned) return;
+      if (!map[assigned]) map[assigned] = [];
+      map[assigned].push(invoice);
+    });
+    Object.values(map).forEach(list => {
+      list.sort((a, b) => {
+        const aTime = a.date_order ? new Date(a.date_order).getTime() : 0;
+        const bTime = b.date_order ? new Date(b.date_order).getTime() : 0;
+        return bTime - aTime;
+      });
+    });
+    return map;
+  }, [invoiceAssignments, salesData]);
+
+  const loadMergeData = useCallback(async () => {
+    setIsLoadingMergeData(true);
+    try {
+      const { groups } = await fetchCustomerMergeData();
+      const customerGroupMap: Record<string, string[]> = {};
+      const customerGroupIdMap: Record<string, string> = {};
+      const invoiceGroupIdMap: Record<string, string> = {};
+      const invoiceAssignmentMap: Record<string, string> = {};
+
+      groups.forEach(group => {
+        if (!group || group.is_active === false) return;
+        if (group.merge_type === 'customer') {
+          customerGroupIdMap[group.primary_customer] = group.id;
+          const members = (group.customer_merge_members || [])
+            .map(member => member.merged_customer)
+            .filter(Boolean);
+          if (members.length > 0) {
+            customerGroupMap[group.primary_customer] = members;
+          }
+        } else if (group.merge_type === 'invoice') {
+          invoiceGroupIdMap[group.primary_customer] = group.id;
+          (group.customer_invoice_merges || []).forEach(entry => {
+            if (entry.invoice_id) {
+              invoiceAssignmentMap[entry.invoice_id] = group.primary_customer;
+            }
+          });
+        }
+      });
+
+      setMergedCustomerGroups(customerGroupMap);
+      setCustomerMergeGroupIds(customerGroupIdMap);
+      setInvoiceMergeGroupIds(invoiceGroupIdMap);
+      setInvoiceAssignments(invoiceAssignmentMap);
+    } catch (error) {
+      console.error('Failed to load merge data:', error);
+      toast({
+        title: 'Merge sync failed',
+        description: (error as Error).message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoadingMergeData(false);
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    loadMergeData();
+  }, [loadMergeData]);
+
+  useEffect(() => {
+    if (primaryCustomer && !mergeOptions.includes(primaryCustomer)) {
+      setPrimaryCustomer('');
+    }
+  }, [mergeOptions, primaryCustomer]);
+
+  useEffect(() => {
+    if (primaryCustomer && primaryCustomer !== 'all' && (selectedCustomers.includes('all') || selectedCustomers.includes(primaryCustomer))) {
+      return;
+    }
+    const candidate = selectedCustomers.find(name => name !== 'all');
+    if (!primaryCustomer && candidate) {
+      setPrimaryCustomer(candidate);
+    } else if (primaryCustomer && !selectedCustomers.includes('all') && !selectedCustomers.includes(primaryCustomer)) {
+      setPrimaryCustomer(candidate || '');
+    }
+  }, [selectedCustomers, primaryCustomer]);
+
+  useEffect(() => {
+    if (!invoiceMergeMode) {
+      setSelectedInvoiceIds([]);
+      return;
+    }
+    setSelectedInvoiceIds(prev => prev.filter(id => availableInvoiceOptionIds.has(id)));
+  }, [invoiceMergeMode, availableInvoiceOptionIds]);
+
   // Sorting state for Target vs Actual table
   const [sortField, setSortField] = useState<string>('customer');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
@@ -73,6 +274,204 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
         return aValue < bValue ? 1 : -1;
       }
     });
+  };
+
+  const handleMergeSelectionAdd = (value: string) => {
+    if (!value || value === 'all' || value === primaryCustomer) return;
+    setCustomerMergeSelection(prev => prev.includes(value) ? prev : [...prev, value]);
+  };
+
+  const handleMergeSelectionRemove = (value: string) => {
+    setCustomerMergeSelection(prev => prev.filter(item => item !== value));
+  };
+
+  const handleInvoiceSelectionToggle = (invoiceId: string, checked: boolean) => {
+    setSelectedInvoiceIds(prev => {
+      if (checked) {
+        if (prev.includes(invoiceId)) return prev;
+        return [...prev, invoiceId];
+      }
+      return prev.filter(id => id !== invoiceId);
+    });
+  };
+
+  const handleUnassignInvoice = async (invoiceId: string) => {
+    setIsApplyingMerge(true);
+    try {
+      await deleteInvoiceMerge(invoiceId);
+      setInvoiceAssignments(prev => {
+        if (!prev[invoiceId]) return prev;
+        const updated = { ...prev };
+        delete updated[invoiceId];
+        return updated;
+      });
+      setSelectedInvoiceIds(prev => prev.filter(id => id !== invoiceId));
+      await loadMergeData();
+      toast({
+        title: 'Invoice unassigned',
+        description: `Invoice ${invoiceId} removed from merge.`,
+      });
+    } catch (error) {
+      console.error('Failed to unassign invoice:', error);
+      toast({
+        title: 'Unassign failed',
+        description: (error as Error).message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsApplyingMerge(false);
+    }
+  };
+
+  const handleMergeCustomers = async () => {
+    if (!primaryCustomer) return;
+    setIsApplyingMerge(true);
+    try {
+      if (invoiceMergeMode) {
+        if (selectedInvoiceIds.length === 0) {
+          setIsApplyingMerge(false);
+          return;
+        }
+        const groupId =
+          invoiceMergeGroupIds[primaryCustomer] ||
+          (await ensureMergeGroup(primaryCustomer, 'invoice'));
+
+        const invoicePayload = selectedInvoiceIds
+          .map(id => {
+            const originalInvoice = salesData.find(inv => inv.id === id);
+            if (!originalInvoice) return null;
+            return {
+              invoice_id: id,
+              primary_customer: primaryCustomer,
+              merged_from_customer: originalInvoice.partner_name,
+            };
+          })
+          .filter((entry): entry is { invoice_id: string; primary_customer: string; merged_from_customer: string } => !!entry);
+
+        await upsertInvoiceMerges(groupId, invoicePayload);
+
+        setInvoiceMergeGroupIds(prev => ({ ...prev, [primaryCustomer]: groupId }));
+        setInvoiceAssignments(prev => {
+          const updated = { ...prev };
+          invoicePayload.forEach(entry => {
+            updated[entry.invoice_id] = primaryCustomer;
+          });
+          return updated;
+        });
+        setSelectedInvoiceIds([]);
+        setCustomerMergeSelection([]);
+        await loadMergeData();
+        toast({
+          title: 'Invoices merged',
+          description: `${invoicePayload.length} invoice(s) assigned to ${primaryCustomer}.`,
+        });
+        return;
+      }
+
+      const resolvedNames = resolveMergeSelection(customerMergeSelection).filter(name => name !== primaryCustomer);
+      if (resolvedNames.length === 0) {
+        return;
+      }
+
+      const groupId =
+        customerMergeGroupIds[primaryCustomer] ||
+        (await ensureMergeGroup(primaryCustomer, 'customer'));
+
+      await addCustomerMergeMembers(groupId, resolvedNames);
+
+      setCustomerMergeGroupIds(prev => ({ ...prev, [primaryCustomer]: groupId }));
+      setMergedCustomerGroups(prev => {
+        const existingAliasMembers = prev[primaryCustomer] || [];
+        const combined = uniqueList([...existingAliasMembers, ...resolvedNames]).sort((a, b) => a.localeCompare(b));
+        return {
+          ...prev,
+          [primaryCustomer]: combined,
+        };
+      });
+
+      setCustomerMergeSelection([]);
+
+      if (!selectedCustomers.includes('all')) {
+        setSelectedCustomers(prev => {
+          const filtered = prev.filter(name => !resolvedNames.includes(name));
+          if (!filtered.includes(primaryCustomer)) filtered.push(primaryCustomer);
+          return uniqueList(filtered);
+        });
+      }
+      await loadMergeData();
+      toast({
+        title: 'Customers merged',
+        description: `${resolvedNames.length} customer(s) merged into ${primaryCustomer}.`,
+      });
+    } catch (error) {
+      console.error('Merge failed:', error);
+      toast({
+        title: 'Merge failed',
+        description: (error as Error).message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsApplyingMerge(false);
+    }
+  };
+
+  const handleRemoveMergedGroup = async (alias: string) => {
+    const groupId = customerMergeGroupIds[alias];
+    setIsApplyingMerge(true);
+    try {
+      if (groupId) {
+        await deactivateMergeGroup(groupId);
+      }
+      const members = mergedCustomerGroups[alias] || [];
+      setMergedCustomerGroups(prev => {
+        const updated = { ...prev };
+        delete updated[alias];
+        return updated;
+      });
+      setCustomerMergeGroupIds(prev => {
+        const updated = { ...prev };
+        delete updated[alias];
+        return updated;
+      });
+      setCustomerMergeSelection(prev => prev.filter(item => item !== alias));
+      if (alias === primaryCustomer) {
+        setPrimaryCustomer('');
+      }
+      setInvoiceAssignments(prev => {
+        const updated = { ...prev };
+        Object.entries(updated).forEach(([invoiceId, assigned]) => {
+          if (assigned === alias) {
+            delete updated[invoiceId];
+          }
+        });
+        return updated;
+      });
+      if (!selectedCustomers.includes('all')) {
+        setSelectedCustomers(prev => {
+          const filtered = prev.filter(name => name !== alias);
+          members.forEach(member => {
+            if (!filtered.includes(member)) filtered.push(member);
+          });
+          return uniqueList(filtered);
+        });
+      } else {
+        setSelectedCustomers(prev => prev.filter(name => name !== alias));
+      }
+      await loadMergeData();
+      toast({
+        title: 'Merge removed',
+        description: `${alias} merge has been cleared.`,
+      });
+    } catch (error) {
+      console.error('Failed to remove merge:', error);
+      toast({
+        title: 'Failed to remove merge',
+        description: (error as Error).message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsApplyingMerge(false);
+    }
   };
 
   // Sortable header component
@@ -108,7 +507,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   );
 
   // Get available years from data
-  const availableYears = [...new Set(salesData.map(item => 
+  const availableYears = [...new Set(mergedSalesData.map(item => 
     new Date(item.date_order).getFullYear().toString()
   ))].sort((a, b) => b.localeCompare(a));
 
@@ -136,7 +535,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
 
   // Get unique product categories from products table based on codes in order lines
   const productCategories = ['all', ...Array.from(new Set(
-    salesData.flatMap(item =>
+    mergedSalesData.flatMap(item =>
       (item.order_lines || []).map(line => {
         if (!line.product_name) return 'Uncategorized';
         const code = extractCodeFromBrackets(line.product_name);
@@ -147,7 +546,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   )).sort()];
 
   // Filter data based on selections, including category
-  const filteredData = salesData.filter(item => {
+  const filteredData = mergedSalesData.filter(item => {
     const orderDate = new Date(item.date_order);
     const year = orderDate.getFullYear().toString();
     const month = orderDate.getMonth() + 1;
@@ -180,7 +579,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
 
   // Previous year comparison - FIXED calculation
   const previousYear = (parseInt(selectedYear) - 1).toString();
-  const previousYearData = salesData.filter(item => {
+  const previousYearData = mergedSalesData.filter(item => {
     const orderDate = new Date(item.date_order);
     const year = orderDate.getFullYear().toString();
     const month = orderDate.getMonth() + 1;
@@ -273,7 +672,9 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     }));
 
   // Get unique customers for filter
-  const customers = [...new Set(salesData.map(item => item.partner_name))].sort();
+  const customers = useMemo(() => {
+    return [...new Set(mergedSalesData.map(item => item.partner_name))].sort((a, b) => a.localeCompare(b));
+  }, [mergedSalesData]);
 
   const chartConfig = {
     current: {
@@ -341,6 +742,56 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     }
   }, [targetData]);
 
+  const mergedTargetData = useMemo(() => {
+    if (!targetData || targetData.length === 0) return targetData;
+
+    const aggregate: Record<string, {
+      target_year?: string;
+      target_months: Set<string>;
+      adjusted_total_qty: number;
+      adjusted_total_value: number;
+      categoryTotals: Record<string, { quantity: number; value: number }>;
+    }> = {};
+
+    targetData.forEach(target => {
+      const alias = getMergedCustomerName(target.customer_name);
+      if (!aggregate[alias]) {
+        aggregate[alias] = {
+          target_year: target.target_year,
+          target_months: new Set<string>(),
+          adjusted_total_qty: 0,
+          adjusted_total_value: 0,
+          categoryTotals: {}
+        };
+      }
+      const bucket = aggregate[alias];
+      bucket.adjusted_total_qty += target.adjusted_total_qty || 0;
+      bucket.adjusted_total_value += target.adjusted_total_value || 0;
+      (target.target_months || []).forEach(month => bucket.target_months.add(month));
+      (target.target_data || []).forEach(entry => {
+        const categoryKey = entry.product_category || 'Uncategorized';
+        if (!bucket.categoryTotals[categoryKey]) {
+          bucket.categoryTotals[categoryKey] = { quantity: 0, value: 0 };
+        }
+        bucket.categoryTotals[categoryKey].quantity += entry.quantity || 0;
+        bucket.categoryTotals[categoryKey].value += entry.value || 0;
+      });
+    });
+
+    return Object.entries(aggregate).map(([alias, data]) => ({
+      customer_name: alias,
+      target_year: data.target_year || '',
+      target_months: Array.from(data.target_months).sort(),
+      target_data: Object.entries(data.categoryTotals).map(([category, totals]) => ({
+        product_category: category,
+        quantity: totals.quantity,
+        value: totals.value
+      })),
+      adjusted_total_qty: data.adjusted_total_qty,
+      adjusted_total_value: data.adjusted_total_value
+    }));
+  }, [targetData, getMergedCustomerName]);
+
   // Build a map of product_id to product info for fast lookup
   const productMap: Record<string, any> = {};
   products.forEach(prod => {
@@ -350,13 +801,20 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   // --- Product Category Sales Aggregation ---
   // Build a map: category -> { current: qty, previous: qty } for the selected month only
   const productCategoryMap: Record<string, { current: number; previous: number }> = {};
-  salesData.forEach(item => {
-    if (item.order_lines && Array.isArray(item.order_lines)) {
+
+  const accumulateCategoryTotals = (
+    source: SalesData[],
+    bucketKey: 'current' | 'previous'
+  ) => {
+    if (selectedMonths.includes('all')) return;
+    const monthSet = new Set(selectedMonths);
+
+    source.forEach(item => {
+      if (!item.date_order || !item.order_lines || !Array.isArray(item.order_lines)) return;
       const orderDate = new Date(item.date_order);
-      const year = orderDate.getFullYear().toString();
-      const month = orderDate.getMonth() + 1;
-      if (selectedMonths.includes('all')) return;
-      if (!selectedMonths.includes(month.toString())) return;
+      const month = (orderDate.getMonth() + 1).toString();
+      if (!monthSet.has(month)) return;
+
       item.order_lines.forEach(line => {
         let category = 'Uncategorized';
         if (line.product_name) {
@@ -365,12 +823,22 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
           if (found) category = found.product_category || 'Uncategorized';
         }
         const qty = Number(line.qty_delivered) || 0;
-        if (!productCategoryMap[category]) productCategoryMap[category] = { current: 0, previous: 0 };
-        if (year === selectedYear) productCategoryMap[category].current += qty;
-        if (year === previousYear) productCategoryMap[category].previous += qty;
+        if (!productCategoryMap[category]) {
+          productCategoryMap[category] = { current: 0, previous: 0 };
+        }
+        productCategoryMap[category][bucketKey] += qty;
       });
-    }
-  });
+    });
+  };
+
+  accumulateCategoryTotals(
+    filteredData.filter(item => new Date(item.date_order).getFullYear().toString() === selectedYear),
+    'current'
+  );
+  accumulateCategoryTotals(
+    previousYearData.filter(item => new Date(item.date_order).getFullYear().toString() === previousYear),
+    'previous'
+  );
   // Get all categories that had sales in either year for the selected month
   const allCategories = Object.keys(productCategoryMap);
   // Top 10 by current year sales (for selected month)
@@ -491,6 +959,152 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
               </div>
             </div>
             <div>
+              <label className="text-sm font-medium mb-2 block">Primary Customer (for merge)</label>
+              <Select value={primaryCustomer || ''} onValueChange={setPrimaryCustomer}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select primary customer..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {mergeOptions.map(customer => (
+                    <SelectItem key={`primary-${customer}`} value={customer}>{customer}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {primaryCustomer && (
+                <div className="text-xs text-muted-foreground mt-1">
+                  All merges feed into <span className="font-semibold">{primaryCustomer}</span>.
+                </div>
+              )}
+            </div>
+            <div className="md:col-span-2 space-y-3">
+              <label className="text-sm font-medium block">Merge Customers</label>
+              <div className="flex items-center justify-between rounded border px-3 py-2">
+                <div>
+                  <div className="text-sm font-medium">Invoice-wise merge</div>
+                  <div className="text-xs text-muted-foreground">Select specific invoices instead of entire customers.</div>
+                </div>
+                <Switch checked={invoiceMergeMode} onCheckedChange={value => setInvoiceMergeMode(Boolean(value))} />
+              </div>
+              {isLoadingMergeData && (
+                <div className="text-xs text-muted-foreground">Syncing merge data...</div>
+              )}
+              <div className="space-y-2">
+                <Select value="" onValueChange={handleMergeSelectionAdd}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Add customers/groups to merge..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {mergeOptions.map(customer => (
+                      <SelectItem key={customer} value={customer}>{customer}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {customerMergeSelection.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {customerMergeSelection.map(name => (
+                      <Badge key={name} variant="secondary" className="text-xs">
+                        {name.length > 20 ? `${name.substring(0, 20)}...` : name}
+                        <X 
+                          className="h-3 w-3 ml-1 cursor-pointer" 
+                          onClick={() => handleMergeSelectionRemove(name)}
+                        />
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+                {invoiceMergeMode && (
+                  <div className="space-y-2">
+                    <div className="text-xs text-muted-foreground">
+                      Select invoices from the merge customers to combine under the primary.
+                    </div>
+                    <div className="max-h-48 overflow-y-auto rounded border divide-y">
+                      {availableInvoiceOptions.length === 0 ? (
+                        <div className="p-2 text-xs text-muted-foreground">No invoices available for invoice-wise merge.</div>
+                      ) : (
+                        availableInvoiceOptions.map(option => (
+                          <label key={option.id} className="flex items-center justify-between gap-2 p-2">
+                            <div className="flex-1">
+                              <div className="text-sm font-medium">{option.name}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {option.customer} • {option.date ? new Date(option.date).toLocaleDateString() : 'No date'} • LKR {Math.round(option.amount).toLocaleString()}
+                              </div>
+                            </div>
+                            <Checkbox
+                              checked={selectedInvoiceIds.includes(option.id)}
+                              onCheckedChange={checked => handleInvoiceSelectionToggle(option.id, Boolean(checked))}
+                            />
+                          </label>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+                <Button 
+                  variant="outline" 
+                  className="w-full"
+                  onClick={handleMergeCustomers}
+                  disabled={
+                    isApplyingMerge ||
+                    !primaryCustomer || 
+                    (invoiceMergeMode 
+                      ? selectedInvoiceIds.length === 0 
+                      : !resolvedMergeMembers.some(name => name !== primaryCustomer))
+                  }
+                  type="button"
+                >
+                  {isApplyingMerge
+                    ? 'Applying merge...'
+                    : invoiceMergeMode
+                      ? 'Merge Selected Invoices'
+                      : 'Merge Selected Customers'}
+                </Button>
+                <div className="text-xs text-muted-foreground">
+                  Choose a primary, add merge customers, then merge by whole customer or invoice selection.
+                </div>
+                {Object.entries(mergedCustomerGroups).length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-muted-foreground">Customer-level merges:</div>
+                    <div className="space-y-1">
+                      {Object.entries(mergedCustomerGroups).map(([alias, members]) => (
+                        <div key={alias} className="flex items-center justify-between rounded border px-2 py-1 text-xs">
+                          <div className="font-semibold">{alias}</div>
+                          <div className="flex-1 px-2 text-right truncate">{members.join(', ')}</div>
+                          <Button variant="ghost" size="sm" type="button" onClick={() => handleRemoveMergedGroup(alias)}>
+                            <X className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {Object.keys(assignedInvoicesByPrimary).length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-muted-foreground">Invoice-level merges:</div>
+                    <div className="space-y-1">
+                      {Object.entries(assignedInvoicesByPrimary).map(([alias, invoices]) => (
+                        <div key={`assigned-${alias}`} className="rounded border px-2 py-1">
+                          <div className="flex items-center justify-between text-xs font-semibold">
+                            <span>{alias}</span>
+                            <span>{invoices.length} invoice(s)</span>
+                          </div>
+                          <div className="mt-1 space-y-1 max-h-32 overflow-y-auto">
+                            {invoices.map(invoice => (
+                              <div key={invoice.id} className="flex items-center justify-between gap-2 text-xs">
+                                <span className="truncate">{invoice.name || invoice.id}</span>
+                                <Button variant="ghost" size="sm" type="button" onClick={() => handleUnassignInvoice(invoice.id)}>
+                                  <X className="h-3 w-3" />
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div>
               <label className="text-sm font-medium mb-2 block">Target Months (Auto-synced)</label>
               <div className="p-3 bg-gray-50 rounded-md">
                 <div className="text-xs text-muted-foreground mb-2">
@@ -569,7 +1183,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
               
               const comparison = calculateTargetVsActual(
                 filteredData,
-                targetData,
+                mergedTargetData,
                 selectedYear === 'all' ? undefined : selectedYear,
                 paddedSelectedMonths
               );
