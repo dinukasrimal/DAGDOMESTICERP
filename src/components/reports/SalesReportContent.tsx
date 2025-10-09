@@ -511,22 +511,6 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     new Date(item.date_order).getFullYear().toString()
   ))].sort((a, b) => b.localeCompare(a));
 
-  // Helper function to get quantity from invoice - FIXED to properly handle order_lines
-  const getInvoiceQuantity = (invoice: SalesData): number => {
-    if (invoice.order_lines && Array.isArray(invoice.order_lines) && invoice.order_lines.length > 0) {
-      const total = invoice.order_lines.reduce((sum, line) => {
-        // Make sure we're getting the quantity properly
-        const qty = Number(line.qty_delivered) || 0;
-        console.log(`Invoice ${invoice.name}: Line qty_delivered = ${line.qty_delivered}, parsed = ${qty}`);
-        return sum + qty;
-      }, 0);
-      console.log(`Invoice ${invoice.name}: Total quantity = ${total}`);
-      return total;
-    }
-    console.log(`Invoice ${invoice.name}: No order lines, defaulting to 1`);
-    return 1; // Default to 1 if no order lines
-  };
-
   // Helper to extract code in brackets from product_name
   function extractCodeFromBrackets(name: string): string | null {
     const match = name.match(/\[(.*?)\]/);
@@ -545,7 +529,60 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     )
   )).sort()];
 
+  const doesLineMatchCategory = useCallback((line: any) => {
+    if (selectedCategory === 'all') return true;
+    if (!line?.product_name) return false;
+    const code = extractCodeFromBrackets(line.product_name);
+    const found = code && products.find(p => p.default_code === code);
+    const category = found ? (found.product_category || 'Uncategorized') : 'Uncategorized';
+    return category === selectedCategory;
+  }, [products, selectedCategory]);
+
   // Filter data based on selections, including category
+  const getInvoiceQuantity = (invoice: SalesData): number => {
+    if (invoice.order_lines && Array.isArray(invoice.order_lines) && invoice.order_lines.length > 0) {
+      return invoice.order_lines.reduce((sum, line) => {
+        const qty = Number(line.qty_delivered) || 0;
+        return sum + qty;
+      }, 0);
+    }
+    return 1;
+  };
+
+  const getInvoiceQuantityForSelection = (invoice: SalesData): number => {
+    if (!invoice.order_lines || invoice.order_lines.length === 0) {
+      return selectedCategory === 'all' ? 1 : 0;
+    }
+    let total = 0;
+    invoice.order_lines.forEach(line => {
+      if (selectedCategory !== 'all' && !doesLineMatchCategory(line)) return;
+      total += Number(line.qty_delivered) || 0;
+    });
+    if (selectedCategory === 'all' && total === 0) {
+      return 1;
+    }
+    return total;
+  };
+
+  const getInvoiceValueForSelection = (invoice: SalesData): number => {
+    if (!invoice.order_lines || invoice.order_lines.length === 0) {
+      return selectedCategory === 'all' ? invoice.amount_total : 0;
+    }
+    const total = invoice.order_lines.reduce((sum, line) => {
+      if (selectedCategory !== 'all' && !doesLineMatchCategory(line)) return sum;
+      if (typeof line.price_subtotal === 'number') {
+        return sum + line.price_subtotal;
+      }
+      const qty = Number(line.qty_delivered) || 0;
+      const unit = Number(line.price_unit) || 0;
+      return sum + qty * unit;
+    }, 0);
+    if (selectedCategory === 'all') {
+      return total > 0 ? total : invoice.amount_total;
+    }
+    return total;
+  };
+
   const filteredData = mergedSalesData.filter(item => {
     const orderDate = new Date(item.date_order);
     const year = orderDate.getFullYear().toString();
@@ -554,13 +591,7 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     if (!selectedMonths.includes('all') && !selectedMonths.includes(month.toString())) return false;
     if (!selectedCustomers.includes('all') && !selectedCustomers.includes(item.partner_name)) return false;
     if (selectedCategory !== 'all') {
-      // Only include if at least one order line matches the selected category
-      if (!item.order_lines || !item.order_lines.some(line => {
-        if (!line.product_name) return false;
-        const code = extractCodeFromBrackets(line.product_name);
-        const found = code && products.find(p => p.default_code === code);
-        return found ? (found.product_category || 'Uncategorized') === selectedCategory : 'Uncategorized' === selectedCategory;
-      })) return false;
+      if (!item.order_lines || !item.order_lines.some(line => doesLineMatchCategory(line))) return false;
     }
     return true;
   });
@@ -569,11 +600,11 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
 
   // Calculate total quantity and value
   const totalQuantity = filteredData.reduce((sum, item) => {
-    const qty = getInvoiceQuantity(item);
+    const qty = getInvoiceQuantityForSelection(item);
     return sum + qty;
   }, 0);
 
-  const totalValue = filteredData.reduce((sum, item) => sum + item.amount_total, 0);
+  const totalValue = filteredData.reduce((sum, item) => sum + getInvoiceValueForSelection(item), 0);
 
   console.log(`Totals: Quantity = ${totalQuantity}, Value = ${totalValue}`);
 
@@ -587,6 +618,9 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     if (year !== previousYear) return false;
     if (!selectedMonths.includes('all') && !selectedMonths.includes(month.toString())) return false;
     if (!selectedCustomers.includes('all') && !selectedCustomers.includes(item.partner_name)) return false;
+    if (selectedCategory !== 'all') {
+      if (!item.order_lines || !item.order_lines.some(line => doesLineMatchCategory(line))) return false;
+    }
     
     return true;
   });
@@ -594,10 +628,10 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
   console.log(`Previous year data: ${previousYearData.length} invoices for year ${previousYear}`);
 
   const previousYearQuantity = previousYearData.reduce((sum, item) => {
-    return sum + getInvoiceQuantity(item);
+    return sum + getInvoiceQuantityForSelection(item);
   }, 0);
 
-  const previousYearValue = previousYearData.reduce((sum, item) => sum + item.amount_total, 0);
+  const previousYearValue = previousYearData.reduce((sum, item) => sum + getInvoiceValueForSelection(item), 0);
 
   console.log(`Previous year totals: Quantity = ${previousYearQuantity}, Value = ${previousYearValue}`);
 
@@ -615,8 +649,8 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     if (!acc[customer]) {
       acc[customer] = { quantity: 0, value: 0 };
     }
-    acc[customer].quantity += getInvoiceQuantity(item);
-    acc[customer].value += item.amount_total;
+    acc[customer].quantity += getInvoiceQuantityForSelection(item);
+    acc[customer].value += getInvoiceValueForSelection(item);
     return acc;
   }, {} as Record<string, { quantity: number; value: number }>);
 
@@ -625,8 +659,8 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     if (!acc[customer]) {
       acc[customer] = { quantity: 0, value: 0 };
     }
-    acc[customer].quantity += getInvoiceQuantity(item);
-    acc[customer].value += item.amount_total;
+    acc[customer].quantity += getInvoiceQuantityForSelection(item);
+    acc[customer].value += getInvoiceValueForSelection(item);
     return acc;
   }, {} as Record<string, { quantity: number; value: number }>);
 
@@ -647,8 +681,8 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     if (!acc[monthKey]) {
       acc[monthKey] = { quantity: 0, value: 0 };
     }
-    acc[monthKey].quantity += getInvoiceQuantity(item);
-    acc[monthKey].value += item.amount_total;
+    acc[monthKey].quantity += getInvoiceQuantityForSelection(item);
+    acc[monthKey].value += getInvoiceValueForSelection(item);
     return acc;
   }, {} as Record<string, { quantity: number; value: number }>);
 
@@ -658,8 +692,8 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     if (!acc[monthKey]) {
       acc[monthKey] = { quantity: 0, value: 0 };
     }
-    acc[monthKey].quantity += getInvoiceQuantity(item);
-    acc[monthKey].value += item.amount_total;
+    acc[monthKey].quantity += getInvoiceQuantityForSelection(item);
+    acc[monthKey].value += getInvoiceValueForSelection(item);
     return acc;
   }, {} as Record<string, { quantity: number; value: number }>);
 
@@ -806,16 +840,17 @@ export const SalesReportContent: React.FC<SalesReportContentProps> = ({ salesDat
     source: SalesData[],
     bucketKey: 'current' | 'previous'
   ) => {
-    if (selectedMonths.includes('all')) return;
-    const monthSet = new Set(selectedMonths);
+    const isAllMonths = selectedMonths.includes('all');
+    const monthSet = isAllMonths ? null : new Set(selectedMonths);
 
     source.forEach(item => {
       if (!item.date_order || !item.order_lines || !Array.isArray(item.order_lines)) return;
       const orderDate = new Date(item.date_order);
       const month = (orderDate.getMonth() + 1).toString();
-      if (!monthSet.has(month)) return;
+      if (!isAllMonths && monthSet && !monthSet.has(month)) return;
 
       item.order_lines.forEach(line => {
+        if (selectedCategory !== 'all' && !doesLineMatchCategory(line)) return;
         let category = 'Uncategorized';
         if (line.product_name) {
           const code = extractCodeFromBrackets(line.product_name);
