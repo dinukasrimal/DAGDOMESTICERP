@@ -1092,27 +1092,347 @@ export const AdvancedInventoryReport: React.FC = () => {
     getSupplierIncomingMap
   ]);
 
-  // Add Collapse All button and PO search box above tables
-  <div className="flex items-center justify-between mb-4">
-    <div className="flex items-center space-x-2">
-      <Button size="sm" variant="outline" onClick={() => {
-        setCategoryAnalysis(prev => prev.map(cat => ({ ...cat, expanded: false })));
-        setExpandedIncoming({});
-      }}>
-        Collapse All
-      </Button>
-    </div>
-    <div className="flex items-center space-x-2">
-      <input
-        type="text"
-        className="border rounded px-2 py-1 text-sm"
-        placeholder="Find PO number..."
-        value={searchPO}
-        onChange={e => setSearchPO(e.target.value)}
-        style={{ minWidth: 180 }}
-      />
-    </div>
-  </div>
+  const multiMonthVisibleCategories = React.useMemo(() => {
+    const trimmedSearch = categorySearch.trim().toLowerCase();
+    return sortCategoryAnalysis(categoryAnalysis)
+      .filter(category => category.products && category.products.length > 0)
+      .filter(category => {
+        const categoryName = category.category || 'Uncategorized';
+        const matchesSearch = trimmedSearch === '' || categoryName.toLowerCase().includes(trimmedSearch);
+        const isHidden = hiddenCategories.includes(categoryName);
+        const inGlobalFilter = globalCategoryFilter.length === 0 || globalCategoryFilter.includes(categoryName);
+        return matchesSearch && !isHidden && inGlobalFilter;
+      });
+  }, [categoryAnalysis, categorySearch, hiddenCategories, globalCategoryFilter, sortColumn, sortDirection]);
+
+  const multiMonthProducts = React.useMemo(() => {
+    return multiMonthVisibleCategories.flatMap(category => category.products || []);
+  }, [multiMonthVisibleCategories]);
+
+  const multiMonthSupplierColumns = React.useMemo(() => {
+    const suppliers = new Set<string>();
+    multiMonthProducts.forEach(product => {
+      const supplierMap = getSupplierIncomingMap(product);
+      Object.keys(supplierMap).forEach(name => suppliers.add(name));
+    });
+    return Array.from(suppliers).sort((a, b) => a.localeCompare(b));
+  }, [multiMonthProducts, getSupplierIncomingMap]);
+
+  const multiMonthBaseColumnCount = 8;
+  const multiMonthTableColumnCount = multiMonthBaseColumnCount + multiMonthSupplierColumns.length;
+
+  const handleMultiMonthCsvExport = React.useCallback(() => {
+    if (multiMonthProducts.length === 0) {
+      toast({
+        title: 'No Data',
+        description: 'No rows available for the selected period.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    if (typeof window === 'undefined') {
+      toast({
+        title: 'Export Unavailable',
+        description: 'CSV export is only available in the browser.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    const headers = [
+      'Product',
+      'Category',
+      'Months Window',
+      'Sales Quantity',
+      'Current Stock',
+      'Incoming',
+      'Stock + Incoming',
+      'Needs Planning',
+      'Supplier',
+      'PO Number',
+      'Ordered Qty',
+      'Received Qty',
+      'Pending Qty'
+    ];
+
+    const monthsLabel = `${selectedMonths} Month${selectedMonths === '1' ? '' : 's'}`;
+    const pivotRows: string[][] = [];
+
+    multiMonthProducts.forEach(product => {
+      const salesQty = Math.round(getSalesQtyForProduct(product, parseInt(selectedMonths)) * (1 + salesQtyPercent / 100));
+      const incoming = getPendingIncomingForProduct(product);
+      const stockPlusIncoming = product.quantity_on_hand + incoming;
+      const needsPlanning = Math.max(0, salesQty - stockPlusIncoming);
+      const supplierMap = getSupplierIncomingMap(product);
+      const supplierEntries = Object.entries(supplierMap);
+
+      if (supplierEntries.length === 0) {
+        pivotRows.push([
+          product.product_name,
+          product.product_category || '',
+          monthsLabel,
+          String(salesQty),
+          String(product.quantity_on_hand),
+          String(incoming),
+          String(stockPlusIncoming),
+          needsPlanning > 0 ? String(needsPlanning) : 'OK',
+          'No Supplier',
+          '',
+          '',
+          '',
+          ''
+        ]);
+      } else {
+        supplierEntries.forEach(([supplier, lines]) => {
+          if (lines.length === 0) {
+            pivotRows.push([
+              product.product_name,
+              product.product_category || '',
+              monthsLabel,
+              String(salesQty),
+              String(product.quantity_on_hand),
+              String(incoming),
+              String(stockPlusIncoming),
+              needsPlanning > 0 ? String(needsPlanning) : 'OK',
+              supplier,
+              '',
+              '',
+              '',
+              ''
+            ]);
+            return;
+          }
+          lines.forEach(line => {
+            pivotRows.push([
+              product.product_name,
+              product.product_category || '',
+              monthsLabel,
+              String(salesQty),
+              String(product.quantity_on_hand),
+              String(incoming),
+              String(stockPlusIncoming),
+              needsPlanning > 0 ? String(needsPlanning) : 'OK',
+              supplier,
+              line.poNumber || '',
+              String(line.ordered ?? ''),
+              String(line.received ?? ''),
+              String(line.pending ?? '')
+            ]);
+          });
+        });
+      }
+    });
+
+    const csvContent = [headers, ...pivotRows]
+      .map(row => row.map(escapeCsvValue).join(','))
+      .join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `multi-month-planning-${selectedMonths}-months-${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    toast({
+      title: 'Export Complete',
+      description: `${selectedMonths}-month planning pivot exported to CSV.`,
+    });
+  }, [
+    multiMonthProducts,
+    selectedMonths,
+    salesQtyPercent,
+    toast,
+    getPendingIncomingForProduct,
+    getSalesQtyForProduct,
+    getSupplierIncomingMap
+  ]);
+
+  const renderMultiMonthRows = () => {
+    return multiMonthVisibleCategories.map(category => {
+      const categorySupplierTotals: Record<string, number> = {};
+      category.products.forEach(product => {
+        const supplierMap = getSupplierIncomingMap(product);
+        Object.entries(supplierMap).forEach(([supplier, lines]) => {
+          const pendingTotal = lines.reduce((sum, line) => sum + (line.pending || 0), 0);
+          categorySupplierTotals[supplier] = (categorySupplierTotals[supplier] || 0) + pendingTotal;
+        });
+      });
+
+      const categoryRow = (
+        <tr 
+          key={`${category.category}-summary`}
+          className="hover:bg-gray-50 cursor-pointer"
+          onClick={() => toggleCategoryExpansion(category.category)}
+        >
+          <td className="border p-2 font-medium" colSpan={2}>
+            {category.expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />} {category.category}
+          </td>
+          <td className="border p-2 text-right">{category.totalSalesQty}</td>
+          <td className="border p-2 text-right">{category.totalStock}</td>
+          <td className="border p-2 text-right">{category.totalIncoming}</td>
+          <td className="border p-2 text-right">{category.totalStock + category.totalIncoming}</td>
+          <td className="border p-2 text-right text-sm">
+            <span className={category.needsPlanning > 0 ? 'text-red-600 font-bold' : ''}>
+              {category.needsPlanning > 0 ? category.needsPlanning : 'OK'}
+            </span>
+          </td>
+          {multiMonthSupplierColumns.map(supplier => (
+            <td key={`${category.category}-${supplier}`} className="border p-2 text-right text-xs">
+              {categorySupplierTotals[supplier] ? categorySupplierTotals[supplier] : '—'}
+            </td>
+          ))}
+          <td className="border p-2 text-center">
+            {!category.expanded && (
+              (() => {
+                const anyProductNeedsPlanning = category.products.some(product => {
+                  const salesQty = getSalesQtyForProduct(product, parseInt(selectedMonths));
+                  const availableIncoming = getPendingIncomingForProduct(product);
+                  const stockWithIncoming = product.quantity_on_hand + availableIncoming;
+                  const needsPlanning = Math.max(0, salesQty - stockWithIncoming);
+                  return needsPlanning > 0;
+                });
+                return (
+                  <Button
+                    size="sm"
+                    variant={anyProductNeedsPlanning ? "destructive" : "outline"}
+                    onClick={e => {
+                      e.stopPropagation();
+                      setViewCategoryDialog({ open: true, category: category.category });
+                    }}
+                  >
+                    View Product
+                  </Button>
+                );
+              })()
+            )}
+          </td>
+        </tr>
+      );
+
+      const productRows = category.expanded
+        ? sortProductsBySize(category.products).map(product => {
+            const salesQty = Math.round(getSalesQtyForProduct(product, parseInt(selectedMonths)) * (1 + salesQtyPercent / 100));
+            const availableIncoming = getPendingIncomingForProduct(product);
+            const stockWithIncoming = product.quantity_on_hand + availableIncoming;
+            const needsPlanning = Math.max(0, salesQty - stockWithIncoming);
+            const isIncomingExpanded = expandedIncoming[product.id];
+            const supplierIncomingMap = getSupplierIncomingMap(product);
+
+            return (
+              <React.Fragment key={product.id}>
+                <tr className="bg-gray-50">
+                  <td className="border p-2 pl-8 text-sm">{product.product_name}</td>
+                  <td className="border p-2 text-sm">{product.product_category}</td>
+                  <td className="border p-2 text-right text-sm">{salesQty}</td>
+                  <td className="border p-2 text-right text-sm">{product.quantity_on_hand}</td>
+                  <td className="border p-2 text-right text-sm">
+                    {availableIncoming}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="ml-2"
+                      onClick={() => setExpandedIncoming(prev => ({ ...prev, [product.id]: !prev[product.id] }))}
+                    >
+                      {isIncomingExpanded ? 'Hide' : 'View'}
+                    </Button>
+                  </td>
+                  <td className="border p-2 text-right text-sm">{stockWithIncoming}</td>
+                  <td className="border p-2 text-right text-sm">
+                    <span className={needsPlanning > 0 ? 'text-red-600 font-bold' : ''}>
+                      {needsPlanning > 0 ? needsPlanning : 'OK'}
+                    </span>
+                  </td>
+                  {multiMonthSupplierColumns.map(supplier => {
+                    const supplierLines = supplierIncomingMap[supplier] || [];
+                    return (
+                      <td key={`${product.id}-${supplier}`} className="border p-2 text-left text-xs">
+                        {supplierLines.length > 0 ? (
+                          <div className="space-y-1">
+                            {supplierLines.map((line, idx) => (
+                              <div key={idx}>
+                                {line.poNumber}: {line.pending}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                  <td className="border p-2 text-center text-sm">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={e => {
+                        e.stopPropagation();
+                        setViewCategoryDialog({ open: true, category: category.category });
+                      }}
+                    >
+                      View Product
+                    </Button>
+                  </td>
+                </tr>
+                {isIncomingExpanded && (
+                  <tr className="bg-blue-50">
+                    <td colSpan={multiMonthTableColumnCount} className="border p-2 pl-12 text-xs">
+                      <div className="font-semibold mb-1">Incoming Breakdown for {product.product_name} (Supplier-wise):</div>
+                      {Object.entries(supplierIncomingMap)
+                        .filter(([_, lines]) => lines.length > 0)
+                        .map(([supplier, lines]) => (
+                          <div key={supplier} className="mb-2">
+                            <div className="font-semibold">Supplier: {supplier}</div>
+                            <table className="w-full text-xs mb-1">
+                              <thead>
+                                <tr>
+                                  <th className="border p-1 text-left">PO Number</th>
+                                  <th className="border p-1 text-right">Ordered Qty</th>
+                                  <th className="border p-1 text-right">Received</th>
+                                  <th className="border p-1 text-right">Pending</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {lines.map((line, idx) => (
+                                  <tr key={idx}>
+                                    <td className="border p-1">{line.poNumber}</td>
+                                    <td className="border p-1 text-right">{line.ordered}</td>
+                                    <td className="border p-1 text-right">{line.received}</td>
+                                    <td className="border p-1 text-right">{line.pending}</td>
+                                  </tr>
+                                ))}
+                                <tr className="font-bold bg-slate-100">
+                                  <td className="border p-1 text-right" colSpan={3}>Supplier Total Pending</td>
+                                  <td className="border p-1 text-right">{lines.reduce((sum, l) => sum + l.pending, 0)}</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
+                        ))}
+                      {Object.values(supplierIncomingMap).flat().length === 0 && (
+                        <div>No incoming purchase orders (not on hold) for this product.</div>
+                      )}
+                      <div className="text-muted-foreground">* Only purchase orders not on hold are included in this calculation.</div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })
+        : null;
+
+      return (
+        <React.Fragment key={category.category}>
+          {categoryRow}
+          {productRows}
+        </React.Fragment>
+      );
+    });
+  };
 
   // In Supplier Purchase Orders table, filter by searchPO
   const filteredSupplierGroups = React.useMemo(() => {
@@ -1446,13 +1766,24 @@ export const AdvancedInventoryReport: React.FC = () => {
               <Calendar className="h-5 w-5" />
               <span>{selectedMonths} Month Planning Analysis</span>
             </CardTitle>
-            <Button 
-              variant="outline" 
-              onClick={generateOptimizedPdf}
-              className="ml-auto"
-            >
-              Download PDF
-            </Button>
+            <div className="flex items-center gap-2 ml-auto">
+              <Button 
+                variant="outline" 
+                onClick={handleMultiMonthCsvExport}
+                className="flex items-center gap-1"
+              >
+                <Download className="h-4 w-4" />
+                Export CSV
+              </Button>
+              <Button 
+                variant="outline" 
+                onClick={generateOptimizedPdf}
+                className="flex items-center gap-1"
+              >
+                <Download className="h-4 w-4" />
+                Download PDF
+              </Button>
+            </div>
           </div>
           <div className="flex items-center space-x-4 mt-4">
             <div className="flex items-center space-x-2">
@@ -1578,155 +1909,15 @@ export const AdvancedInventoryReport: React.FC = () => {
                       {getSortIcon('needsPlanning', sortColumn, sortDirection)}
                     </button>
                   </th>
+                  {multiMonthSupplierColumns.map(supplier => (
+                    <th key={`multi-month-header-${supplier}`} className="border p-2 text-left">
+                      {supplier}
+                    </th>
+                  ))}
                   <th className="border p-2 text-center">Action</th>
                 </tr>
               </thead>
-              <tbody>
-                {sortCategoryAnalysis(categoryAnalysis)
-                  .filter(category => category.products && category.products.length > 0)
-                  .filter(category =>
-                    (categorySearch.trim() === '' || category.category.toLowerCase().includes(categorySearch.trim().toLowerCase())) &&
-                    !hiddenCategories.includes(category.category) &&
-                    (globalCategoryFilter.length === 0 || globalCategoryFilter.includes(category.category))
-                  )
-                  .map((category, index) => (
-                    <React.Fragment key={category.category}>
-                      <tr 
-                        className="hover:bg-gray-50 cursor-pointer"
-                        onClick={() => toggleCategoryExpansion(category.category)}
-                      >
-                        <td className="border p-2 font-medium" colSpan={2}>
-                          {category.expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />} {category.category}
-                        </td>
-                        <td className="border p-2 text-right">{category.totalSalesQty}</td>
-                        <td className="border p-2 text-right">{category.totalStock}</td>
-                        <td className="border p-2 text-right">{category.totalIncoming}</td>
-                        <td className="border p-2 text-right">{category.totalStock + category.totalIncoming}</td>
-                        <td className="border p-2 text-right text-sm">
-                          <span className={category.needsPlanning > 0 ? 'text-red-600 font-bold' : ''}>
-                            {category.needsPlanning > 0 ? category.needsPlanning : 'OK'}
-                          </span>
-                        </td>
-                        <td className="border p-2 text-center">
-                          {!category.expanded && (
-                            (() => {
-                              // Check if any product in the category needs planning
-                              const anyProductNeedsPlanning = category.products.some(product => {
-                                const salesQty = getSalesQtyForProduct(product, parseInt(selectedMonths));
-                                const availableIncoming = getPendingIncomingForProduct(product);
-                                const stockWithIncoming = product.quantity_on_hand + availableIncoming;
-                                const needsPlanning = Math.max(0, salesQty - stockWithIncoming);
-                                return needsPlanning > 0;
-                              });
-                              return (
-                                <Button
-                                  size="sm"
-                                  variant={anyProductNeedsPlanning ? "destructive" : "outline"}
-                                  onClick={e => {
-                                    e.stopPropagation();
-                                    setViewCategoryDialog({ open: true, category: category.category });
-                                  }}
-                                >
-                                  View Product
-                                </Button>
-                              );
-                            })()
-                          )}
-                        </td>
-                      </tr>
-                      {category.expanded && sortProductsBySize(category.products).map((product) => {
-                        const salesQty = Math.round(getSalesQtyForProduct(product, parseInt(selectedMonths)) * (1 + salesQtyPercent / 100));
-                        const availableIncoming = getPendingIncomingForProduct(product);
-                        const stockWithIncoming = product.quantity_on_hand + availableIncoming;
-                        const needsPlanning = Math.max(0, salesQty - stockWithIncoming);
-                        const isIncomingExpanded = expandedIncoming[product.id];
-                        // Find all purchase order lines (not on hold) for this product
-                        const supplierIncomingMap = getSupplierIncomingMap(product);
-                        return (
-                          <React.Fragment key={product.id}>
-                            <tr className="bg-gray-50">
-                              <td className="border p-2 pl-8 text-sm">{product.product_name}</td>
-                              <td className="border p-2 text-sm">{product.product_category}</td>
-                              <td className="border p-2 text-right text-sm">{salesQty}</td>
-                              <td className="border p-2 text-right text-sm">{product.quantity_on_hand}</td>
-                              <td className="border p-2 text-right text-sm">
-                                {availableIncoming}
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="ml-2"
-                                  onClick={() => setExpandedIncoming(prev => ({ ...prev, [product.id]: !prev[product.id] }))}
-                                >
-                                  {isIncomingExpanded ? 'Hide' : 'View'}
-                                </Button>
-                              </td>
-                              <td className="border p-2 text-right text-sm">{stockWithIncoming}</td>
-                              <td className="border p-2 text-right text-sm">
-                                <span className={needsPlanning > 0 ? 'text-red-600 font-bold' : ''}>
-                                  {needsPlanning > 0 ? needsPlanning : 'OK'}
-                                </span>
-                              </td>
-                              <td className="border p-2 text-center text-sm">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={e => {
-                                    e.stopPropagation();
-                                    setViewCategoryDialog({ open: true, category: category.category });
-                                  }}
-                                >
-                                  View Product
-                                </Button>
-                              </td>
-                            </tr>
-                            {isIncomingExpanded && (
-                              <tr className="bg-blue-50">
-                                <td colSpan={9} className="border p-2 pl-12 text-xs">
-                                  <div className="font-semibold mb-1">Incoming Breakdown for {product.product_name} (Supplier-wise):</div>
-                                  {Object.entries(supplierIncomingMap)
-                                    .filter(([_, lines]) => lines.length > 0)
-                                    .map(([supplier, lines]) => (
-                                      <div key={supplier} className="mb-2">
-                                        <div className="font-semibold">Supplier: {supplier}</div>
-                                        <table className="w-full text-xs mb-1">
-                                          <thead>
-                                            <tr>
-                                              <th className="border p-1 text-left">PO Number</th>
-                                              <th className="border p-1 text-right">Ordered Qty</th>
-                                              <th className="border p-1 text-right">Received</th>
-                                              <th className="border p-1 text-right">Pending</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {lines.map((line, idx) => (
-                                              <tr key={idx}>
-                                                <td className="border p-1">{line.poNumber}</td>
-                                                <td className="border p-1 text-right">{line.ordered}</td>
-                                                <td className="border p-1 text-right">{line.received}</td>
-                                                <td className="border p-1 text-right">{line.pending}</td>
-                                              </tr>
-                                            ))}
-                                            <tr className="font-bold bg-slate-100">
-                                              <td className="border p-1 text-right" colSpan={3}>Supplier Total Pending</td>
-                                              <td className="border p-1 text-right">{lines.reduce((sum, l) => sum + l.pending, 0)}</td>
-                                            </tr>
-                                          </tbody>
-                                        </table>
-                                      </div>
-                                    ))}
-                                  {Object.values(supplierIncomingMap).flat().length === 0 && (
-                                    <div>No incoming purchase orders (not on hold) for this product.</div>
-                                  )}
-                                  <div className="text-muted-foreground">* Only purchase orders not on hold are included in this calculation.</div>
-                                </td>
-                              </tr>
-                            )}
-                          </React.Fragment>
-                        );
-                      })}
-                    </React.Fragment>
-                  ))}
-              </tbody>
+              <tbody>{renderMultiMonthRows()}</tbody>
             </table>
           </div>
         </CardContent>

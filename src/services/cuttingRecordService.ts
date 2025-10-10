@@ -13,6 +13,7 @@ export interface PurchaseOrderLine {
   id: string;
   productName: string;
   orderedQuantity: number;
+  receivedQuantity?: number;
   unitOfMeasure?: string;
 }
 
@@ -61,12 +62,18 @@ function parseOrderLines(orderLines: unknown): PurchaseOrderLine[] {
         ? orderedQuantityRaw
         : Number(orderedQuantityRaw) || 0;
 
+      const receivedQuantityRaw = lineObj.qty_received ?? lineObj.received_quantity ?? 0;
+      const receivedQuantity = typeof receivedQuantityRaw === 'number'
+        ? receivedQuantityRaw
+        : Number(receivedQuantityRaw) || 0;
+
       const unit = lineObj.product_uom ?? lineObj.uom ?? lineObj.unit ?? undefined;
 
       return {
         id,
         productName,
         orderedQuantity,
+        receivedQuantity,
         unitOfMeasure: typeof unit === 'string' ? unit : undefined,
       } satisfies PurchaseOrderLine;
     })

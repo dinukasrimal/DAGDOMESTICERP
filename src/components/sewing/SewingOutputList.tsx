@@ -123,14 +123,59 @@ export const SewingOutputList: React.FC<SewingOutputListProps> = ({
                       </div>
                     </div>
 
-                    <div className="space-y-2">
-                      {record.lineItems.map((line) => (
-                        <div key={line.id} className="text-xs text-muted-foreground">
-                          <p className="font-medium text-foreground">{line.poNumber}</p>
-                          <p>Output: {line.outputQuantity.toLocaleString()}</p>
-                        </div>
-                      ))}
-                    </div>
+                    {(() => {
+                      const grouped = record.lineItems.reduce((acc, line) => {
+                        const key = line.poNumber || 'Unknown PO';
+                        if (!acc.has(key)) acc.set(key, []);
+                        acc.get(key)!.push(line);
+                        return acc;
+                      }, new Map<string, SewingOutputRecordEntry['lineItems']>());
+
+                      return Array.from(grouped.entries()).map(([poNumber, lines]) => {
+                        const poOutput = lines.reduce((sum, line) => sum + line.outputQuantity, 0);
+                        return (
+                          <div key={poNumber} className="space-y-1">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="font-semibold text-foreground">{poNumber}</span>
+                              <span className="text-muted-foreground">Output: {poOutput.toLocaleString()}</span>
+                            </div>
+                            <div className="rounded border bg-muted/40">
+                              <div className="grid grid-cols-12 bg-muted px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                <span className="col-span-4">Variant</span>
+                                <span className="col-span-2 text-right">Ordered</span>
+                                <span className="col-span-2 text-right">Cut</span>
+                                <span className="col-span-2 text-right">Issued</span>
+                                <span className="col-span-2 text-right">Output</span>
+                              </div>
+                              <div className="divide-y">
+                                {lines.map((line) => (
+                                  <div key={line.id} className="grid grid-cols-12 items-center px-3 py-1.5 text-[11px]">
+                                    <div className="col-span-4 pr-2">
+                                      <div className="font-medium text-foreground">{line.productName || '—'}</div>
+                                      {line.orderLineId && (
+                                        <div className="text-muted-foreground">#{line.orderLineId}</div>
+                                      )}
+                                    </div>
+                                    <div className="col-span-2 text-right">
+                                      {line.orderedQuantity !== undefined ? line.orderedQuantity.toLocaleString() : '—'}
+                                    </div>
+                                    <div className="col-span-2 text-right">
+                                      {line.cutQuantity !== undefined ? line.cutQuantity.toLocaleString() : '—'}
+                                    </div>
+                                    <div className="col-span-2 text-right">
+                                      {line.issueQuantity !== undefined ? line.issueQuantity.toLocaleString() : '—'}
+                                    </div>
+                                    <div className="col-span-2 text-right text-foreground font-semibold">
+                                      {line.outputQuantity.toLocaleString()}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      });
+                    })()}
                   </div>
                 );
               })}

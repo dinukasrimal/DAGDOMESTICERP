@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,30 +9,33 @@ import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { 
-  Plus, 
-  Package, 
-  Calendar, 
-  Check, 
+import {
+  Plus,
+  Package,
+  Calendar,
+  Check,
   X,
   Search,
   FileText,
   AlertTriangle,
   CheckCircle,
   Clock,
-  Truck
+  Truck,
+  Receipt,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { 
-  GoodsReceivedService, 
-  GoodsReceived, 
-  CreateGoodsReceived, 
+import {
+  GoodsReceivedService,
+  GoodsReceived,
+  CreateGoodsReceived,
   CreateGoodsReceivedLine,
-  FabricRoll
+  FabricRoll,
 } from '../../services/goodsReceivedService';
 import { PurchaseOrderService, PurchaseOrder } from '../../services/purchaseOrderService';
 import { ModernLayout } from '../layout/ModernLayout';
 import { BarcodeScanner } from '../ui/BarcodeScanner';
+import { accountingService, type ChartOfAccount } from '@/services/accountingService';
+import { useAuth } from '@/hooks/useAuth';
 
 const goodsReceivedService = new GoodsReceivedService();
 const purchaseOrderService = new PurchaseOrderService();
@@ -48,6 +51,7 @@ export const GoodsReceivedManager: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const { toast } = useToast();
+  const { user } = useAuth();
 
   // Form states
   const [formData, setFormData] = useState<CreateGoodsReceived>({
@@ -72,6 +76,35 @@ export const GoodsReceivedManager: React.FC = () => {
   const [showBarcodeCamera, setShowBarcodeCamera] = useState(false);
   const [showWeightEntry, setShowWeightEntry] = useState(false);
   const [isManualEntry, setIsManualEntry] = useState(false);
+  const [accounts, setAccounts] = useState<ChartOfAccount[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(false);
+  const [isConvertDialogOpen, setIsConvertDialogOpen] = useState(false);
+  const [convertGRN, setConvertGRN] = useState<GoodsReceived | null>(null);
+  const [convertDefaultAccountId, setConvertDefaultAccountId] = useState('');
+  const [convertPayableAccountId, setConvertPayableAccountId] = useState('');
+  const [convertDueDate, setConvertDueDate] = useState('');
+  const [convertPerLineAccounts, setConvertPerLineAccounts] = useState<Record<string, string>>({});
+  const [convertLoading, setConvertLoading] = useState(false);
+
+  const accountOptions = useMemo(() => accounts.map((account) => ({
+    value: account.id,
+    label: `${account.code} · ${account.name}`,
+    description: account.accountType,
+  })), [accounts]);
+
+  const payableOptions = useMemo(() => accountOptions.filter((option) => {
+    const account = accounts.find((acc) => acc.id === option.value);
+    return account?.isPayable;
+  }), [accountOptions, accounts]);
+
+  useEffect(() => {
+    if (!convertDefaultAccountId && accounts.length) {
+      const firstExpense = accounts.find((account) => !account.isPayable);
+      if (firstExpense) {
+        setConvertDefaultAccountId(firstExpense.id);
+      }
+    }
+  }, [accounts, convertDefaultAccountId]);
 
   useEffect(() => {
     loadInitialData();
@@ -81,12 +114,19 @@ export const GoodsReceivedManager: React.FC = () => {
   const loadInitialData = async () => {
     try {
       setLoading(true);
-      const [grnData, poData] = await Promise.all([
+      setAccountsLoading(true);
+      const [grnData, poData, accountData] = await Promise.all([
         goodsReceivedService.getAllGoodsReceived(),
-        purchaseOrderService.getPendingPurchaseOrders()
+        purchaseOrderService.getPendingPurchaseOrders(),
+        accountingService.listChartOfAccounts(),
       ]);
       setGoodsReceived(grnData);
       setPendingPOs(poData);
+      setAccounts(accountData);
+      const payableAccount = accountData.find((account) => account.isPayable);
+      if (payableAccount && !convertPayableAccountId) {
+        setConvertPayableAccountId(payableAccount.id);
+      }
     } catch (error: any) {
       toast({
         title: 'Error',
@@ -95,6 +135,77 @@ export const GoodsReceivedManager: React.FC = () => {
       });
     } finally {
       setLoading(false);
+      setAccountsLoading(false);
+    }
+  };
+
+  const handleOpenConvertDialog = (grn: GoodsReceived) => {
+    setConvertGRN(grn);
+    setConvertDueDate(grn.received_date);
+    const defaults = grn.lines?.reduce<Record<string, string>>((acc, line) => {
+      if (line?.id) {
+        acc[line.id] = convertDefaultAccountId || acc[line.id] || '';
+      }
+      return acc;
+    }, {}) ?? {};
+    setConvertPerLineAccounts(defaults);
+    setIsConvertDialogOpen(true);
+  };
+
+  const convertLineTotal = (quantity?: number, unitPrice?: number) => {
+    return Number(quantity || 0) * Number(unitPrice || 0);
+  };
+
+  const handleConvertToBill = async () => {
+    if (!convertGRN) {
+      toast({
+        title: 'No goods received selected',
+        description: 'Choose a goods received note to convert.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (!convertPayableAccountId) {
+      toast({
+        title: 'Payable account required',
+        description: 'Choose a payable account for the bill.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    setConvertLoading(true);
+    try {
+      const perLine = convertGRN.lines?.reduce<Record<string, string>>((acc, line) => {
+        if (line?.id) {
+          acc[line.id] = convertPerLineAccounts[line.id] || convertDefaultAccountId;
+        }
+        return acc;
+      }, {}) ?? {};
+
+      await accountingService.convertGoodsReceivedToBill({
+        goodsReceivedId: convertGRN.id,
+        defaultAccountId: convertDefaultAccountId || undefined,
+        payableAccountId: convertPayableAccountId,
+        dueDate: convertDueDate || undefined,
+        createdBy: user?.id,
+        perLineAccounts: perLine,
+      });
+
+      toast({
+        title: 'Bill created',
+        description: `Goods received ${convertGRN.grn_number} converted successfully.`,
+      });
+      setIsConvertDialogOpen(false);
+      setConvertPerLineAccounts({});
+      await loadInitialData();
+    } catch (error: any) {
+      toast({
+        title: 'Conversion failed',
+        description: error?.message || 'Unable to convert goods received to bill.',
+        variant: 'destructive'
+      });
+    } finally {
+      setConvertLoading(false);
     }
   };
 
@@ -720,6 +831,15 @@ export const GoodsReceivedManager: React.FC = () => {
                       >
                         <FileText className="h-4 w-4" />
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleOpenConvertDialog(grn)}
+                        disabled={accountsLoading}
+                        className="text-purple-600 hover:text-purple-800"
+                      >
+                        <Receipt className="h-4 w-4" />
+                      </Button>
                       {grn.status === 'pending' && (
                         <Button
                           size="sm"
@@ -742,6 +862,79 @@ export const GoodsReceivedManager: React.FC = () => {
       </div>
     </ModernLayout>
     </div>
+
+    <Dialog open={isConvertDialogOpen} onOpenChange={setIsConvertDialogOpen}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Receipt className="h-5 w-5 text-purple-600" />
+            Convert to Bill
+          </DialogTitle>
+          <DialogDescription>
+            Create a supplier bill directly from this goods received note.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <SearchableSelect
+              options={accountOptions}
+              value={convertDefaultAccountId}
+              onChange={setConvertDefaultAccountId}
+              placeholder="Default expense account"
+            />
+            <SearchableSelect
+              options={payableOptions}
+              value={convertPayableAccountId}
+              onChange={setConvertPayableAccountId}
+              placeholder="Payable account"
+            />
+            <Input
+              type="date"
+              value={convertDueDate}
+              onChange={(event) => setConvertDueDate(event.target.value)}
+              placeholder="Due date"
+            />
+          </div>
+          <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+            {convertGRN?.lines?.map((line) => (
+              <div key={line.id} className="grid grid-cols-12 gap-3 rounded-lg border p-3 bg-slate-50/70">
+                <div className="col-span-5">
+                  <div className="font-semibold">{line.raw_material?.name ?? 'Material'}</div>
+                  <div className="text-xs text-muted-foreground">Qty {Number(line.quantity_received ?? 0).toFixed(2)}</div>
+                </div>
+                <div className="col-span-3 flex flex-col">
+                  <span className="text-xs text-muted-foreground">Unit</span>
+                  <span className="font-medium">{Number(line.unit_price ?? 0).toFixed(2)}</span>
+                </div>
+                <div className="col-span-2 flex flex-col">
+                  <span className="text-xs text-muted-foreground">Amount</span>
+                  <span className="font-semibold">{convertLineTotal(line.quantity_received, line.unit_price).toFixed(2)}</span>
+                </div>
+                <div className="col-span-4">
+                  <SearchableSelect
+                    options={accountOptions}
+                    value={convertPerLineAccounts[line.id] ?? convertDefaultAccountId}
+                    onChange={(value) => setConvertPerLineAccounts((prev) => ({ ...prev, [line.id]: value }))}
+                    placeholder="Assign account"
+                  />
+                </div>
+              </div>
+            ))}
+            {!convertGRN?.lines?.length && (
+              <div className="text-sm text-muted-foreground text-center py-4">
+                No line items found for this goods received note.
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsConvertDialogOpen(false)}>Cancel</Button>
+            <Button type="button" onClick={handleConvertToBill} disabled={convertLoading}>
+              {convertLoading ? 'Creating bill…' : 'Create Bill'}
+            </Button>
+          </DialogFooter>
+        </div>
+      </DialogContent>
+    </Dialog>
 
     {/* Create Goods Received Dialog */}
       <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>

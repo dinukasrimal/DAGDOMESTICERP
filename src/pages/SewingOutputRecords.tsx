@@ -88,6 +88,42 @@ const SewingOutputRecords: React.FC = () => {
       return;
     }
 
+    const grouped = record.lineItems.reduce((acc, line) => {
+      const key = line.poNumber || 'Unknown PO';
+      if (!acc.has(key)) acc.set(key, []);
+      acc.get(key)!.push(line);
+      return acc;
+    }, new Map<string, SewingOutputRecordEntry['lineItems']>());
+
+    const groupedHtml = Array.from(grouped.entries()).map(([poNumber, lines]) => {
+      const poOutput = lines.reduce((sum, line) => sum + line.outputQuantity, 0);
+      return `
+        <h3 style="margin-top:16px;margin-bottom:4px;">PO: ${poNumber} (Output: ${poOutput.toLocaleString()})</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Variant</th>
+              <th>Ordered</th>
+              <th>Cut</th>
+              <th>Issued</th>
+              <th>Output</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${lines.map((line) => `
+              <tr>
+                <td>${line.productName || '—'}${line.orderLineId ? ` (#${line.orderLineId})` : ''}</td>
+                <td>${line.orderedQuantity !== undefined ? line.orderedQuantity.toLocaleString() : '—'}</td>
+                <td>${line.cutQuantity !== undefined ? line.cutQuantity.toLocaleString() : '—'}</td>
+                <td>${line.issueQuantity !== undefined ? line.issueQuantity.toLocaleString() : '—'}</td>
+                <td>${line.outputQuantity.toLocaleString()}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }).join('');
+
     const documentHtml = `
       <html>
         <head>
@@ -111,22 +147,7 @@ const SewingOutputRecords: React.FC = () => {
             <div><strong>Total Output:</strong> ${record.totalOutputQuantity.toLocaleString()}</div>
           </div>
           <h2>Purchase Orders</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>PO Number</th>
-                <th>Output Quantity</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${record.lineItems.map((line) => `
-                <tr>
-                  <td>${line.poNumber}</td>
-                  <td>${line.outputQuantity.toLocaleString()}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
+          ${groupedHtml}
         </body>
       </html>
     `;

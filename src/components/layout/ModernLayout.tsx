@@ -1,7 +1,32 @@
-import React from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { BarChart3, Package, FileText, Settings, Home, Users, Factory, ShoppingCart, Sparkles, ArrowLeft, ClipboardList, Truck, Minus, Ruler, Scissors, ScissorsSquare, Shirt } from 'lucide-react';
+import {
+  BarChart3,
+  Package,
+  FileText,
+  Settings,
+  Home,
+  Users,
+  Factory,
+  ShoppingCart,
+  Sparkles,
+  ArrowLeft,
+  ClipboardList,
+  Truck,
+  Minus,
+  Ruler,
+  Scissors,
+  ScissorsSquare,
+  Shirt,
+  FileSpreadsheet,
+  Receipt,
+  NotebookPen,
+  BookOpen,
+  ChevronDown,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { usePermissions } from '@/hooks/usePermissions';
+import type { AppComponentKey } from '@/services/userManagementService';
 
 interface ModernLayoutProps {
   children: React.ReactNode;
@@ -10,6 +35,49 @@ interface ModernLayoutProps {
   icon: React.ElementType;
   gradient: string;
 }
+
+interface SidebarItem {
+  id: string;
+  label: string;
+  icon: React.ElementType;
+  path?: string;
+  available: boolean;
+  isSpecial?: boolean;
+  view?: string;
+  children?: SidebarItem[];
+  componentKey?: AppComponentKey;
+}
+
+const SIDEBAR_ITEMS: SidebarItem[] = [
+  { id: 'dashboard', label: 'Dashboard', icon: Home, path: '/', available: true, isSpecial: false, componentKey: 'dashboard' },
+  { id: 'planner', label: 'Production Planner', icon: ClipboardList, path: '/', available: true, isSpecial: true, view: 'planner', componentKey: 'planner' },
+  { id: 'materials', label: 'Raw Materials', icon: Package, path: '/materials', available: true, isSpecial: false, componentKey: 'materials' },
+  { id: 'bom', label: 'Bill of Materials', icon: Factory, path: '/bom', available: true, isSpecial: false, componentKey: 'bom' },
+  { id: 'purchase-orders', label: 'Purchase Orders', icon: ShoppingCart, path: '/purchase-orders', available: true, isSpecial: false, componentKey: 'purchase-orders' },
+  { id: 'goods-received', label: 'Goods Received', icon: Truck, path: '/goods-received', available: true, isSpecial: false, componentKey: 'goods-received' },
+  { id: 'goods-issue', label: 'Goods Issue', icon: Minus, path: '/goods-issue', available: true, isSpecial: false, componentKey: 'goods-issue' },
+  { id: 'cutting-records', label: 'Cutting Records', icon: Scissors, path: '/cutting-records', available: true, isSpecial: false, componentKey: 'cutting-records' },
+  { id: 'cut-issue-records', label: 'Cut Issue Records', icon: ScissorsSquare, path: '/cut-issue-records', available: true, isSpecial: false, componentKey: 'cut-issue-records' },
+  { id: 'sewing-output', label: 'Sewing Output', icon: Shirt, path: '/sewing-output', available: true, isSpecial: false, componentKey: 'sewing-output' },
+  { id: 'sewing-order-summary', label: 'Sewing Order Summary', icon: FileSpreadsheet, path: '/sewing-order-summary', available: true, isSpecial: false, componentKey: 'sewing-order-summary' },
+  { id: 'bills', label: 'Bills', icon: Receipt, path: '/bills', available: true, isSpecial: false, componentKey: 'bills' },
+  {
+    id: 'accounting',
+    label: 'Accounting',
+    icon: BookOpen,
+    available: true,
+    isSpecial: false,
+    children: [
+      { id: 'chart-of-accounts', label: 'Chart of Accounts', icon: BookOpen, path: '/accounting/chart-of-accounts', available: true, componentKey: 'accounting-chart' },
+      { id: 'manual-journals', label: 'Manual Journals', icon: NotebookPen, path: '/accounting/manual-journals', available: true, componentKey: 'accounting-journals' },
+    ],
+  },
+  { id: 'user-management', label: 'User Management', icon: Users, path: '/admin/users', available: true, isSpecial: false, componentKey: 'user-management' },
+  { id: 'marker-requests', label: 'Marker Requests', icon: Ruler, path: '/marker-requests', available: true, isSpecial: false, componentKey: 'marker-requests' },
+  { id: 'reports', label: 'Reports & Analytics', icon: BarChart3, path: '/reports', available: true, isSpecial: false, componentKey: 'reports' },
+  { id: 'customers', label: 'Customers', icon: Users, path: '/customers', available: false, isSpecial: false },
+  { id: 'settings', label: 'Settings', icon: Settings, path: '/settings', available: false, isSpecial: false },
+];
 
 export const ModernLayout: React.FC<ModernLayoutProps> = ({
   children,
@@ -20,30 +88,74 @@ export const ModernLayout: React.FC<ModernLayoutProps> = ({
 }) => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { hasAccess } = usePermissions();
+  const sidebarItems = SIDEBAR_ITEMS;
+  const filterChildrenByAccess = useCallback(
+    (items: SidebarItem[]): SidebarItem[] =>
+      items
+        .map((item) => {
+          if (item.children?.length) {
+            const filteredChildren = filterChildrenByAccess(item.children);
+            if (filteredChildren.length === 0) {
+              return null;
+            }
+            return { ...item, children: filteredChildren };
+          }
+          if (item.componentKey && !hasAccess(item.componentKey)) {
+            return null;
+          }
+          return item;
+        })
+        .filter((item): item is SidebarItem => Boolean(item)),
+    [hasAccess]
+  );
 
-  const sidebarItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: Home, path: '/', available: true, isSpecial: false },
-    { id: 'planner', label: 'Production Planner', icon: ClipboardList, path: '/', available: true, isSpecial: true, view: 'planner' },
-    { id: 'materials', label: 'Raw Materials', icon: Package, path: '/materials', available: true, isSpecial: false },
-    { id: 'bom', label: 'Bill of Materials', icon: Factory, path: '/bom', available: true, isSpecial: false },
-    { id: 'purchase-orders', label: 'Purchase Orders', icon: ShoppingCart, path: '/purchase-orders', available: true, isSpecial: false },
-    { id: 'goods-received', label: 'Goods Received', icon: Truck, path: '/goods-received', available: true, isSpecial: false },
-    { id: 'goods-issue', label: 'Goods Issue', icon: Minus, path: '/goods-issue', available: true, isSpecial: false },
-    { id: 'cutting-records', label: 'Cutting Records', icon: Scissors, path: '/cutting-records', available: true, isSpecial: false },
-    { id: 'cut-issue-records', label: 'Cut Issue Records', icon: ScissorsSquare, path: '/cut-issue-records', available: true, isSpecial: false },
-    { id: 'sewing-output', label: 'Sewing Output', icon: Shirt, path: '/sewing-output', available: true, isSpecial: false },
-    { id: 'marker-requests', label: 'Marker Requests', icon: Ruler, path: '/marker-requests', available: true, isSpecial: false },
-    { id: 'reports', label: 'Reports & Analytics', icon: BarChart3, path: '/reports', available: true, isSpecial: false },
-    { id: 'customers', label: 'Customers', icon: Users, path: '/customers', available: false, isSpecial: false },
-    { id: 'settings', label: 'Settings', icon: Settings, path: '/settings', available: false, isSpecial: false },
-  ];
+  const filteredSidebarItems = useMemo(() => filterChildrenByAccess(sidebarItems), [sidebarItems, filterChildrenByAccess]);
 
-  const isActive = (item: any) => {
+  const isPathActive = useCallback((item: SidebarItem): boolean => {
     if (item.isSpecial && item.view) {
-      // For special views like scheduler/planner, check if we're on the homepage with the right view param
       return location.pathname === '/' && new URLSearchParams(location.search).get('view') === item.view;
     }
-    return location.pathname === item.path;
+    if (item.path) {
+      return location.pathname === item.path;
+    }
+    if (item.children?.length) {
+      return item.children.some((child) => isPathActive(child));
+    }
+    return false;
+  }, [location.pathname, location.search]);
+  const defaultExpanded = useMemo(() => {
+    return sidebarItems.reduce<Record<string, boolean>>((acc, item) => {
+      if (item.children?.length) {
+        acc[item.id] = isPathActive(item);
+      }
+      return acc;
+    }, {});
+  }, [sidebarItems, isPathActive]);
+
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(defaultExpanded);
+
+  useEffect(() => {
+    setExpandedGroups((prev) => ({ ...defaultExpanded, ...prev }));
+  }, [defaultExpanded]);
+
+  const toggleGroup = (id: string) => {
+    setExpandedGroups((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const handleNavigate = (item: SidebarItem) => {
+    if (!item.available) return;
+    if (item.children?.length) {
+      toggleGroup(item.id);
+      return;
+    }
+    if (item.isSpecial && item.view) {
+      navigate(`/?view=${item.view}`);
+      return;
+    }
+    if (item.path) {
+      navigate(item.path);
+    }
   };
 
   return (
@@ -63,40 +175,64 @@ export const ModernLayout: React.FC<ModernLayoutProps> = ({
         </div>
         
         <nav className="mt-4 px-4">
-          {sidebarItems.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => {
-                if (item.available) {
-                  if (item.isSpecial && item.view) {
-                    // For special views, navigate to the homepage with query params
-                    navigate(`/?view=${item.view}`);
-                  } else {
-                    navigate(item.path);
-                  }
-                }
-              }}
-              disabled={!item.available}
-              className={`w-full flex items-center space-x-4 px-6 py-4 rounded-2xl text-left transition-all duration-300 mb-2 group relative ${
-                isActive(item)
-                  ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg shadow-blue-500/25' 
-                  : item.available
-                  ? 'text-slate-300 hover:text-white hover:bg-slate-700/50 cursor-pointer'
-                  : 'text-slate-500 cursor-not-allowed opacity-60'
-              }`}
-            >
-              <item.icon className={`h-5 w-5 transition-transform duration-300 ${
-                isActive(item) ? 'scale-110' : item.available ? 'group-hover:scale-110' : ''
-              }`} />
-              <span className="font-medium">{item.label}</span>
-              {!item.available && (
-                <span className="ml-auto text-xs text-slate-500 bg-slate-700 px-2 py-1 rounded-full">Soon</span>
-              )}
-              {isActive(item) && (
-                <div className="ml-auto w-2 h-2 bg-white rounded-full animate-pulse"></div>
-              )}
-            </button>
-          ))}
+          {filteredSidebarItems.map((item) => {
+            const active = isPathActive(item);
+            const isGroup = Boolean(item.children?.length);
+            const expanded = isGroup ? expandedGroups[item.id] : false;
+            return (
+              <div key={item.id} className="mb-2">
+                <button
+                  onClick={() => handleNavigate(item)}
+                  disabled={!item.available}
+                  className={`w-full flex items-center space-x-4 px-6 py-4 rounded-2xl text-left transition-all duration-300 group relative ${
+                    active
+                      ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg shadow-blue-500/25'
+                      : item.available
+                      ? 'text-slate-300 hover:text-white hover:bg-slate-700/50 cursor-pointer'
+                      : 'text-slate-500 cursor-not-allowed opacity-60'
+                  }`}
+                >
+                  <item.icon className={`h-5 w-5 transition-transform duration-300 ${
+                    active ? 'scale-110' : item.available ? 'group-hover:scale-110' : ''
+                  }`} />
+                  <span className="font-medium flex-1">{item.label}</span>
+                  {!item.available && (
+                    <span className="text-xs text-slate-500 bg-slate-700 px-2 py-1 rounded-full">Soon</span>
+                  )}
+                  {active && !isGroup && (
+                    <div className="ml-auto w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                  )}
+                  {isGroup && (
+                    <ChevronDown
+                      className={`h-4 w-4 transition-transform ${expanded ? 'rotate-180' : ''}`}
+                    />
+                  )}
+                </button>
+                {isGroup && expanded && (
+                  <div className="mt-1 ml-6 space-y-1">
+                    {item.children!.map((child) => {
+                      const childActive = isPathActive(child);
+                      return (
+                        <button
+                          key={child.id}
+                          onClick={() => handleNavigate(child)}
+                          disabled={!child.available}
+                          className={`w-full flex items-center space-x-3 px-5 py-2 rounded-2xl text-left text-sm transition-all duration-200 ${
+                            childActive
+                              ? 'bg-slate-700/80 text-white'
+                              : 'text-slate-300 hover:bg-slate-800/60 hover:text-white'
+                          }`}
+                        >
+                          <child.icon className="h-4 w-4" />
+                          <span>{child.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </nav>
       </div>
 

@@ -20,6 +20,11 @@ import MarkerRequests from "./pages/MarkerRequests";
 import CuttingRecords from "./pages/CuttingRecords";
 import CutIssueRecords from "./pages/CutIssueRecords";
 import SewingOutputRecords from "./pages/SewingOutputRecords";
+import SewingOrderSummaryPage from "./pages/SewingOrderSummaryPage";
+import Bills from "./pages/Bills";
+import AccountingChartOfAccounts from "./pages/AccountingChartOfAccounts";
+import AccountingManualJournals from "./pages/AccountingManualJournals";
+import UserManagement from "./pages/UserManagement";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -50,53 +55,78 @@ const App: React.FC = () => {
               </ProtectedRoute>
             } />
             <Route path="/reports" element={
-              <ProtectedRoute>
+              <ProtectedRoute componentKey="reports">
                 <Reports />
               </ProtectedRoute>
             } />
             <Route path="/materials" element={
-              <ProtectedRoute>
+              <ProtectedRoute componentKey="materials">
                 <RawMaterialsManager />
               </ProtectedRoute>
             } />
             <Route path="/bom" element={
-              <ProtectedRoute>
+              <ProtectedRoute componentKey="bom">
                 <BOMManager />
               </ProtectedRoute>
             } />
             <Route path="/purchase-orders" element={
-              <ProtectedRoute>
+              <ProtectedRoute componentKey="purchase-orders">
                 <PurchaseOrderManager />
               </ProtectedRoute>
             } />
             <Route path="/goods-received" element={
-              <ProtectedRoute>
+              <ProtectedRoute componentKey="goods-received">
                 <GoodsReceivedManager />
               </ProtectedRoute>
             } />
             <Route path="/goods-issue" element={
-              <ProtectedRoute>
+              <ProtectedRoute componentKey="goods-issue">
                 <GoodsIssueManager />
               </ProtectedRoute>
             } />
             <Route path="/marker-requests" element={
-              <ProtectedRoute>
+              <ProtectedRoute componentKey="marker-requests">
                 <MarkerRequests />
               </ProtectedRoute>
             } />
             <Route path="/cutting-records" element={
-              <ProtectedRoute>
+              <ProtectedRoute componentKey="cutting-records">
                 <CuttingRecords />
               </ProtectedRoute>
             } />
             <Route path="/cut-issue-records" element={
-              <ProtectedRoute>
+              <ProtectedRoute componentKey="cut-issue-records">
                 <CutIssueRecords />
               </ProtectedRoute>
             } />
             <Route path="/sewing-output" element={
-              <ProtectedRoute>
+              <ProtectedRoute componentKey="sewing-output">
                 <SewingOutputRecords />
+              </ProtectedRoute>
+            } />
+            <Route path="/sewing-order-summary" element={
+              <ProtectedRoute componentKey="sewing-order-summary">
+                <SewingOrderSummaryPage />
+              </ProtectedRoute>
+            } />
+            <Route path="/bills" element={
+              <ProtectedRoute componentKey="bills">
+                <Bills />
+              </ProtectedRoute>
+            } />
+            <Route path="/accounting/chart-of-accounts" element={
+              <ProtectedRoute componentKey="accounting-chart">
+                <AccountingChartOfAccounts />
+              </ProtectedRoute>
+            } />
+            <Route path="/accounting/manual-journals" element={
+              <ProtectedRoute componentKey="accounting-journals">
+                <AccountingManualJournals />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/users" element={
+              <ProtectedRoute componentKey="user-management">
+                <UserManagement />
               </ProtectedRoute>
             } />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

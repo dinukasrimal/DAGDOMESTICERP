@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, Shirt } from 'lucide-react';
+import { Loader2, Shirt, TriangleAlert } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -22,19 +22,27 @@ interface SewingOutputSidebarProps {
   onSave: (record: SewingOutputRecordEntry) => void;
 }
 
+type VariantRow = {
+  orderLineId: string;
+  productName: string;
+  orderedQuantity: number;
+  cutQuantity: number;
+  issueQuantity: number;
+  outputQuantity: number;
+};
+
 type LineRow = {
   id: string;
   purchaseId?: string;
   poNumber?: string;
-  orderedQuantity: number;
-  outputQuantity: number;
+  variants: VariantRow[];
+  isLoadingVariants?: boolean;
 };
 
 function createLineRow(): LineRow {
   return {
     id: typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10),
-    orderedQuantity: 0,
-    outputQuantity: 0,
+    variants: [],
   };
 }
 
@@ -53,7 +61,9 @@ export const SewingOutputSidebar: React.FC<SewingOutputSidebarProps> = ({
   const [lineRows, setLineRows] = useState<LineRow[]>([createLineRow()]);
   const [isSaving, setIsSaving] = useState(false);
 
-  const totalOutputQuantity = useMemo(() => lineRows.reduce((sum, row) => sum + (row.outputQuantity || 0), 0), [lineRows]);
+  const totalOutputQuantity = useMemo(() => (
+    lineRows.reduce((sum, row) => sum + row.variants.reduce((lineSum, variant) => lineSum + (variant.outputQuantity || 0), 0), 0)
+  ), [lineRows]);
 
   const supplierSelectOptions = useMemo<SearchableOption[]>(() => (
     supplierOptions.map((supplier) => ({
@@ -97,7 +107,6 @@ export const SewingOutputSidebar: React.FC<SewingOutputSidebarProps> = ({
   useEffect(() => {
     if (!open) {
       resetForm();
-      return;
     }
   }, [open, resetForm]);
 
@@ -125,28 +134,61 @@ export const SewingOutputSidebar: React.FC<SewingOutputSidebarProps> = ({
     }
   };
 
-  const handleRowPurchaseChange = (rowId: string, purchaseId: string) => {
-    const purchase = purchaseOptions.find((option) => option.id === purchaseId);
-    setLineRows((prev) => prev.map((row) => (
-      row.id === rowId
-        ? {
-            ...row,
-            purchaseId: purchase?.id,
-            poNumber: purchase?.poNumber,
-            orderedQuantity: purchase?.orderedQuantity ?? 0,
-            outputQuantity: 0,
-          }
-        : row
-    )));
+  const loadVariantsForRow = async (rowId: string, purchaseId: string | undefined, poNumber: string | undefined) => {
+    if (!purchaseId) {
+      setLineRows((prev) => prev.map((row) => (row.id === rowId ? { ...row, purchaseId: undefined, poNumber: undefined, variants: [] } : row)));
+      return;
+    }
+
+    setLineRows((prev) => prev.map((row) => (row.id === rowId ? { ...row, purchaseId, poNumber, variants: [], isLoadingVariants: true } : row)));
+    try {
+      const variants = await sewingOutputRecordService.getPurchaseVariants(purchaseId);
+      const mappedVariants: VariantRow[] = variants.map((variant) => ({
+        orderLineId: variant.orderLineId,
+        productName: variant.productName,
+        orderedQuantity: variant.orderedQuantity,
+        cutQuantity: variant.cutQuantity,
+        issueQuantity: variant.issueQuantity,
+        outputQuantity: 0,
+      }));
+      setLineRows((prev) => prev.map((row) => (row.id === rowId ? { ...row, purchaseId, poNumber, variants: mappedVariants, isLoadingVariants: false } : row)));
+    } catch (error) {
+      console.error(error);
+      toast({
+        title: 'Unable to load variant breakdown',
+        description: error instanceof Error ? error.message : 'Please try again later.',
+        variant: 'destructive',
+      });
+      setLineRows((prev) => prev.map((row) => (row.id === rowId ? { ...row, isLoadingVariants: false } : row)));
+    }
   };
 
-  const handleRowQuantityChange = (rowId: string, value: number) => {
+  const handleRowPurchaseChange = (rowId: string, purchaseId: string) => {
+    const purchase = purchaseOptions.find((option) => option.id === purchaseId);
+    loadVariantsForRow(rowId, purchase?.id, purchase?.poNumber);
+  };
+
+  const handleVariantOutputChange = (rowId: string, orderLineId: string, value: number) => {
     if (!Number.isFinite(value) || value < 0) value = 0;
-    setLineRows((prev) => prev.map((row) => (
-      row.id === rowId
-        ? { ...row, outputQuantity: value }
-        : row
-    )));
+    setLineRows((prev) => prev.map((row) => {
+      if (row.id !== rowId) return row;
+
+      const variants = row.variants.map((variant) => {
+        if (variant.orderLineId !== orderLineId) return variant;
+        const maxAllowed = variant.issueQuantity ?? variant.cutQuantity ?? variant.orderedQuantity ?? 0;
+        const clampedValue = Math.min(value, maxAllowed);
+        if (value > maxAllowed) {
+          toast({
+            title: 'Output exceeds issued quantity',
+            description: `Variant ${variant.productName} can record at most ${maxAllowed.toLocaleString()} units.`,
+            variant: 'destructive',
+          });
+        }
+        return { ...variant, outputQuantity: clampedValue };
+      });
+
+      return { ...row, variants };
+    }));
   };
 
   const handleAddRow = () => {
@@ -156,6 +198,23 @@ export const SewingOutputSidebar: React.FC<SewingOutputSidebarProps> = ({
   const handleRemoveRow = (rowId: string) => {
     setLineRows((prev) => (prev.length <= 1 ? prev : prev.filter((row) => row.id !== rowId)));
   };
+
+  const preparedLines = useMemo(() => (
+    lineRows.flatMap((row) =>
+      row.variants
+        .filter((variant) => variant.outputQuantity > 0)
+        .map((variant) => ({
+          purchaseId: row.purchaseId,
+          poNumber: row.poNumber ?? '',
+          orderLineId: variant.orderLineId,
+          productName: variant.productName,
+          orderedQuantity: variant.orderedQuantity,
+          cutQuantity: variant.cutQuantity,
+          issueQuantity: variant.issueQuantity,
+          outputQuantity: variant.outputQuantity,
+        }))
+    )
+  ), [lineRows]);
 
   const handleSave = async () => {
     if (!selectedSupplier) {
@@ -167,18 +226,10 @@ export const SewingOutputSidebar: React.FC<SewingOutputSidebarProps> = ({
       return;
     }
 
-    const preparedLines = lineRows
-      .filter((row) => row.poNumber && row.outputQuantity > 0)
-      .map((row) => ({
-        purchaseId: row.purchaseId,
-        poNumber: row.poNumber!,
-        outputQuantity: row.outputQuantity,
-      }));
-
     if (!preparedLines.length) {
       toast({
         title: 'Add sewing output quantities',
-        description: 'Record at least one PO with an output quantity before saving.',
+        description: 'Record at least one variant with an output quantity before saving.',
         variant: 'destructive',
       });
       return;
@@ -210,6 +261,68 @@ export const SewingOutputSidebar: React.FC<SewingOutputSidebarProps> = ({
     }
   };
 
+  const renderVariantTable = (row: LineRow) => {
+    if (row.isLoadingVariants) {
+      return (
+        <div className="flex items-center justify-center py-6 text-muted-foreground text-sm">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading variants…
+        </div>
+      );
+    }
+
+    if (!row.purchaseId) {
+      return (
+        <div className="py-6 text-center text-xs text-muted-foreground">
+          Select a purchase order to load variants.
+        </div>
+      );
+    }
+
+    if (row.variants.length === 0) {
+      return (
+        <div className="py-6 text-center text-xs text-muted-foreground">
+          No variants found for this purchase order.
+        </div>
+      );
+    }
+
+    return (
+      <div className="mt-3 overflow-hidden rounded border">
+        <div className="grid grid-cols-12 bg-muted px-3 py-2 text-xs font-semibold uppercase tracking-wide">
+          <div className="col-span-4">Variant</div>
+          <div className="col-span-2 text-right">Ordered</div>
+          <div className="col-span-2 text-right">Cut</div>
+          <div className="col-span-2 text-right">Issued</div>
+          <div className="col-span-2 text-right">Output</div>
+        </div>
+        <div className="max-h-52 overflow-y-auto divide-y">
+          {row.variants.map((variant) => (
+            <div key={variant.orderLineId} className="grid grid-cols-12 items-center px-3 py-2 text-xs">
+              <div className="col-span-4 pr-2">
+                <div className="font-medium text-foreground">{variant.productName}</div>
+                <div className="text-muted-foreground">{variant.orderLineId}</div>
+              </div>
+              <div className="col-span-2 text-right">{variant.orderedQuantity.toLocaleString()}</div>
+              <div className="col-span-2 text-right">{variant.cutQuantity.toLocaleString()}</div>
+              <div className="col-span-2 text-right">{variant.issueQuantity.toLocaleString()}</div>
+              <div className="col-span-2 text-right">
+                <Input
+                  type="number"
+                  min={0}
+                  max={variant.issueQuantity ?? variant.cutQuantity ?? variant.orderedQuantity ?? undefined}
+                  step={1}
+                  value={variant.outputQuantity || ''}
+                  onChange={(event) => handleVariantOutputChange(row.id, variant.orderLineId, Number(event.target.value))}
+                  className="h-8 text-right"
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <Sheet
       open={open}
@@ -220,14 +333,14 @@ export const SewingOutputSidebar: React.FC<SewingOutputSidebarProps> = ({
         onOpenChange(value);
       }}
     >
-      <SheetContent className="w-[560px] sm:max-w-[600px] flex flex-col gap-4">
+      <SheetContent className="w-[620px] sm:max-w-[660px] flex flex-col gap-4">
         <SheetHeader>
           <SheetTitle className="flex items-center gap-2">
             <Shirt className="h-5 w-5 text-primary" />
             Record Sewing Output
           </SheetTitle>
           <SheetDescription>
-            Select the supplier, add purchase orders, and record sewing output quantities.
+            Select the supplier, choose purchase orders, and enter sewing output variant by variant.
           </SheetDescription>
         </SheetHeader>
 
@@ -256,57 +369,35 @@ export const SewingOutputSidebar: React.FC<SewingOutputSidebarProps> = ({
               <ScrollArea className="h-full">
                 <div className="divide-y pb-20">
                   {lineRows.map((row, index) => {
-                    const poOptions = poSelectOptions;
-                    const orderedQtyLabel = row.orderedQuantity.toLocaleString();
+                    const poValue = row.purchaseId || '';
                     return (
-                      <div key={row.id} className="p-4 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <Label className="text-xs text-muted-foreground">PO #{index + 1}</Label>
-                          {lineRows.length > 1 && (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleRemoveRow(row.id)}
-                              className="text-destructive"
-                            >
-                              Remove
-                            </Button>
-                          )}
+                      <div key={row.id} className="space-y-3 p-4">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex-1 space-y-1">
+                            <Label className="text-xs uppercase text-muted-foreground">
+                              Purchase Order {index + 1}
+                            </Label>
+                            <SearchableSelect
+                              options={poSelectOptions}
+                              value={poValue}
+                              onChange={(value) => handleRowPurchaseChange(row.id, value)}
+                              placeholder={isLoadingPurchases ? 'Loading POs…' : 'Select PO'}
+                              searchPlaceholder="Search purchase orders..."
+                              disabled={!selectedSupplier || isLoadingPurchases}
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleRemoveRow(row.id)}
+                            disabled={lineRows.length <= 1}
+                            aria-label="Remove row"
+                          >
+                            ×
+                          </Button>
                         </div>
-                        <div className="space-y-2">
-                          <SearchableSelect
-                            options={poOptions}
-                            value={row.purchaseId ?? ''}
-                            onChange={(value) => handleRowPurchaseChange(row.id, value)}
-                            placeholder={selectedSupplier ? (isLoadingPurchases ? 'Loading purchase orders…' : 'Select purchase order') : 'Select a supplier first'}
-                            searchPlaceholder="Search POs..."
-                            disabled={!selectedSupplier || isLoadingPurchases}
-                            className="w-full"
-                          />
-                          {row.poNumber && (
-                            <p className="text-xs text-muted-foreground">
-                              Ordered: {orderedQtyLabel}
-                            </p>
-                          )}
-                        </div>
-                        <div>
-                          <Label htmlFor={`sewing-line-${row.id}`} className="text-xs text-muted-foreground">
-                            Sewing output quantity
-                          </Label>
-                          <Input
-                            id={`sewing-line-${row.id}`}
-                            type="number"
-                            min={0}
-                            step="0.01"
-                            value={row.outputQuantity ?? 0}
-                            onChange={(event) => {
-                              const value = Number(event.target.value);
-                              handleRowQuantityChange(row.id, value);
-                            }}
-                            disabled={!row.poNumber}
-                          />
-                        </div>
+                        {renderVariantTable(row)}
                       </div>
                     );
                   })}
@@ -315,26 +406,28 @@ export const SewingOutputSidebar: React.FC<SewingOutputSidebarProps> = ({
             </div>
           </div>
 
-          <div className="text-sm text-muted-foreground">
-            Total sewing output: <span className="font-semibold text-foreground">{totalOutputQuantity.toLocaleString()}</span>
+          <div className="rounded-lg border bg-muted/50 p-3 text-xs text-muted-foreground flex items-center gap-2">
+            <TriangleAlert className="h-4 w-4" />
+            Total sewing output prepared: <span className="font-semibold text-foreground">{totalOutputQuantity.toLocaleString()}</span>
           </div>
         </div>
 
-        <Separator />
-
-        <div className="flex justify-between gap-3">
-          <Button variant="outline" onClick={resetForm} disabled={isSaving}>
-            Clear
-          </Button>
-          <Button onClick={handleSave} disabled={isSaving || !selectedSupplier}>
-            {isSaving ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Saving
-              </>
-            ) : (
-              'Save Sewing Output'
-            )}
-          </Button>
+        <div className="space-y-3">
+          <Separator />
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={isSaving}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={handleSave} disabled={isSaving || !selectedSupplier}>
+              {isSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Saving
+                </>
+              ) : (
+                'Save Sewing Output'
+              )}
+            </Button>
+          </div>
         </div>
       </SheetContent>
     </Sheet>
