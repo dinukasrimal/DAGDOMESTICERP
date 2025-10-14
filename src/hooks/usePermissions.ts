@@ -36,9 +36,10 @@ export const usePermissions = () => {
     },
     enabled: Boolean(user?.id),
     staleTime: 1000 * 30,
+    keepPreviousData: true,
   });
 
-  const snapshot = query.data ?? emptySnapshot;
+  const snapshot = query.data ?? query.previousData ?? emptySnapshot;
 
   const hasAccess = (componentKey: AppComponentKey) => snapshot.allowed.has(componentKey);
 

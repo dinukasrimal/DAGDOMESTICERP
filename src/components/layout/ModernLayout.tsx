@@ -49,7 +49,7 @@ interface SidebarItem {
 }
 
 const SIDEBAR_ITEMS: SidebarItem[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: Home, path: '/', available: true, isSpecial: false, componentKey: 'dashboard' },
+  { id: 'dashboard', label: 'Dashboard', icon: Home, path: '/', available: true, isSpecial: true, view: 'dashboard', componentKey: 'dashboard' },
   { id: 'planner', label: 'Production Planner', icon: ClipboardList, path: '/', available: true, isSpecial: true, view: 'planner', componentKey: 'planner' },
   { id: 'materials', label: 'Raw Materials', icon: Package, path: '/materials', available: true, isSpecial: false, componentKey: 'materials' },
   { id: 'bom', label: 'Bill of Materials', icon: Factory, path: '/bom', available: true, isSpecial: false, componentKey: 'bom' },
@@ -90,31 +90,38 @@ export const ModernLayout: React.FC<ModernLayoutProps> = ({
   const location = useLocation();
   const { hasAccess } = usePermissions();
   const sidebarItems = SIDEBAR_ITEMS;
-  const filterChildrenByAccess = useCallback(
+  const mapWithAccess = useCallback(
     (items: SidebarItem[]): SidebarItem[] =>
-      items
-        .map((item) => {
-          if (item.children?.length) {
-            const filteredChildren = filterChildrenByAccess(item.children);
-            if (filteredChildren.length === 0) {
-              return null;
-            }
-            return { ...item, children: filteredChildren };
-          }
-          if (item.componentKey && !hasAccess(item.componentKey)) {
-            return null;
-          }
-          return item;
-        })
-        .filter((item): item is SidebarItem => Boolean(item)),
+      items.map((item) => {
+        const childItems = item.children ? mapWithAccess(item.children) : undefined;
+        const baseAvailable = item.available !== false;
+        const hasPermission = !item.componentKey || hasAccess(item.componentKey);
+
+        let computedAvailable = baseAvailable && hasPermission;
+        if (childItems && childItems.length) {
+          const childAvailable = childItems.some((child) => child.available !== false);
+          computedAvailable = baseAvailable && (hasPermission || childAvailable);
+        }
+
+        return {
+          ...item,
+          children: childItems,
+          available: computedAvailable,
+        } satisfies SidebarItem;
+      }),
     [hasAccess]
   );
 
-  const filteredSidebarItems = useMemo(() => filterChildrenByAccess(sidebarItems), [sidebarItems, filterChildrenByAccess]);
+  const filteredSidebarItems = useMemo(() => mapWithAccess(sidebarItems), [sidebarItems, mapWithAccess]);
 
   const isPathActive = useCallback((item: SidebarItem): boolean => {
     if (item.isSpecial && item.view) {
-      return location.pathname === '/' && new URLSearchParams(location.search).get('view') === item.view;
+      if (location.pathname !== '/') return false;
+      const currentView = new URLSearchParams(location.search).get('view');
+      if (item.view === 'dashboard') {
+        return !currentView || currentView === 'dashboard';
+      }
+      return currentView === item.view;
     }
     if (item.path) {
       return location.pathname === item.path;

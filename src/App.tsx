@@ -45,7 +45,7 @@ const App: React.FC = () => {
           <Routes>
             <Route path="/auth" element={<Auth />} />
             <Route path="/" element={
-              <ProtectedRoute>
+              <ProtectedRoute componentKey="dashboard">
                 <Index />
               </ProtectedRoute>
             } />
