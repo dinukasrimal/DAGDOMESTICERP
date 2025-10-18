@@ -1,15 +1,4 @@
 [mcp_servers.supabase]
 command = "npx"
 args = ["-y", "@supabase/mcp-server-supabase@latest", "--read-only", "--project-ref=tnduapjjyqhppclgnqsb"]
-env = { SUPABASE_ACCESS_TOKEN = "sbp_8dff87fc32af44b7bfdca5900b92785970ad7447" }
-
-[mcp_servers.playwright]
-command = "npx"
-args = ["-y", "@playwright/mcp@latest",
-        "--extension"]
-
-
-
-
-
-
+env = { SUPABASE_ACCESS_TOKEN = "sbp_badad08e5cbf470dc0a559d9e87ce1840386530c" }

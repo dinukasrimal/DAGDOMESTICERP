@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,8 +34,10 @@ import {
 import { PurchaseOrderService, PurchaseOrder } from '../../services/purchaseOrderService';
 import { ModernLayout } from '../layout/ModernLayout';
 import { BarcodeScanner } from '../ui/BarcodeScanner';
+import type { BarcodeScannerHandle } from '../ui/BarcodeScanner';
 import { accountingService, type ChartOfAccount } from '@/services/accountingService';
 import { useAuth } from '@/hooks/useAuth';
+import { supabase } from '@/integrations/supabase/client';
 
 const goodsReceivedService = new GoodsReceivedService();
 const purchaseOrderService = new PurchaseOrderService();
@@ -69,13 +71,39 @@ export const GoodsReceivedManager: React.FC = () => {
   // Fabric scanning states
   const [fabricRolls, setFabricRolls] = useState<{[key: string]: FabricRoll[]}>({});
   const [showFabricScanner, setShowFabricScanner] = useState(false);
+  const showFabricScannerRef = useRef(showFabricScanner);
   const [currentScanningLine, setCurrentScanningLine] = useState<string | null>(null);
+  const currentScanningLineRef = useRef<string | null>(currentScanningLine);
   const [scannedBarcode, setScannedBarcode] = useState('');
-  const [rollWeight, setRollWeight] = useState<number>(0);
-  const [rollLength, setRollLength] = useState<number>(0);
+  const [rollWeightInput, setRollWeightInput] = useState('');
+  const [rollLengthInput, setRollLengthInput] = useState('');
+  const decimalInputPattern = /^\d*(?:\.\d*)?$/;
+  const parsedRollWeight = parseFloat(rollWeightInput);
+  const canAddRoll = !Number.isNaN(parsedRollWeight) && parsedRollWeight > 0;
   const [showBarcodeCamera, setShowBarcodeCamera] = useState(false);
   const [showWeightEntry, setShowWeightEntry] = useState(false);
   const [isManualEntry, setIsManualEntry] = useState(false);
+  const weightInputRef = useRef<HTMLInputElement | null>(null);
+  const weightFocusTimeoutRef = useRef<number | null>(null);
+  const barcodeScannerRef = useRef<BarcodeScannerHandle | null>(null);
+  const requestWeightInputFocus = useCallback((delay = 10) => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    if (weightFocusTimeoutRef.current !== null) {
+      window.clearTimeout(weightFocusTimeoutRef.current);
+      weightFocusTimeoutRef.current = null;
+    }
+
+    weightFocusTimeoutRef.current = window.setTimeout(() => {
+      if (weightInputRef.current) {
+        weightInputRef.current.focus({ preventScroll: true });
+        weightInputRef.current.select();
+      }
+      weightFocusTimeoutRef.current = null;
+    }, delay);
+  }, []);
   const [accounts, setAccounts] = useState<ChartOfAccount[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [isConvertDialogOpen, setIsConvertDialogOpen] = useState(false);
@@ -85,6 +113,17 @@ export const GoodsReceivedManager: React.FC = () => {
   const [convertDueDate, setConvertDueDate] = useState('');
   const [convertPerLineAccounts, setConvertPerLineAccounts] = useState<Record<string, string>>({});
   const [convertLoading, setConvertLoading] = useState(false);
+
+  const restartBarcodeScanner = useCallback(() => {
+    if (!showFabricScannerRef.current) return;
+    setShowWeightEntry(false);
+    setScannedBarcode('');
+    setRollWeightInput('');
+    setRollLengthInput('');
+    setIsManualEntry(false);
+    // Smoothly resume the camera without unmounting the overlay
+    try { barcodeScannerRef.current?.resume(); } catch {}
+  }, []);
 
   const accountOptions = useMemo(() => accounts.map((account) => ({
     value: account.id,
@@ -96,6 +135,14 @@ export const GoodsReceivedManager: React.FC = () => {
     const account = accounts.find((acc) => acc.id === option.value);
     return account?.isPayable;
   }), [accountOptions, accounts]);
+
+  useEffect(() => {
+    showFabricScannerRef.current = showFabricScanner;
+  }, [showFabricScanner]);
+
+  useEffect(() => {
+    currentScanningLineRef.current = currentScanningLine;
+  }, [currentScanningLine]);
 
   useEffect(() => {
     if (!convertDefaultAccountId && accounts.length) {
@@ -110,6 +157,30 @@ export const GoodsReceivedManager: React.FC = () => {
     loadInitialData();
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    if (!showWeightEntry) {
+      if (weightFocusTimeoutRef.current !== null) {
+        window.clearTimeout(weightFocusTimeoutRef.current);
+        weightFocusTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    if (weightFocusTimeoutRef.current === null) {
+      requestWeightInputFocus();
+    }
+
+    return () => {
+      if (weightFocusTimeoutRef.current !== null) {
+        window.clearTimeout(weightFocusTimeoutRef.current);
+        weightFocusTimeoutRef.current = null;
+      }
+    };
+  }, [showWeightEntry, scannedBarcode, requestWeightInputFocus]);
 
   const loadInitialData = async () => {
     try {
@@ -221,10 +292,13 @@ export const GoodsReceivedManager: React.FC = () => {
     po.lines?.forEach(line => {
       const remainingQty = line.quantity - line.received_quantity;
       if (remainingQty > 0) {
+        const material = line.raw_material;
+        const materialName = typeof material?.name === 'string' ? material.name.toLowerCase() : '';
+        const isFabric = material?.category_id === 1 || materialName.includes('fabric');
         initialLines[line.id] = {
           purchase_order_line_id: line.id,
           raw_material_id: line.raw_material_id,
-          quantity_received: remainingQty,
+          quantity_received: isFabric ? 0 : remainingQty,
           unit_price: line.unit_price,
           batch_number: '',
           expiry_date: '',
@@ -233,6 +307,7 @@ export const GoodsReceivedManager: React.FC = () => {
       }
     });
     setReceivingLines(initialLines);
+    setFabricRolls({});
   };
 
   const isFabricMaterial = (poLine: any): boolean => {
@@ -242,7 +317,8 @@ export const GoodsReceivedManager: React.FC = () => {
       return true;
     }
     // Fallback to name check if category_id not available
-    return material?.name?.toLowerCase().includes('fabric') || false;
+    const materialName = typeof material?.name === 'string' ? material.name.toLowerCase() : '';
+    return materialName.includes('fabric');
   };
 
   const handleUpdateReceivingLine = (lineId: string, field: keyof CreateGoodsReceivedLine, value: any) => {
@@ -261,22 +337,104 @@ export const GoodsReceivedManager: React.FC = () => {
     setShowFabricScanner(true);
     setShowBarcodeCamera(true);
     setScannedBarcode('');
-    setRollWeight(0);
-    setRollLength(0);
+    setRollWeightInput('');
+    setRollLengthInput('');
     setShowWeightEntry(false);
     setIsManualEntry(false);
   };
 
   const handleBarcodeScanned = (barcode: string) => {
-    console.log('Barcode scanned:', barcode);
-    setScannedBarcode(barcode);
-    // Don't close the scanner immediately, just show weight entry overlay
-    setShowWeightEntry(true);
-    setIsManualEntry(false);
+    if (!currentScanningLine) {
+      return;
+    }
+
+    const targetLine = currentScanningLine;
+    const sanitizedBarcode = barcode.trim();
+    if (!sanitizedBarcode) {
+      toast({
+        title: 'Invalid Barcode',
+        description: 'Scanned barcode is empty. Please try again.',
+        variant: 'destructive'
+      });
+      restartBarcodeScanner();
+      return;
+    }
+
+    // Prevent duplicates within this GRN (any line)
+    const duplicateInSession = Object.values(fabricRolls).some(rolls =>
+      Array.isArray(rolls) && rolls.some(roll => roll.barcode === sanitizedBarcode)
+    );
+
+    if (duplicateInSession) {
+      toast({
+        title: 'Duplicate Barcode',
+        description: 'This barcode has already been scanned in this GRN.',
+        variant: 'destructive'
+      });
+      restartBarcodeScanner();
+      return;
+    }
+
+    (async () => {
+      try {
+        const { data: existingRolls, error } = await supabase
+          .from('goods_received_lines')
+          .select('id')
+          .eq('roll_barcode', sanitizedBarcode)
+          .limit(1);
+
+        if (error) {
+          console.error('Failed to validate barcode against Goods Received records:', error);
+          toast({
+            title: 'Scan Error',
+            description: 'Could not validate the barcode. Please try again.',
+            variant: 'destructive'
+          });
+          restartBarcodeScanner();
+          return;
+        }
+
+        if (existingRolls && existingRolls.length > 0) {
+          toast({
+            title: 'Duplicate Barcode',
+            description: 'This barcode already exists in Goods Received records.',
+            variant: 'destructive'
+          });
+          restartBarcodeScanner();
+          return;
+        }
+
+        if (currentScanningLineRef.current !== targetLine) {
+          return;
+        }
+
+        if (!showFabricScannerRef.current) {
+          return;
+        }
+
+        console.log('Barcode scanned:', sanitizedBarcode);
+        setScannedBarcode(sanitizedBarcode);
+        setRollWeightInput('');
+        setRollLengthInput('');
+        // Don't close the scanner immediately, just show weight entry overlay
+        setShowWeightEntry(true);
+        setIsManualEntry(false);
+        requestWeightInputFocus(50);
+      } catch (err) {
+        console.error('Unexpected error while validating barcode:', err);
+        toast({
+          title: 'Scan Error',
+          description: 'Could not validate the barcode. Please try again.',
+          variant: 'destructive'
+        });
+        restartBarcodeScanner();
+      }
+    })();
   };
 
   const handleWeightConfirmed = () => {
-    if (!scannedBarcode || rollWeight <= 0) {
+    const parsedWeight = parseFloat(rollWeightInput);
+    if (!scannedBarcode || Number.isNaN(parsedWeight) || parsedWeight <= 0) {
       toast({
         title: 'Validation Error',
         description: 'Please provide valid barcode and weight',
@@ -286,8 +444,8 @@ export const GoodsReceivedManager: React.FC = () => {
     }
     
     // Store values before resetting state
-    const currentBarcode = scannedBarcode;
-    const currentWeight = rollWeight;
+    const currentBarcode = scannedBarcode.trim();
+    const currentWeight = parsedWeight;
     
     const result = handleAddFabricRoll();
     
@@ -295,8 +453,8 @@ export const GoodsReceivedManager: React.FC = () => {
       // Reset for next scan but keep scanner open
       setShowWeightEntry(false);
       setScannedBarcode('');
-      setRollWeight(0);
-      setRollLength(0);
+      setRollWeightInput('');
+      setRollLengthInput('');
       setIsManualEntry(false);
       
       // Show success message with stored values
@@ -309,7 +467,23 @@ export const GoodsReceivedManager: React.FC = () => {
   };
 
   const handleAddFabricRoll = () => {
-    if (!currentScanningLine || !scannedBarcode || rollWeight <= 0) {
+    const parsedWeight = parseFloat(rollWeightInput);
+    const sanitizedBarcode = scannedBarcode.trim();
+    let parsedLength: number | undefined;
+    if (rollLengthInput) {
+      const maybeLength = parseFloat(rollLengthInput);
+      if (Number.isNaN(maybeLength) || maybeLength < 0) {
+        toast({
+          title: 'Validation Error',
+          description: 'Please provide a valid length for the roll',
+          variant: 'destructive'
+        });
+        return false;
+      }
+      parsedLength = maybeLength;
+    }
+
+    if (!currentScanningLine || !sanitizedBarcode || Number.isNaN(parsedWeight) || parsedWeight <= 0) {
       toast({
         title: 'Validation Error',
         description: 'Please provide barcode and weight for the roll',
@@ -320,7 +494,7 @@ export const GoodsReceivedManager: React.FC = () => {
 
     // Check if barcode already exists for this line
     const existingRolls = fabricRolls[currentScanningLine] || [];
-    if (existingRolls.some(roll => roll.barcode === scannedBarcode)) {
+    if (existingRolls.some(roll => roll.barcode === sanitizedBarcode)) {
       toast({
         title: 'Duplicate Barcode',
         description: 'This barcode has already been scanned for this material',
@@ -329,10 +503,25 @@ export const GoodsReceivedManager: React.FC = () => {
       return false;
     }
 
+    // Prevent duplicate barcodes across other purchase order lines
+    const duplicateElsewhere = Object.entries(fabricRolls).some(([lineId, rolls]) => {
+      if (lineId === currentScanningLine) return false;
+      return rolls.some(roll => roll.barcode === sanitizedBarcode);
+    });
+
+    if (duplicateElsewhere) {
+      toast({
+        title: 'Duplicate Barcode',
+        description: 'This barcode has already been scanned for another material in this GRN',
+        variant: 'destructive'
+      });
+      return false;
+    }
+
     const newRoll: FabricRoll = {
-      barcode: scannedBarcode,
-      weight: rollWeight,
-      length: rollLength > 0 ? rollLength : undefined,
+      barcode: sanitizedBarcode,
+      weight: parsedWeight,
+      length: parsedLength !== undefined && parsedLength > 0 ? parsedLength : undefined,
     };
 
     setFabricRolls(prev => ({
@@ -347,8 +536,25 @@ export const GoodsReceivedManager: React.FC = () => {
     return true;
   };
 
+  const closeFabricScanner = () => {
+    setShowBarcodeCamera(false);
+    setIsManualEntry(false);
+    setShowWeightEntry(false);
+    setScannedBarcode('');
+    setRollWeightInput('');
+    setRollLengthInput('');
+    setCurrentScanningLine(null);
+    setShowFabricScanner(false);
+    if (selectedPO) {
+      setIsCreateDialogOpen(true);
+    }
+  };
+
   const handleCompleteReceiving = async () => {
-    if (!currentScanningLine || !selectedPO) return;
+    if (!currentScanningLine || !selectedPO) {
+      closeFabricScanner();
+      return;
+    }
 
     try {
       // Update the receiving line with the total scanned weight
@@ -364,33 +570,14 @@ export const GoodsReceivedManager: React.FC = () => {
           variant: 'default'
         });
       }
-
-      // Close the scanner but keep the receive goods dialog open
-      setShowBarcodeCamera(false);
-      setIsManualEntry(false);
-      setShowWeightEntry(false);
-      setScannedBarcode('');
-      setRollWeight(0);
-      setRollLength(0);
-      
-      // Clear the fabric rolls for this line since they've been processed
-      if (currentScanningLine) {
-        setFabricRolls(prev => ({
-          ...prev,
-          [currentScanningLine]: []
-        }));
-      }
-      
-      setCurrentScanningLine(null);
-      setShowFabricScanner(false);
-      // Keep showGoodsReceived dialog open so user can continue with other materials
-
     } catch (error) {
       toast({
         title: 'Error',
         description: 'Failed to complete receiving',
         variant: 'destructive'
       });
+    } finally {
+      closeFabricScanner();
     }
   };
 
@@ -447,11 +634,10 @@ export const GoodsReceivedManager: React.FC = () => {
 
       if (fabricLinesWithoutScans.length > 0) {
         toast({
-          title: 'Fabric Scanning Required',
-          description: `Please scan barcodes for: ${fabricLinesWithoutScans.join(', ')}`,
-          variant: 'destructive'
+          title: 'Fabric Scanning Optional',
+          description: `No barcode scans recorded for: ${fabricLinesWithoutScans.join(', ')}. You can continue without scanning if needed.`,
+          variant: 'default'
         });
-        return false;
       }
 
       // Check for lines that will exceed 75% completion or auto-close due to over-receiving
@@ -623,6 +809,20 @@ export const GoodsReceivedManager: React.FC = () => {
     setShowCloseLineDialog(false);
     setLinesToClose([]);
     setSelectedLinesToClose(new Set());
+  };
+
+  const handleCreateDialogChange = (open: boolean) => {
+    if (open) {
+      setIsCreateDialogOpen(true);
+      return;
+    }
+
+    if (showFabricScanner || showBarcodeCamera || showCloseLineDialog) {
+      // Ignore close attempts while auxiliary flows are active
+      return;
+    }
+
+    handleCloseCreateDialog();
   };
 
   const handleCloseCreateDialog = () => {
@@ -937,7 +1137,7 @@ export const GoodsReceivedManager: React.FC = () => {
     </Dialog>
 
     {/* Create Goods Received Dialog */}
-      <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+      <Dialog open={isCreateDialogOpen} onOpenChange={handleCreateDialogChange} modal={false}>
         <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center space-x-2">
@@ -1314,7 +1514,7 @@ export const GoodsReceivedManager: React.FC = () => {
       </Dialog>
 
       {/* Fabric Scanner Dialog */}
-      <Dialog open={showFabricScanner} onOpenChange={setShowFabricScanner}>
+      <Dialog open={showFabricScanner} onOpenChange={setShowFabricScanner} modal={false}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Scan Fabric Rolls</DialogTitle>
@@ -1378,6 +1578,7 @@ export const GoodsReceivedManager: React.FC = () => {
 
       {/* Full-Screen Barcode Scanner with Weight Entry Overlay */}
       <BarcodeScanner
+        ref={barcodeScannerRef}
         isOpen={showBarcodeCamera}
         onScan={handleBarcodeScanned}
         scannedRolls={currentScanningLine ? fabricRolls[currentScanningLine] || [] : []}
@@ -1391,19 +1592,9 @@ export const GoodsReceivedManager: React.FC = () => {
             handleRemoveFabricRoll(currentScanningLine, barcode);
           }
         }}
-        onDone={() => {
-          // Complete receiving and close scanner
-          handleCompleteReceiving();
-        }}
+        onDone={handleCompleteReceiving}
         onClose={() => {
-          setShowBarcodeCamera(false);
-          setIsManualEntry(false);
-          setShowWeightEntry(false);
-          setScannedBarcode('');
-          setRollWeight(0);
-          setRollLength(0);
-          setCurrentScanningLine(null);
-          setShowFabricScanner(false);
+          closeFabricScanner();
         }}
       >
         {/* Weight Entry Overlay */}
@@ -1412,10 +1603,10 @@ export const GoodsReceivedManager: React.FC = () => {
             className="absolute inset-0 flex items-center justify-center bg-black/50" 
             style={{ 
               zIndex: 2147483646,
-              pointerEvents: 'none' // Allow clicks to pass through background
+              pointerEvents: 'auto'
             }}
             onClick={(e) => {
-              // Don't close overlay when clicking background
+              e.stopPropagation();
             }}
           >
             <Card 
@@ -1435,10 +1626,16 @@ export const GoodsReceivedManager: React.FC = () => {
                     <Label htmlFor="weight">Weight (kg) *</Label>
                     <Input
                       id="weight"
-                      type="number"
-                      step="0.01"
-                      value={rollWeight || ''}
-                      onChange={(e) => setRollWeight(parseFloat(e.target.value) || 0)}
+                      ref={weightInputRef}
+                      type="text"
+                      inputMode="decimal"
+                      value={rollWeightInput}
+                      onChange={(e) => {
+                        const raw = e.target.value.replace(',', '.');
+                        if (raw === '' || decimalInputPattern.test(raw)) {
+                          setRollWeightInput(raw);
+                        }
+                      }}
                       placeholder="0.00"
                       autoFocus
                     />
@@ -1447,15 +1644,20 @@ export const GoodsReceivedManager: React.FC = () => {
                     <Label htmlFor="length">Length (m)</Label>
                     <Input
                       id="length"
-                      type="number"
-                      step="0.01"
-                      value={rollLength || ''}
-                      onChange={(e) => setRollLength(parseFloat(e.target.value) || 0)}
+                      type="text"
+                      inputMode="decimal"
+                      value={rollLengthInput}
+                      onChange={(e) => {
+                        const raw = e.target.value.replace(',', '.');
+                        if (raw === '' || decimalInputPattern.test(raw)) {
+                          setRollLengthInput(raw);
+                        }
+                      }}
                       placeholder="0.00"
                     />
                   </div>
                 </div>
-                
+
                 <div className="flex space-x-2">
                   <Button 
                     onClick={(e) => {
@@ -1470,7 +1672,7 @@ export const GoodsReceivedManager: React.FC = () => {
                       pointerEvents: 'auto',
                       cursor: 'pointer'
                     }}
-                    disabled={!rollWeight || rollWeight <= 0}
+                    disabled={!canAddRoll}
                     type="button"
                   >
                     Add Roll
@@ -1479,8 +1681,9 @@ export const GoodsReceivedManager: React.FC = () => {
                     onClick={() => {
                       setShowWeightEntry(false);
                       setScannedBarcode('');
-                      setRollWeight(0);
-                      setRollLength(0);
+                      setRollWeightInput('');
+                      setRollLengthInput('');
+                      setIsManualEntry(false);
                     }}
                     variant="outline"
                     className="flex-1"

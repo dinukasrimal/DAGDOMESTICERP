@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -300,6 +300,7 @@ export const GoodsIssueManager: React.FC = () => {
   const [giRollLength, setGiRollLength] = useState<number>(0);
   const [giShowWeightEntry, setGiShowWeightEntry] = useState(false);
   const [giCurrentCategoryKey, setGiCurrentCategoryKey] = useState<string | null>(null);
+  const giWeightInputRef = useRef<HTMLInputElement | null>(null);
 
   // Form states
   const [formData, setFormData] = useState<CreateGoodsIssue>({
@@ -499,6 +500,17 @@ export const GoodsIssueManager: React.FC = () => {
   useEffect(() => {
     loadInitialData();
   }, []);
+
+  useEffect(() => {
+    if (giShowWeightEntry) {
+      requestAnimationFrame(() => {
+        if (giWeightInputRef.current) {
+          giWeightInputRef.current.focus({ preventScroll: true });
+          giWeightInputRef.current.select();
+        }
+      });
+    }
+  }, [giShowWeightEntry, giScannedBarcode]);
 
   useEffect(() => {
     if (issueTab === 'trims' && selectedPurchaseOrder?.partner_name) {
@@ -3869,7 +3881,10 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         {giShowWeightEntry && giScannedBarcode && (
           <div 
             className="absolute inset-0 flex items-center justify-center bg-black/50"
-            style={{ zIndex: 2147483646, pointerEvents: 'none' }}
+            style={{ zIndex: 2147483646, pointerEvents: 'auto' }}
+            onClick={(e) => {
+              e.stopPropagation();
+            }}
           >
             <Card 
               className="w-full max-w-md mx-4 bg-white"
@@ -3887,12 +3902,12 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
                   <div>
                     <Label>Weight (kg) *</Label>
                     <Input
+                      ref={giWeightInputRef}
                       type="number"
                       step="0.01"
                       value={giRollWeight || ''}
                       onChange={(e) => setGiRollWeight(parseFloat(e.target.value) || 0)}
                       placeholder="0.00"
-                      autoFocus
                     />
                   </div>
                   <div>

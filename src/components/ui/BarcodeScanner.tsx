@@ -1,14 +1,53 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import { BrowserMultiFormatReader } from '@zxing/browser';
-import { Button } from './button';
-import { Input } from './input';
 import { X, Keyboard, QrCode, Flashlight, FlashlightOff, Trash2, CheckCircle } from 'lucide-react';
+
+/**
+ * Replace these with your actual UI components if you have shadcn/ui etc.
+ * Otherwise keep them as very small fallbacks.
+ */
+const Button: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'default' | 'outline' | 'ghost'; size?: 'sm' | 'lg' } > = ({
+  className = '',
+  variant = 'default',
+  size,
+  ...props
+}) => (
+  <button
+    {...props}
+    className={[
+      'inline-flex items-center justify-center rounded-md font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none',
+      variant === 'outline' && 'border border-white/20 bg-transparent hover:bg-white/10 text-white',
+      variant === 'ghost' && 'bg-transparent hover:bg-white/10 text-white',
+      variant === 'default' && 'bg-blue-600 text-white hover:bg-blue-700',
+      size === 'sm' && 'h-8 px-2 text-sm',
+      size === 'lg' && 'h-12 px-6 text-lg',
+      !size && 'h-10 px-4 text-sm',
+      className,
+    ].join(' ')}
+  />
+);
+
+const Input: React.FC<React.InputHTMLAttributes<HTMLInputElement>> = ({ className = '', ...props }) => (
+  <input
+    {...props}
+    className={[
+      'w-full rounded-md border px-3 py-2 outline-none',
+      'bg-white/10 border-white/20 text-white placeholder:text-gray-400',
+      className,
+    ].join(' ')}
+  />
+);
 
 interface FabricRoll {
   barcode: string;
   weight: number;
   length?: number;
+}
+
+export interface BarcodeScannerHandle {
+  resume: () => void;
+  pause: () => void;
 }
 
 interface BarcodeScannerProps {
@@ -19,23 +58,38 @@ interface BarcodeScannerProps {
   scannedRolls?: FabricRoll[]; // List of scanned rolls to display
   currentScanningLine?: string; // Current material line name
   onRemoveRoll?: (barcode: string) => void; // Remove roll callback
-  onDone?: () => void; // Complete receiving callback
+  onDone?: () => void | Promise<void>; // Complete receiving callback
+  /**
+   * If true, pause camera scanning immediately after a successful scan.
+   * Call resumeScanning() (exposed via ref) or toggle back to camera to resume.
+   */
+  autoPauseOnScan?: boolean;
+  /**
+   * Cooldown in ms to ignore repeated scans. Default 1000ms.
+   */
+  scanCooldownMs?: number;
 }
 
-export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ 
-  onScan, 
-  onClose, 
-  isOpen, 
-  children, 
-  scannedRolls = [], 
+export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScannerProps>(({ 
+  onScan,
+  onClose,
+  isOpen,
+  children,
+  scannedRolls = [],
   currentScanningLine = 'Material',
   onRemoveRoll,
-  onDone
-}) => {
+  onDone,
+  autoPauseOnScan = true,
+  scanCooldownMs = 1000,
+}, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  
+
+  const scanLockRef = useRef(false);
+  const lastCodeRef = useRef<string | null>(null);
+  const cooldownTimerRef = useRef<number | null>(null);
+
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showManualEntry, setShowManualEntry] = useState(false);
@@ -43,35 +97,34 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
   const [flashOn, setFlashOn] = useState(false);
   const [hasFlash, setHasFlash] = useState(false);
 
-  // Start camera when scanner opens
+  // —————————————— Lifecycle ——————————————
   useEffect(() => {
     if (isOpen && !showManualEntry) {
       initializeScanner();
     } else {
       cleanup();
     }
-
     return cleanup;
   }, [isOpen, showManualEntry]);
 
   const cleanup = () => {
-    console.log('Cleaning up scanner...');
-    
+    // Clear cooldown timer
+    if (cooldownTimerRef.current) {
+      window.clearTimeout(cooldownTimerRef.current);
+      cooldownTimerRef.current = null;
+    }
+    scanLockRef.current = false;
+    lastCodeRef.current = null;
+
     // Stop the reader
     if (readerRef.current) {
-      try {
-        readerRef.current.reset();
-      } catch (err) {
-        console.warn('Error resetting reader:', err);
-      }
+      try { readerRef.current.reset(); } catch {}
       readerRef.current = null;
     }
 
     // Stop camera stream
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => {
-        track.stop();
-      });
+      streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
 
@@ -81,112 +134,111 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
 
   const initializeScanner = async () => {
     try {
-      console.log('Initializing scanner...');
       setError(null);
       setIsScanning(true);
 
-      // Check if camera is available
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error('Camera not supported');
       }
 
-      // Request camera permission and get stream
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { 
+        video: {
           facingMode: 'environment',
           width: { ideal: 1920, min: 1280 },
-          height: { ideal: 1080, min: 720 }
-        }
+          height: { ideal: 1080, min: 720 },
+        },
       });
 
       streamRef.current = stream;
 
-      // Check if flash is available
+      // Flash support
       const track = stream.getVideoTracks()[0];
-      const capabilities = track.getCapabilities?.() as any;
-      if (capabilities?.torch) {
-        setHasFlash(true);
-      }
+      const capabilities = (track.getCapabilities?.() as any) || {};
+      setHasFlash(!!capabilities.torch);
 
-      // Set up video element
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
 
-      // Create barcode reader
+      // ZXing reader
       readerRef.current = new BrowserMultiFormatReader();
-      
-      // Start continuous scanning
-      const scanResult = await readerRef.current.decodeFromVideoDevice(
+
+      await readerRef.current.decodeFromVideoDevice(
         undefined,
         videoRef.current!,
-        (result, error) => {
-          if (result) {
-            const scannedCode = result.getText().trim();
-            console.log('Barcode detected:', scannedCode);
-            
-            // Vibrate on successful scan
-            if (navigator.vibrate) {
-              navigator.vibrate([100, 50, 100]);
-            }
-            
-            // Call the onScan callback but don't close the scanner
-            onScan(scannedCode);
-            
-            // Show visual feedback
-            showScanSuccess();
+        (result, _err) => {
+          if (!result) return;
+          const code = result.getText().trim();
+
+          // 1) Debounce + ignore the same code still in frame
+          if (scanLockRef.current) return;
+          if (lastCodeRef.current === code) return;
+
+          scanLockRef.current = true;
+          lastCodeRef.current = code;
+
+          // 2) Haptics + visual
+          if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+          showScanSuccess();
+
+          // 3) Deliver up
+          onScan(code);
+
+          // 4) Optionally pause the scanner to let user type weight/width
+          if (autoPauseOnScan) {
+            pauseScanning();
           }
+
+          // 5) Cooldown to allow next code
+          cooldownTimerRef.current = window.setTimeout(() => {
+            scanLockRef.current = false;
+            lastCodeRef.current = null;
+            cooldownTimerRef.current = null;
+          }, Math.max(250, scanCooldownMs));
         }
       );
-
     } catch (err: any) {
-      console.error('Scanner initialization failed:', err);
-      setError(err.message || 'Failed to start camera');
+      setError(err?.message || 'Failed to start camera');
       setIsScanning(false);
     }
   };
 
-  const showScanSuccess = () => {
-    // Add a brief visual feedback for successful scan
-    const overlay = document.createElement('div');
-    overlay.style.cssText = `
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(0, 255, 0, 0.3);
-      z-index: 9999;
-      pointer-events: none;
-    `;
-    document.body.appendChild(overlay);
-    
-    setTimeout(() => {
-      document.body.removeChild(overlay);
-    }, 200);
+  // —————————————— Controls ——————————————
+  const pauseScanning = () => {
+    if (readerRef.current) {
+      try { readerRef.current.reset(); } catch {}
+    }
+    setIsScanning(false);
   };
 
+  const resumeScanning = () => {
+    if (!isOpen || showManualEntry) return;
+    initializeScanner();
+  };
+
+  // Expose imperative pause/resume to parent
+  useImperativeHandle(ref, () => ({
+    resume: resumeScanning,
+    pause: pauseScanning,
+  }), [isOpen, showManualEntry]);
+
   const toggleFlash = async () => {
-    if (streamRef.current && hasFlash) {
-      const track = streamRef.current.getVideoTracks()[0];
-      try {
-        await track.applyConstraints({
-          advanced: [{ torch: !flashOn } as any]
-        });
-        setFlashOn(!flashOn);
-      } catch (err) {
-        console.warn('Flash toggle failed:', err);
-      }
+    if (!streamRef.current || !hasFlash) return;
+    const track = streamRef.current.getVideoTracks()[0];
+    try {
+      await track.applyConstraints({ advanced: [{ torch: !flashOn } as any] });
+      setFlashOn((f) => !f);
+    } catch {
+      // ignore
     }
   };
 
   const handleManualSubmit = () => {
-    if (manualBarcode.trim()) {
-      console.log('Manual barcode entered:', manualBarcode.trim());
-      onScan(manualBarcode.trim());
-      setManualBarcode('');
-    }
+    const code = manualBarcode.trim();
+    if (!code) return;
+    onScan(code);
+    setManualBarcode('');
   };
 
   const switchToManual = () => {
@@ -196,125 +248,135 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
 
   const switchToCamera = () => {
     setShowManualEntry(false);
-    setManualBarcode('');
+    // when switching back, resume scanning
+    setTimeout(resumeScanning, 0);
+  };
+
+  const handleCloseClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onClose?.();
+  };
+
+  const handleDoneClick = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!onDone) {
+      onClose?.();
+      return;
+    }
+    try {
+      await onDone();
+    } finally {
+      if (onClose && onClose !== onDone) onClose();
+    }
+  };
+
+  const showScanSuccess = () => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position: fixed; inset: 0; width: 100%; height: 100%;
+      background: rgba(0,255,0,0.3); z-index: 9999; pointer-events: none;`;
+    document.body.appendChild(overlay);
+    setTimeout(() => {
+      try { document.body.removeChild(overlay); } catch {}
+    }, 200);
   };
 
   if (!isOpen) return null;
 
   const overlay = (
-    <div 
-      className="fixed inset-0 bg-black flex flex-col barcode-scanner-overlay" 
-      style={{ 
-        zIndex: 2147483647, // Maximum z-index value
+    <div
+      className="fixed inset-0 bg-black flex flex-col barcode-scanner-overlay"
+      style={{
+        zIndex: 2147483647,
         position: 'fixed',
         top: 0,
         left: 0,
         right: 0,
         bottom: 0,
         width: '100vw',
-        height: '100vh'
+        height: '100vh',
       }}
     >
       {/* Header */}
-      <div className="flex items-center justify-between p-4 bg-black/80 text-white">
+      <div className="flex items-center justify-between p-4 bg-black/80 text-white relative z-[2147483647] pointer-events-auto">
         <h1 className="text-lg font-semibold">Scan Barcode</h1>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onClose}
-          className="text-white hover:bg-white/20"
-        >
-          <X className="h-6 w-6" />
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* Expose pause/resume controls if desired */}
+          {isScanning ? (
+            <Button variant="outline" size="sm" onClick={pauseScanning}>Pause</Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={resumeScanning}>Resume</Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={handleCloseClick} className="text-white hover:bg-white/20">
+            <X className="h-6 w-6" />
+          </Button>
+        </div>
       </div>
 
-      {/* Main Content - Split Screen */}
+      {/* Main Content */}
       <div className="flex-1 relative flex">
-        {/* Left Side - Camera/Manual Entry */}
+        {/* Left: Camera / Manual */}
         <div className="flex-1 relative">
           {showManualEntry ? (
-            // Manual Entry Mode
             <div className="flex flex-col items-center justify-center h-full p-6 bg-gray-900">
               <div className="w-full max-w-md space-y-6">
                 <div className="text-center">
                   <h2 className="text-2xl font-bold text-white mb-2">Manual Entry</h2>
                   <p className="text-gray-300">Type or paste your barcode below</p>
                 </div>
-                
                 <div className="space-y-4">
                   <Input
                     type="text"
                     value={manualBarcode}
                     onChange={(e) => setManualBarcode(e.target.value)}
-                    onKeyPress={(e) => {
-                      if (e.key === 'Enter') {
-                        handleManualSubmit();
-                      }
-                    }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleManualSubmit(); }}
                     placeholder="Enter barcode here..."
-                    className="text-lg p-4 bg-white/10 border-white/20 text-white placeholder:text-gray-400"
+                    className="text-lg p-4"
                     autoFocus
                   />
-                  
-                  <Button
-                    onClick={handleManualSubmit}
-                    disabled={!manualBarcode.trim()}
-                    className="w-full py-4 text-lg bg-blue-600 hover:bg-blue-700"
-                  >
+                  <Button onClick={handleManualSubmit} disabled={!manualBarcode.trim()} className="w-full py-4 text-lg">
                     Submit Barcode
                   </Button>
                 </div>
               </div>
             </div>
           ) : (
-            // Camera Mode
             <div className="relative h-full">
               {error ? (
                 <div className="flex flex-col items-center justify-center h-full p-6 bg-gray-900">
                   <div className="text-center">
                     <p className="text-red-400 text-lg mb-4">{error}</p>
-                    <Button
-                      onClick={initializeScanner}
-                      className="bg-blue-600 hover:bg-blue-700"
-                    >
-                      Try Again
-                    </Button>
+                    <Button onClick={initializeScanner}>Try Again</Button>
                   </div>
                 </div>
               ) : (
                 <>
-                  {/* Video Stream */}
+                  {/* Video */}
                   <video
                     ref={videoRef}
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-cover pointer-events-none"
                     playsInline
                     muted
                   />
 
-                  {/* Scanning Overlay */}
+                  {/* Scan overlay */}
                   {isScanning && (
                     <div className="absolute inset-0 flex items-center justify-center">
-                      {/* Scanning Frame */}
                       <div className="relative">
                         <div className="w-80 h-48 border-4 border-red-500 rounded-lg relative">
-                          {/* Corner indicators */}
-                          <div className="absolute -top-2 -left-2 w-8 h-8 border-t-4 border-l-4 border-white rounded-tl-lg"></div>
-                          <div className="absolute -top-2 -right-2 w-8 h-8 border-t-4 border-r-4 border-white rounded-tr-lg"></div>
-                          <div className="absolute -bottom-2 -left-2 w-8 h-8 border-b-4 border-l-4 border-white rounded-bl-lg"></div>
-                          <div className="absolute -bottom-2 -right-2 w-8 h-8 border-b-4 border-r-4 border-white rounded-br-lg"></div>
-                          
-                          {/* Scanning line animation */}
-                          <div className="absolute top-0 left-0 w-full h-1 bg-red-500 animate-pulse"></div>
+                          <div className="absolute -top-2 -left-2 w-8 h-8 border-t-4 border-l-4 border-white rounded-tl-lg" />
+                          <div className="absolute -top-2 -right-2 w-8 h-8 border-t-4 border-r-4 border-white rounded-tr-lg" />
+                          <div className="absolute -bottom-2 -left-2 w-8 h-8 border-b-4 border-l-4 border-white rounded-bl-lg" />
+                          <div className="absolute -bottom-2 -right-2 w-8 h-8 border-b-4 border-r-4 border-white rounded-br-lg" />
+                          <div className="absolute top-0 left-0 w-full h-1 bg-red-500 animate-pulse" />
                         </div>
-                        
-                        <p className="text-white text-center mt-4 text-lg font-medium">
-                          Position barcode within the frame
-                        </p>
+                        <p className="text-white text-center mt-4 text-lg font-medium">Position barcode within the frame</p>
                       </div>
                     </div>
                   )}
 
-                  {/* Status indicator */}
                   {isScanning && (
                     <div className="absolute top-4 left-4 bg-red-600 text-white px-3 py-1 rounded-full text-sm font-medium">
                       🔴 SCANNING
@@ -326,24 +388,16 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
           )}
         </div>
 
-        {/* Right Side - Scanned Rolls List */}
-        <div className="w-80 bg-gray-800 border-l border-gray-600 flex flex-col">
-          {/* Header */}
+        {/* Right: List */}
+        <div className="w-80 bg-gray-800 border-l border-gray-600 flex flex-col relative z-[2147483647] pointer-events-auto">
           <div className="p-4 border-b border-gray-600">
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-lg font-semibold text-white">{currentScanningLine}</h3>
                 <p className="text-sm text-gray-300">Scanned Rolls</p>
               </div>
-              {scannedRolls.length > 0 && onDone && (
-                <Button
-                  onClick={() => {
-                    if (confirm(`Complete receiving ${scannedRolls.length} rolls (${scannedRolls.reduce((sum, roll) => sum + roll.weight, 0).toFixed(1)}kg)?`)) {
-                      onDone();
-                    }
-                  }}
-                  className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 text-sm"
-                >
+              {onDone && (
+                <Button type="button" onClick={handleDoneClick} className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 text-sm">
                   <CheckCircle className="h-4 w-4 mr-1" />
                   Done
                 </Button>
@@ -351,7 +405,6 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
             </div>
           </div>
 
-          {/* Stats */}
           <div className="p-4 border-b border-gray-600 bg-gray-750">
             <div className="grid grid-cols-2 gap-4 text-center">
               <div>
@@ -360,14 +413,13 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
               </div>
               <div>
                 <div className="text-2xl font-bold text-blue-400">
-                  {scannedRolls.reduce((sum, roll) => sum + roll.weight, 0).toFixed(1)}kg
+                  {scannedRolls.reduce((s, r) => s + (Number(r.weight) || 0), 0).toFixed(1)}kg
                 </div>
                 <div className="text-xs text-gray-400">Total Weight</div>
               </div>
             </div>
           </div>
 
-          {/* Rolls List */}
           <div className="flex-1 overflow-y-auto">
             {scannedRolls.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-32 text-gray-400 text-sm">
@@ -378,33 +430,23 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
             ) : (
               <div className="p-2 space-y-2">
                 {scannedRolls.map((roll, index) => (
-                  <div key={roll.barcode} className="bg-gray-700 rounded-lg p-3 border border-gray-600">
+                  <div key={`${roll.barcode}-${index}`} className="bg-gray-700 rounded-lg p-3 border border-gray-600">
                     <div className="flex items-center justify-between">
                       <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium text-white truncate">
-                          {roll.barcode}
-                        </div>
-                        <div className="text-xs text-gray-400">
-                          Roll #{index + 1}
-                        </div>
+                        <div className="text-sm font-medium text-white truncate">{roll.barcode}</div>
+                        <div className="text-xs text-gray-400">Roll #{index + 1}</div>
                       </div>
                       <div className="flex items-center space-x-2">
                         <div className="text-right">
-                          <div className="text-sm font-semibold text-green-400">
-                            {roll.weight}kg
-                          </div>
-                          {roll.length && (
-                            <div className="text-xs text-blue-400">
-                              {roll.length}m
-                            </div>
-                          )}
+                          <div className="text-sm font-semibold text-green-400">{roll.weight}kg</div>
+                          {roll.length ? (
+                            <div className="text-xs text-blue-400">{roll.length}m</div>
+                          ) : null}
                         </div>
                         {onRemoveRoll && (
                           <Button
                             onClick={() => {
-                              if (confirm(`Remove roll ${roll.barcode} (${roll.weight}kg)?`)) {
-                                onRemoveRoll(roll.barcode);
-                              }
+                              if (confirm(`Remove roll ${roll.barcode} (${roll.weight}kg)?`)) onRemoveRoll(roll.barcode);
                             }}
                             variant="ghost"
                             size="sm"
@@ -424,54 +466,39 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
         </div>
       </div>
 
-      {/* Overlay Content (e.g., weight entry) */}
+      {/* Overlay Content (weight/width form, etc.) */}
       {children}
 
       {/* Bottom Controls */}
       <div className="p-4 bg-black/80 space-y-4">
-        {/* Mode Toggle */}
         <div className="flex space-x-2">
-          <Button
-            onClick={switchToCamera}
-            variant={!showManualEntry ? "default" : "outline"}
-            className="flex-1 py-3"
-          >
+          <Button onClick={switchToCamera} variant={!showManualEntry ? 'default' : 'outline'} className="flex-1 py-3">
             <QrCode className="h-5 w-5 mr-2" />
             Camera
           </Button>
-          <Button
-            onClick={switchToManual}
-            variant={showManualEntry ? "default" : "outline"}
-            className="flex-1 py-3"
-          >
+          <Button onClick={switchToManual} variant={showManualEntry ? 'default' : 'outline'} className="flex-1 py-3">
             <Keyboard className="h-5 w-5 mr-2" />
             Manual
           </Button>
         </div>
 
-        {/* Additional Controls for Camera Mode */}
         {!showManualEntry && (
           <div className="flex justify-center space-x-4">
             {hasFlash && (
-              <Button
-                onClick={toggleFlash}
-                variant="outline"
-                size="lg"
-                className="bg-white/10 border-white/20 text-white hover:bg-white/20"
-              >
+              <Button onClick={toggleFlash} variant="outline" size="lg" className="bg-white/10 border-white/20 text-white hover:bg-white/20">
                 {flashOn ? <FlashlightOff className="h-6 w-6" /> : <Flashlight className="h-6 w-6" />}
               </Button>
             )}
           </div>
         )}
 
-        {/* Instructions */}
         <div className="text-center">
           <p className="text-gray-300 text-sm">
-            {showManualEntry 
-              ? "Type your barcode manually or switch to camera mode"
-              : "Scanner stays open - scan multiple barcodes consecutively"
-            }
+            {showManualEntry
+              ? 'Type your barcode manually or switch to camera mode'
+              : (autoPauseOnScan
+                  ? 'Scanner pauses after each scan so you can enter weight/width'
+                  : 'Scanner stays open - scan multiple barcodes consecutively')}
           </p>
         </div>
       </div>
@@ -479,4 +506,4 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
   );
 
   return createPortal(overlay, document.body);
-};
+});
