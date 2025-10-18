@@ -322,7 +322,7 @@ export const GoodsIssueManager: React.FC = () => {
   // Per-material alternate unit issuing state within category selection
   const [altIssueModes, setAltIssueModes] = useState<Record<string, { enabled: boolean; unit: string; qty: number; factor: number }>>({});
 
-  const [requirementMode, setRequirementMode] = useState<RequirementMode>('bom');
+  const requirementMode: RequirementMode = 'none';
   const [requirementCheck, setRequirementCheck] = useState<RequirementCheck>({
     mode: 'none',
     needsApproval: false,
@@ -464,112 +464,37 @@ export const GoodsIssueManager: React.FC = () => {
     return map;
   }, [bomMaterialRequirements]);
 
-  const computeRequirementCheck = useCallback((lines: CreateGoodsIssueLine[]): RequirementCheck => {
-    if (issueTab !== 'fabric') {
-      return { mode: 'none', needsApproval: false, details: [], limit: null, totalIssued: 0 };
+  const bomRequirementTotals = useMemo(() => {
+    if (!bomMaterialRequirements.length) {
+      return null;
     }
-
-    if (requirementMode === 'bom' && bomRequirementMap.size > 0) {
-      const details: string[] = [];
-      let needsApproval = false;
-      let totalIssued = 0;
-
-      lines.forEach(line => {
-        const quantity = Number(line.quantity_issued) || 0;
-        if (quantity <= 0) return;
-        const entry = bomRequirementMap.get(line.raw_material_id);
-        if (entry) {
-          totalIssued += quantity;
-          if (quantity > entry.required + 1e-6) {
-            needsApproval = true;
-            details.push(`${entry.name}: issued ${formatNumeric(quantity, 3) ?? quantity} > BOM ${formatNumeric(entry.required, 3) ?? entry.required}`);
-          }
-        }
-      });
-
-      const totalRequired = Array.from(bomRequirementMap.values()).reduce((sum, entry) => sum + entry.required, 0);
-
-      return {
-        mode: 'bom',
-        needsApproval,
-        details,
-        limit: totalRequired || null,
-        totalIssued,
-      };
-    }
-
-    if (requirementMode === 'marker' && markerTotalRequirement != null) {
-      const reqUnit = markerRequirementUnit?.toLowerCase?.() || '';
-      let totalIssued = 0;
-      const missingConversions: string[] = [];
-
-      lines.forEach(line => {
-        const quantity = Number(line.quantity_issued) || 0;
-        if (quantity <= 0) return;
-        const material = rawMaterials.find(m => m.id.toString() === line.raw_material_id);
-        const baseUnit = (material?.base_unit || (material as any)?.purchase_unit || '').toLowerCase();
-
-        if (reqUnit.includes('kg')) {
-          const parsed = parseKgFromNotes(line.notes);
-          if (parsed.kg != null && parsed.kg > 0) {
-            totalIssued += parsed.kg;
-            return;
-          }
-          if (parsed.factor && parsed.factor > 0) {
-            totalIssued += quantity / parsed.factor;
-            return;
-          }
-          if (baseUnit.includes('kg')) {
-            totalIssued += quantity;
-            return;
-          }
-          missingConversions.push(material?.name || line.raw_material_id);
-          return;
-        }
-
-        if (reqUnit.includes('yard') || reqUnit.includes('yd')) {
-          if (baseUnit.includes('yard') || baseUnit.includes('yd')) {
-            totalIssued += quantity;
-            return;
-          }
-          const parsed = parseKgFromNotes(line.notes);
-          if (parsed.factor && parsed.factor > 0 && parsed.kg != null && parsed.kg > 0) {
-            // When alt entry records weight and factor, convert weight to yards using factor (1 kg = X yards)
-            totalIssued += parsed.kg * parsed.factor;
-            return;
-          }
-          missingConversions.push(material?.name || line.raw_material_id);
-          return;
-        }
-
-        totalIssued += quantity;
-      });
-
-      const needsApproval = totalIssued > markerTotalRequirement + 1e-6;
-      const details: string[] = needsApproval
-        ? [`Issued ${formatNumeric(totalIssued, 3) ?? totalIssued} ${markerRequirementUnit} > marker requirement ${formatNumeric(markerTotalRequirement, 3) ?? markerTotalRequirement} ${markerRequirementUnit}`]
-        : [];
-      if (missingConversions.length) {
-        details.push(`Missing conversion for: ${missingConversions.join(', ')}`);
-      }
-
-      return {
-        mode: 'marker',
-        needsApproval,
-        details,
-        limit: markerTotalRequirement,
-        totalIssued,
-      };
-    }
-
+    const totalRequired = bomMaterialRequirements.reduce(
+      (sum, req) => sum + (Number(req.required_quantity) || 0),
+      0
+    );
+    const totalIssued = bomMaterialRequirements.reduce(
+      (sum, req) => sum + (Number(req.issued_so_far) || 0),
+      0
+    );
+    const unit = bomMaterialRequirements.find(req => req.unit)?.unit || null;
     return {
+      totalRequired,
+      totalIssued,
+      remaining: Math.max(0, totalRequired - totalIssued),
+      unit,
+    };
+  }, [bomMaterialRequirements]);
+
+  const computeRequirementCheck = useCallback(
+    (_lines: CreateGoodsIssueLine[]): RequirementCheck => ({
       mode: 'none',
       needsApproval: false,
       details: [],
       limit: null,
       totalIssued: 0,
-    };
-  }, [bomRequirementMap, issueTab, markerRequirementUnit, markerTotalRequirement, rawMaterials, requirementMode]);
+    }),
+    []
+  );
 
   useEffect(() => {
     loadInitialData();
@@ -587,18 +512,8 @@ export const GoodsIssueManager: React.FC = () => {
   }, [computeRequirementCheck, formData.lines]);
 
   useEffect(() => {
-    if (issueTab === 'fabric') {
-      if (selectedMarkerRequest) {
-        if (requirementMode !== 'marker') setRequirementMode('marker');
-      } else if (selectedBOM) {
-        if (requirementMode !== 'bom') setRequirementMode('bom');
-      } else if (requirementMode !== 'bom') {
-        setRequirementMode('bom');
-      }
-    } else if (requirementMode !== 'bom') {
-      setRequirementMode('bom');
-    }
-  }, [issueTab, requirementMode, selectedBOM, selectedMarkerRequest]);
+    // requirement enforcement disabled; effect retained to satisfy legacy dependencies
+  }, [issueTab, selectedBOM, selectedMarkerRequest]);
 
   useEffect(() => {
     if (issueTab === 'trims') return;
@@ -2022,9 +1937,6 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
     const marker = markerRequests.find(m => String(m.id) === String(markerId));
     if (marker) {
       await applyMarkerSelection(marker, fallbackOrder);
-      if (issueTab === 'fabric') {
-        setRequirementMode('marker');
-      }
     }
   };
 
@@ -3080,33 +2992,22 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
 
                 {issueTab === 'fabric' && selectedMarkerRequest && (
                   <div className="mt-4 space-y-2">
-                    <Label>Marker Requirement</Label>
-                    {requirementCheck.mode !== 'none' && (
-                      <div className={`text-xs ${requirementCheck.needsApproval ? 'text-red-600' : 'text-muted-foreground'} space-y-1`}>
+                    <Label>Marker &amp; BOM Requirements</Label>
+                    <div className="text-xs text-muted-foreground space-y-1">
+                      {markerRequirementText && (
+                        <div>Marker total: {markerRequirementText}{markerNetRequirementText ? ` • Net ${markerNetRequirementText}` : ''}</div>
+                      )}
+                      {markerPendingPiecesText && (
+                        <div>Marker pending pieces: {markerPendingPiecesText}</div>
+                      )}
+                      {bomRequirementTotals && (
                         <div>
-                          <span>
-                            Issuing against marker requirement{requirementCheck.limit != null ? ` • Required ${formatNumeric(requirementCheck.limit, 3) ?? requirementCheck.limit} ${markerRequirementUnit || ''}` : ''}
-                          </span>
-                          <span className="ml-2">
-                            Issued {formatNumeric(requirementCheck.totalIssued, 3) ?? requirementCheck.totalIssued}
-                            {requirementCheck.mode === 'marker' && markerRequirementUnit ? ` ${markerRequirementUnit}` : ''}
-                          </span>
+                          BOM total: {formatNumeric(bomRequirementTotals.totalRequired, 3) ?? bomRequirementTotals.totalRequired} {bomRequirementTotals.unit || ''}
+                          {' • Issued '}
+                          {formatNumeric(bomRequirementTotals.totalIssued, 3) ?? bomRequirementTotals.totalIssued} {bomRequirementTotals.unit || ''}
                         </div>
-                        {requirementCheck.needsApproval && requirementCheck.details.length > 0 && (
-                          <ul className="list-disc pl-5 space-y-1">
-                            {requirementCheck.details.map(detail => (
-                              <li key={detail}>{detail}</li>
-                            ))}
-                          </ul>
-                        )}
-                        {requirementCheck.needsApproval && requirementCheck.details.length === 0 && (
-                          <p>Issued quantities exceed the selected requirement.</p>
-                        )}
-                        {!requirementCheck.needsApproval && requirementCheck.mode !== 'none' && (
-                          <p>Issued quantities are within the selected requirement.</p>
-                        )}
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -3144,6 +3045,47 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
                 {/* BOM-Based Material Requirements Table */}
                 {selectedBOM && bomMaterialRequirements.length > 0 && (
                   <div className="mt-6">
+                    {issueTab === 'fabric' && (
+                      <div className="mb-4 grid gap-3 md:grid-cols-2">
+                        {markerRequirementText && (
+                          <div className="rounded-md border border-rose-200 bg-rose-50/80 p-3">
+                            <p className="text-xs uppercase tracking-wide text-rose-700">Marker Requirement</p>
+                            <p className="mt-1 text-sm font-medium text-rose-900">
+                              {markerRequirementText}
+                              {markerNetRequirementText ? ` • Net ${markerNetRequirementText}` : ''}
+                            </p>
+                            {markerPendingPiecesText && (
+                              <p className="text-xs text-rose-700">Pieces: {markerPendingPiecesText}</p>
+                            )}
+                          </div>
+                        )}
+                        {bomRequirementTotals && (
+                          <div className="rounded-md border border-blue-200 bg-blue-50/80 p-3">
+                            <p className="text-xs uppercase tracking-wide text-blue-700">BOM Requirement</p>
+                            <div className="mt-1 space-y-1 text-sm text-blue-900">
+                              <div className="flex items-center justify-between">
+                                <span>Total</span>
+                                <span className="font-medium">
+                                  {formatNumeric(bomRequirementTotals.totalRequired, 3) ?? bomRequirementTotals.totalRequired} {bomRequirementTotals.unit || ''}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <span>Issued</span>
+                                <span className="font-medium">
+                                  {formatNumeric(bomRequirementTotals.totalIssued, 3) ?? bomRequirementTotals.totalIssued} {bomRequirementTotals.unit || ''}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <span>Remaining</span>
+                                <span className="font-medium">
+                                  {formatNumeric(bomRequirementTotals.remaining, 3) ?? bomRequirementTotals.remaining} {bomRequirementTotals.unit || ''}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center space-x-2">
                       <FileText className="h-5 w-5 text-blue-600" />
                       <span>Material Requirements - {selectedBOM.name} ({issueTab === 'fabric' ? 'Fabric' : 'Trims'})</span>

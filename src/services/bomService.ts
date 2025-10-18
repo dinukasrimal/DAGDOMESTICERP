@@ -1,5 +1,6 @@
 import { supabase } from '../integrations/supabase/client';
 import { Tables, TablesInsert, TablesUpdate } from '../integrations/supabase/types';
+import type { PostgrestError } from '@supabase/supabase-js';
 
 export type BOMHeader = Tables<'bom_headers'>;
 export type BOMHeaderInsert = TablesInsert<'bom_headers'>;
@@ -572,34 +573,85 @@ export class BOMService {
       products = productData || [];
     }
     
-    const { data: bomHeader, error: bomError } = await supabase
+    const supportsMultiSchemaErrorCodes = ['PGRST204', '42703'];
+    const isMissingColumnError = (error: PostgrestError | null | undefined, columnName: string) => {
+      if (!error) return false;
+      if (supportsMultiSchemaErrorCodes.includes(error.code ?? '')) return true;
+      const message = (error.message || '').toLowerCase();
+      return message.includes(`'${columnName.toLowerCase()}'`) || message.includes('column') && message.includes(columnName.toLowerCase());
+    };
+
+    let bomHeader: BOMHeader | null = null;
+    let schemaSupportsMultiColumns = true;
+
+    const primaryInsertPayload: Record<string, any> = {
+      name: enhancedName,
+      version: bomData.version,
+      quantity: bomData.quantity,
+      unit: bomData.unit,
+      is_category_wise: bomData.is_category_wise || false,
+      active: true,
+      product_ids: bomData.product_ids,
+      bom_type: 'multi',
+      description: bomData.description ?? null,
+    };
+
+    const { data: bomHeaderPrimary, error: bomErrorPrimary } = await supabase
       .from('bom_headers')
-      .insert({
-        name: enhancedName,
-        version: bomData.version,
-        quantity: bomData.quantity,
-        unit: bomData.unit,
-        is_category_wise: bomData.is_category_wise || false,
-        active: true,
-        product_ids: bomData.product_ids,
-        bom_type: 'multi',
-        description: bomData.description ?? null,
-      })
+      .insert(primaryInsertPayload)
       .select()
       .single();
 
-    if (bomError) {
-      console.error('Error creating multi-product BOM:', bomError);
-      throw bomError;
+    if (bomErrorPrimary) {
+      const missingProductIds = isMissingColumnError(bomErrorPrimary, 'product_ids');
+      const missingBomType = isMissingColumnError(bomErrorPrimary, 'bom_type');
+      const missingDescription = isMissingColumnError(bomErrorPrimary, 'description');
+
+      if (missingProductIds || missingBomType || missingDescription) {
+        schemaSupportsMultiColumns = false;
+        const legacyPayload: Record<string, any> = {
+          name: enhancedName,
+          version: bomData.version,
+          quantity: bomData.quantity,
+          unit: bomData.unit,
+          is_category_wise: bomData.is_category_wise || false,
+          active: true,
+        };
+
+        if (bomData.product_ids.length > 0) {
+          legacyPayload.product_id = bomData.product_ids[0];
+        }
+
+        const { data: bomHeaderLegacy, error: bomErrorLegacy } = await supabase
+          .from('bom_headers')
+          .insert(legacyPayload)
+          .select()
+          .single();
+
+        if (bomErrorLegacy) {
+          console.error('Error creating multi-product BOM (legacy fallback failed):', bomErrorLegacy);
+          throw bomErrorLegacy;
+        }
+
+        bomHeader = bomHeaderLegacy;
+      } else {
+        console.error('Error creating multi-product BOM:', bomErrorPrimary);
+        throw bomErrorPrimary;
+      }
+    } else {
+      bomHeader = bomHeaderPrimary;
     }
 
-    if (bomHeader && Array.isArray(bomData.product_ids) && bomData.product_ids.length > 0) {
+    if (bomHeader && schemaSupportsMultiColumns && Array.isArray(bomData.product_ids) && bomData.product_ids.length > 0) {
       const { error: productLinkError } = await supabase
         .from('bom_products')
         .insert(bomData.product_ids.map(id => ({ bom_header_id: bomHeader.id, product_id: id })))
         .select();
       if (productLinkError) {
-        console.warn('Warning: failed to link products to multi-product BOM', productLinkError.message);
+        const tableMissing = productLinkError.code === 'PGRST200' || productLinkError.code === '42P01' || (productLinkError.message || '').toLowerCase().includes('bom_products');
+        if (!tableMissing) {
+          console.warn('Warning: failed to link products to multi-product BOM', productLinkError.message);
+        }
       }
     }
 
