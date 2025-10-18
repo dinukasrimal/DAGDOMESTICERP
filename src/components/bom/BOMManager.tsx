@@ -9,16 +9,111 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Plus, Edit, Trash2, Copy, Search, Package, DollarSign, AlertTriangle, FileText, Factory, ChevronLeft, ChevronRight, Users, Palette, Ruler } from 'lucide-react';
+import { Plus, Edit, Trash2, Copy, Search, Package, AlertTriangle, FileText, Factory, ChevronLeft, ChevronRight, Users, Palette, Ruler } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { BOMService, BOMWithLines, BOMHeaderInsert, BOMLineInsert, MaterialRequirement } from '../../services/bomService';
 import { RawMaterialsService, RawMaterialWithInventory } from '../../services/rawMaterialsService';
 import { supabase } from '../../integrations/supabase/client';
 import { ModernLayout } from '../layout/ModernLayout';
 import { MultiProductBOMCreator } from './MultiProductBOMCreator';
+import { parseVariantConsumptionsFromNotes, ParsedVariantConsumption } from '@/utils/variantConsumptions';
 
 const bomService = new BOMService();
 const rawMaterialsService = new RawMaterialsService();
+
+const COLOR_WORDS = ['grey', 'gray', 'black', 'white', 'blue', 'red', 'green', 'yellow', 'beige', 'beigh', 'multicolour', 'multicolor', 'multi-colour', 'multi-color', 'brown', 'orange', 'purple', 'pink', 'navy', 'maroon', 'cream', 'ivory'];
+
+const normalizeLabel = (value?: string | null): string => {
+  if (!value) return '';
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+};
+
+const inferProductDetailsFromLabel = (label: string) => {
+  if (!label) {
+    return { name: '', size: null as string | null, colour: null as string | null, defaultCode: null as string | null };
+  }
+
+  let workingLabel = label.trim();
+  let defaultCode: string | null = null;
+
+  const codeMatch = workingLabel.match(/^\[([^\]]+)\]\s*(.*)$/);
+  if (codeMatch) {
+    defaultCode = codeMatch[1]?.trim() || null;
+    workingLabel = codeMatch[2]?.trim() || '';
+  }
+
+  if (workingLabel.includes('|')) {
+    const [namePart, sizePart, colourPart] = workingLabel.split('|');
+    const name = (namePart || workingLabel).trim();
+    const size = sizePart && sizePart !== 'no-size' ? sizePart.trim() : null;
+    const colour = colourPart && colourPart !== 'no-color' ? colourPart.trim() : null;
+    return { name, size, colour, defaultCode: defaultCode ?? null };
+  }
+
+  const parts = workingLabel.split('-').map(segment => segment.trim()).filter(Boolean);
+  const sizeRegex = /^(?:\d+(?:\.\d+)?|xs|s|m|l|xl|xxl)$/i;
+  let size: string | null = null;
+  let colour: string | null = null;
+  let nameParts = [...parts];
+
+  if (parts.length >= 2) {
+    const lastPart = parts[parts.length - 1];
+    const secondLastPart = parts[parts.length - 2];
+    const lastLower = lastPart.toLowerCase();
+    const secondLower = secondLastPart.toLowerCase();
+    const lastIsColor = COLOR_WORDS.some(color => lastLower.includes(color));
+    const lastIsSize = sizeRegex.test(lastPart);
+    const secondIsSize = sizeRegex.test(secondLastPart);
+
+    if (lastIsColor) {
+      colour = lastPart;
+      nameParts = parts.slice(0, -1);
+      if (secondIsSize && nameParts.length > 0) {
+        size = secondLastPart;
+        nameParts = nameParts.slice(0, -1);
+      }
+    } else if (lastIsSize) {
+      size = lastPart;
+      nameParts = parts.slice(0, -1);
+    } else if (secondIsSize) {
+      size = secondLastPart;
+      nameParts = parts.slice(0, -2);
+    }
+
+    if (!colour) {
+      const maybeColor = nameParts.length > 0 ? nameParts[nameParts.length - 1] : '';
+      if (maybeColor && COLOR_WORDS.some(color => maybeColor.toLowerCase().includes(color))) {
+        colour = maybeColor;
+        nameParts = nameParts.slice(0, -1);
+      }
+    }
+  }
+
+  const name = nameParts.join('-').trim() || workingLabel;
+
+  return {
+    name,
+    size,
+    colour,
+    defaultCode,
+  };
+};
+
+const buildProductCandidateFromVariant = (variant: ParsedVariantConsumption, nextPlaceholderId: () => number) => {
+  const inferred = inferProductDetailsFromLabel(variant.label);
+  const numericId = typeof variant.productId === 'number' && Number.isFinite(variant.productId)
+    ? variant.productId
+    : null;
+  const id = numericId ?? nextPlaceholderId();
+
+  return {
+    id,
+    name: inferred.name || variant.label || `Product ${id}`,
+    default_code: inferred.defaultCode ?? (numericId != null ? null : variant.label || null),
+    colour: inferred.colour,
+    size: inferred.size,
+  };
+};
 
 const FABRIC_USAGE_LABELS: Record<'body' | 'gusset_1' | 'gusset_2', string> = {
   body: 'Body',
@@ -450,184 +545,91 @@ const BOMContent: React.FC = () => {
     
     // For multi-product BOMs, extract products from various sources
     let products: any[] = [];
-    if (hasProductIds) {
+    const productMap = new Map<string, any>();
+    let placeholderCounter = 0;
+    const nextPlaceholderId = () => {
+      placeholderCounter += 1;
+      return 10000 + placeholderCounter;
+    };
+
+    const registerProductCandidate = (candidate: any) => {
+      if (!candidate) return;
+      const candidateId = candidate.id != null ? String(candidate.id) : null;
+      const normalizedName = normalizeLabel(candidate.name);
+
+      let key: string;
+      if (candidateId) {
+        key = `id-${candidateId}`;
+      } else if (normalizedName) {
+        key = `name-${normalizedName}`;
+      } else {
+        key = `placeholder-${productMap.size + 1}`;
+      }
+
+      if (productMap.has(key)) {
+        const existing = productMap.get(key);
+        productMap.set(key, {
+          ...existing,
+          name: existing?.name || candidate.name,
+          default_code: existing?.default_code || candidate.default_code,
+          colour: existing?.colour || candidate.colour,
+          size: existing?.size || candidate.size,
+          id: existing?.id ?? candidate.id
+        });
+        return;
+      }
+
+      productMap.set(key, candidate);
+    };
+
+    if ((bom as any).product) {
+      registerProductCandidate((bom as any).product);
+    }
+
+    if (Array.isArray((bom as any).products) && (bom as any).products.length > 0) {
+      (bom as any).products.forEach((product: any) => registerProductCandidate(product));
+    }
+
+    bom.lines.forEach(line => {
+      const variants = parseVariantConsumptionsFromNotes(line.notes);
+      variants.forEach(variant => {
+        const candidate = buildProductCandidateFromVariant(variant, nextPlaceholderId);
+        registerProductCandidate(candidate);
+      });
+    });
+
+    if (productMap.size > 0) {
+      products = Array.from(productMap.values());
+    } else if (hasProductIds) {
       products = (bom as any).products || [];
-    } else if (bom.is_category_wise) {
-      // For category-wise BOMs, we need to extract the actual products from variant consumption data
-      // since the stored "products" are actually categories
-      const productSet = new Set<string>();
-      
-      // Parse variant consumption data to extract actual products
-      bom.lines.forEach(line => {
-        if (line.notes && line.notes.includes('Variant consumptions:')) {
-          try {
-            const variantSection = line.notes.split('Variant consumptions:')[1];
-            if (variantSection) {
-              const variants = variantSection.split(';').map(v => v.trim());
-              variants.forEach(variant => {
-                const match = variant.match(/^([^:]+):/);
-                if (match) {
-                  const variantKey = match[1].trim();
-                  productSet.add(variantKey);
-                }
-              });
-            }
-          } catch (error) {
-            console.error('Error parsing variant data:', error);
-          }
-        }
-      });
-      
-      // Convert to product objects with better parsing
-      const uniqueProducts = Array.from(productSet);
-      products = uniqueProducts.map((productKey, index) => {
-        // Check if this is a new format variant key with pipe separators
-        if (productKey.includes('|')) {
-          const parts = productKey.split('|');
-          const name = parts[0] || productKey;
-          const size = parts[1] && parts[1] !== 'no-size' ? parts[1] : null;
-          const colour = parts[2] && parts[2] !== 'no-color' ? parts[2] : null;
-          
-          return {
-            id: index + 1000,
-            name: name,
-            default_code: productKey,
-            colour: colour,
-            size: size
-          };
-        }
-        
-        // Fallback to old parsing logic for existing data
-        const parts = productKey.split('-');
-        let size = null;
-        let colour = null;
-        let name = productKey;
-        
-        if (parts.length >= 2) {
-          const lastPart = parts[parts.length - 1];
-          const secondLastPart = parts[parts.length - 2];
-          
-          const colorWords = ['grey', 'gray', 'black', 'white', 'blue', 'red', 'green', 'yellow', 'beige', 'beigh', 'multicolour', 'multicolor', 'multi-colour', 'multi-color', 'brown', 'orange', 'purple', 'pink', 'navy', 'maroon', 'cream', 'ivory'];
-          const isColor = colorWords.some(color => lastPart.toLowerCase().includes(color.toLowerCase()));
-          const isSize = /^\d+$/.test(secondLastPart) || /^(xs|s|m|l|xl|xxl)$/i.test(secondLastPart);
-          
-          if (isColor) {
-            colour = lastPart;
-            name = parts.slice(0, -1).join('-');
-            if (isSize) {
-              size = secondLastPart;
-              name = parts.slice(0, -2).join('-');
-            }
-          } else if (isSize) {
-            size = lastPart;
-            name = parts.slice(0, -1).join('-');
-          }
-        }
-        
-        return {
-          id: index + 1000, // Use high IDs to avoid conflicts
-          name: name || productKey,
-          default_code: productKey,
-          colour: colour,
-          size: size
-        };
-      });
-    } else if (isMultiProduct) {
-      // Extract products from variant consumption data in notes
-      const productSet = new Set<string>();
-      
-      // Parse variant consumption data from all BOM lines to extract unique products
-      bom.lines.forEach(line => {
-        if (line.notes && line.notes.includes('Variant consumptions:')) {
-          try {
-            const variantSection = line.notes.split('Variant consumptions:')[1];
-            if (variantSection) {
-              const variants = variantSection.split(';').map(v => v.trim());
-              variants.forEach(variant => {
-                const match = variant.match(/^([^:]+):/);
-                if (match) {
-                  const variantKey = match[1].trim();
-                  productSet.add(variantKey);
-                }
-              });
-            }
-          } catch (error) {
-            console.error('Error parsing variant data:', error);
-          }
-        }
-      });
-      
-      // Convert to product objects
-      const uniqueProducts = Array.from(productSet);
-      products = uniqueProducts.map((productKey, index) => {
-        // Parse size and color from product key (e.g., "28-grey", "LUCID-BEIGH 38")
-        const parts = productKey.split('-');
-        let size = null;
-        let colour = null;
-        let name = productKey;
-        
-        if (parts.length >= 2) {
-          // Try to detect if the last part is a color and the second-to-last is a size
-          const lastPart = parts[parts.length - 1];
-          const secondLastPart = parts[parts.length - 2];
-          
-          // Common color names and size patterns
-          const colorWords = ['grey', 'gray', 'black', 'white', 'blue', 'red', 'green', 'yellow', 'beige', 'beigh', 'multicolour', 'multicolor', 'multi-colour', 'multi-color', 'brown', 'orange', 'purple', 'pink', 'navy', 'maroon', 'cream', 'ivory'];
-          const isColor = colorWords.some(color => lastPart.toLowerCase().includes(color.toLowerCase()));
-          const isSize = /^\d+$/.test(secondLastPart) || /^(xs|s|m|l|xl|xxl)$/i.test(secondLastPart);
-          
-          if (isColor) {
-            colour = lastPart;
-            name = parts.slice(0, -1).join('-');
-            if (isSize) {
-              size = secondLastPart;
-              name = parts.slice(0, -2).join('-');
-            }
-          } else if (isSize) {
-            size = lastPart;
-            name = parts.slice(0, -1).join('-');
-          }
-        }
-        
-        return {
-          id: index + 1,
-          name: name || productKey,
-          default_code: productKey,
-          colour: colour,
-          size: size
-        };
-      });
-      
-      // If no products found from consumption data, fall back to name parsing
-      if (products.length === 0 && hasMultiProductName) {
-        const nameMatch = bom.name.match(/\(([^)]+)\)/);
-        if (nameMatch) {
-          const productNames = nameMatch[1].split(',').map(name => name.trim());
-          const moreMatch = bom.name.match(/\+(\d+)\s+more/);
-          const moreCount = moreMatch ? parseInt(moreMatch[1]) : 0;
-          
-          products = productNames.map((name, index) => ({
-            id: index + 1,
-            name: name,
+    } else if (hasMultiProductName) {
+      const nameMatch = bom.name.match(/\(([^)]+)\)/);
+      if (nameMatch) {
+        const productNames = nameMatch[1].split(',').map(name => name.trim());
+        const moreMatch = bom.name.match(/\+(\d+)\s+more/);
+        const moreCount = moreMatch ? parseInt(moreMatch[1], 10) : 0;
+        productNames.forEach((name, index) => {
+          const inferred = inferProductDetailsFromLabel(name);
+          products.push({
+            id: nextPlaceholderId(),
+            name: inferred.name || name,
+            default_code: inferred.defaultCode,
+            colour: inferred.colour,
+            size: inferred.size,
+          });
+        });
+        for (let i = 0; i < moreCount; i += 1) {
+          products.push({
+            id: nextPlaceholderId(),
+            name: `Product ${products.length + 1}`,
             default_code: null,
             colour: null,
             size: null
-          }));
-          
-          // Add placeholder products for the "+X more"
-          for (let i = 0; i < moreCount; i++) {
-            products.push({
-              id: products.length + 1,
-              name: `Product ${products.length + 1}`,
-              default_code: null,
-              colour: null,
-              size: null
-            });
-          }
+          });
         }
       }
-    } else {
-      products = bom.product ? [bom.product] : [];
+    } else if (bom.product) {
+      products = [bom.product];
     }
     
     const currentProduct = products[currentProductIndex];
@@ -637,74 +639,58 @@ const BOMContent: React.FC = () => {
       if (!isMultiProduct || !currentProduct) return bomLines;
       
       return bomLines.map(line => {
-        if (!line.notes || !line.notes.includes('Variant consumptions:')) {
+        if (!isMultiProduct || !currentProduct) {
+          return line;
+        }
+
+        const variantConsumptions = parseVariantConsumptionsFromNotes(line.notes);
+        if (variantConsumptions.length === 0) {
           return {
             ...line,
-            quantity: line.quantity,
-            waste_percentage: line.waste_percentage,
             productSpecificNote: 'No specific consumption data available'
           };
         }
-        
-        // Parse variant consumption data from notes
-        try {
-          const variantSection = line.notes.split('Variant consumptions:')[1];
-          if (!variantSection) return line;
-          
-          // Extract individual variant data
-          const variants = variantSection.split(';').map(v => v.trim());
-          
-          // Find consumption for current product
-          let productConsumption = null;
-          for (const variant of variants) {
-            // Match patterns like "28-grey: 0.3 kg (0% waste)" or "LUCID-BEIGH 38: 0.3 kg (0% waste)"
-            const sizeColorMatch = variant.match(/^([^:]+):\s*([0-9.]+)\s*([^(]+)\s*\(([0-9.]+)%\s*waste\)/);
-            if (sizeColorMatch) {
-              const [, variantKey, quantity, unit, waste] = sizeColorMatch;
-              
-              // Check if this variant matches current product
-              // For exact match with default_code or name
-              const exactMatch = variantKey.trim() === currentProduct.default_code || 
-                                variantKey.trim() === currentProduct.name;
-              
-              // For partial match based on components
-              const matchesSize = !currentProduct.size || variantKey.includes(currentProduct.size);
-              const matchesColor = !currentProduct.colour || variantKey.toLowerCase().includes(currentProduct.colour.toLowerCase());
-              const matchesName = !currentProduct.name || variantKey.includes(currentProduct.name);
-              
-              if (exactMatch || (matchesName && matchesSize && matchesColor)) {
-                productConsumption = {
-                  quantity: parseFloat(quantity),
-                  unit: unit.trim(),
-                  waste_percentage: parseFloat(waste)
-                };
-                break;
-              }
-            }
+
+        const normalizedProductName = normalizeLabel(currentProduct.name);
+        const normalizedProductCode = normalizeLabel(currentProduct.default_code);
+        const normalizedProductSize = normalizeLabel(currentProduct.size);
+        const normalizedProductColour = normalizeLabel(currentProduct.colour);
+
+        const matchedConsumption = variantConsumptions.find(variant => {
+          const variantId = typeof variant.productId === 'number' ? variant.productId : null;
+          if (variantId != null && currentProduct.id && variantId === currentProduct.id) {
+            return true;
           }
-          
-          if (productConsumption) {
-            return {
-              ...line,
-              quantity: productConsumption.quantity,
-              waste_percentage: productConsumption.waste_percentage,
-              unit: productConsumption.unit,
-              productSpecificNote: `Specific consumption for ${currentProduct.name}${currentProduct.size ? ` - ${currentProduct.size}` : ''}${currentProduct.colour ? ` - ${currentProduct.colour}` : ''}`
-            };
+
+          const normalizedVariantLabel = normalizeLabel(variant.label);
+          if (normalizedVariantLabel && normalizedVariantLabel === normalizedProductName) {
+            return true;
           }
-          
+
+          if (normalizedProductCode && normalizedVariantLabel.includes(normalizedProductCode)) {
+            return true;
+          }
+
+          const matchesSize = !normalizedProductSize || normalizedVariantLabel.includes(normalizedProductSize);
+          const matchesColour = !normalizedProductColour || normalizedVariantLabel.includes(normalizedProductColour);
+          return matchesSize && matchesColour && (!normalizedProductName || normalizedVariantLabel.includes(normalizedProductName));
+        });
+
+        if (matchedConsumption && matchedConsumption.quantity != null) {
+          const noteIdPart = matchedConsumption.productId != null ? ` (ID: ${matchedConsumption.productId})` : '';
           return {
             ...line,
-            productSpecificNote: `No specific data found for ${currentProduct.name}`
-          };
-          
-        } catch (error) {
-          console.error('Error parsing variant consumption data:', error);
-          return {
-            ...line,
-            productSpecificNote: 'Error parsing consumption data'
+            quantity: matchedConsumption.quantity,
+            waste_percentage: matchedConsumption.waste ?? line.waste_percentage,
+            unit: matchedConsumption.unit || line.unit,
+            productSpecificNote: `Specific consumption for ${currentProduct.name}${noteIdPart}${currentProduct.size ? ` - ${currentProduct.size}` : ''}${currentProduct.colour ? ` - ${currentProduct.colour}` : ''}`
           };
         }
+
+        return {
+          ...line,
+          productSpecificNote: `No specific data found for ${currentProduct.name}`
+        };
       });
     };
 
@@ -916,7 +902,9 @@ const BOMContent: React.FC = () => {
           </div>
           <div className="bg-gradient-to-br from-green-50/50 to-emerald-50/50 p-4 rounded-xl border border-green-200/30">
             <h4 className="font-semibold text-gray-800 mb-3 flex items-center space-x-2">
-              <DollarSign className="h-4 w-4 text-green-600" />
+              <span className="inline-flex items-center justify-center rounded-full bg-green-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-green-700">
+                LKR
+              </span>
               <span>Cost Analysis</span>
             </h4>
             <div className="text-sm space-y-3">
@@ -1270,8 +1258,10 @@ const BOMContent: React.FC = () => {
                     </TableCell>
                     <TableCell className="px-6 py-4">
                       <div className="space-y-1">
-                        <div className="flex items-center gap-1 text-green-700 font-semibold">
-                          <DollarSign className="h-4 w-4" />
+                        <div className="flex items-center gap-2 text-green-700 font-semibold">
+                          <span className="inline-flex items-center justify-center rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-green-700">
+                            LKR
+                          </span>
                           <span>{calculateBOMCost(bom).toFixed(2)}</span>
                         </div>
                         <div className="text-xs text-gray-500">

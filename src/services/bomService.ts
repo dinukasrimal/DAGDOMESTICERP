@@ -42,6 +42,53 @@ export interface BOMWithLines extends BOMHeader {
   }[];
 }
 
+interface BomProductLink {
+  bom_header_id: string;
+  product_id: number;
+}
+
+type RawProductEntry = {
+  id?: number;
+  name?: string | null;
+  default_code?: string | null;
+  colour?: string | null;
+  size?: string | null;
+  product?: RawProductEntry;
+};
+
+type RawBomQuery = BOMHeader & {
+  lines?: BOMLineWithMaterial[];
+  products?: RawProductEntry[];
+};
+
+const normalizeBomProducts = (products: unknown): BOMWithLines['products'] => {
+  if (!Array.isArray(products)) return [];
+
+  const result: BOMWithLines['products'] = [];
+  products.forEach((entry) => {
+    const candidate = extractProduct(entry);
+    if (candidate) {
+      result.push(candidate);
+    }
+  });
+  return result;
+};
+
+const extractProduct = (entry: unknown): BOMWithLines['products'][number] | null => {
+  if (!entry || typeof entry !== 'object') return null;
+  const raw = (entry as RawProductEntry).product ?? (entry as RawProductEntry);
+  if (!raw || typeof raw !== 'object') return null;
+  const { id, name, default_code, colour, size } = raw as RawProductEntry;
+  if (typeof id !== 'number') return null;
+  return {
+    id,
+    name: typeof name === 'string' ? name : '',
+    default_code: default_code ?? null,
+    colour: colour ?? null,
+    size: size ?? null,
+  };
+};
+
 export interface BOMLineConsumption {
   id: string;
   bom_line_id: string;
@@ -50,6 +97,7 @@ export interface BOMLineConsumption {
   quantity: number;
   unit: string;
   waste_percentage: number;
+  product_id?: number | null;
 }
 
 export interface BOMLineWithConsumptions extends BOMLineWithMaterial {
@@ -95,6 +143,7 @@ export interface MultiProductBOMCreate {
       quantity: number;
       unit: string;
       waste_percentage: number;
+      product_id?: number | null;
     }[];
     fabric_usage?: 'body' | 'gusset_1' | 'gusset_2' | null;
     notes?: string;
@@ -104,35 +153,144 @@ export interface MultiProductBOMCreate {
 export class BOMService {
   
   async getBOMsByProduct(productId: number): Promise<BOMWithLines[]> {
-    console.log(`🔍 BOMService Debug: Looking for BOMs with product_id = ${productId}`);
-    
-    const { data, error } = await supabase
-      .from('bom_headers')
-      .select(`
+    console.log(`🔍 BOMService Debug: Looking for BOMs with product association = ${productId}`);
+
+    const selectFields = `
+      *,
+      lines:bom_lines(
         *,
-        lines:bom_lines(
-          *,
-          raw_material:raw_materials(id, name, code, base_unit, purchase_unit, conversion_factor, cost_per_unit),
-          material_category:material_categories(id, name, description)
-        )
-      `)
-      .eq('product_id', productId)
+        raw_material:raw_materials(id, name, code, base_unit, purchase_unit, conversion_factor, cost_per_unit),
+        material_category:material_categories(id, name, description)
+      )
+    `;
+
+    const directResponse = await supabase
+      .from('bom_headers')
+      .select(selectFields)
+      .contains('product_ids', [productId])
       .eq('active', true)
       .order('created_at', { ascending: false });
 
-    console.log(`📊 BOMService Debug: Query result for product ${productId}:`, { data, error });
+    let directBoms: RawBomQuery[] = [];
 
-    if (error) {
-      console.error('Error fetching BOMs:', error);
-      throw error;
+    if (directResponse.error) {
+      const message = directResponse.error.message ?? '';
+      if (message.includes('column') && message.includes('product_ids')) {
+        const legacyResponse = await supabase
+          .from('bom_headers')
+          .select(selectFields)
+          .eq('product_id', productId)
+          .eq('active', true)
+          .order('created_at', { ascending: false });
+
+        if (legacyResponse.error) {
+          console.error('Error fetching direct BOMs (legacy column):', legacyResponse.error);
+          throw legacyResponse.error;
+        }
+        directBoms = (legacyResponse.data ?? []) as RawBomQuery[];
+      } else {
+        console.error('Error fetching direct BOMs:', directResponse.error);
+        throw directResponse.error;
+      }
+    } else {
+      directBoms = (directResponse.data ?? []) as RawBomQuery[];
     }
-    
-    const processedData = (data || []).map(bom => ({
-      ...bom,
-      lines: (bom.lines || []).sort((a, b) => a.sort_order - b.sort_order)
-    }));
-    
-    console.log(`✅ BOMService Debug: Processed ${processedData.length} BOMs for product ${productId}`);
+
+    const linkResponse = await supabase
+      .from('bom_products')
+      .select('bom_header_id, product_id')
+      .eq('product_id', productId);
+
+    let productLinks: BomProductLink[] = [];
+    if (linkResponse.error) {
+      const message = linkResponse.error.message ?? '';
+      if (!message.includes('bom_products')) {
+        console.error('Error fetching multi-product BOM links:', linkResponse.error);
+        throw linkResponse.error;
+      }
+    } else {
+      productLinks = (linkResponse.data ?? []) as BomProductLink[];
+    }
+
+    const multiBomIds = productLinks.map((link) => link.bom_header_id).filter(Boolean);
+
+    let multiBoms: RawBomQuery[] = [];
+    if (multiBomIds.length > 0) {
+      const { data: multiData, error: multiError } = await supabase
+        .from('bom_headers')
+        .select(selectFields)
+        .in('id', multiBomIds)
+        .eq('active', true)
+        .order('created_at', { ascending: false });
+
+      if (multiError) {
+        console.error('Error fetching multi-product BOMs:', multiError);
+        throw multiError;
+      }
+      multiBoms = (multiData ?? []) as RawBomQuery[];
+    }
+
+    const combined: RawBomQuery[] = [...directBoms, ...multiBoms];
+
+    const dedupedMap = new Map<string, RawBomQuery>();
+    combined.forEach((bom) => {
+      if (!bom || !bom.id) return;
+      if (!dedupedMap.has(bom.id)) {
+        dedupedMap.set(bom.id, bom);
+      }
+    });
+
+    const productsByBom = new Map<string, RawProductEntry[]>();
+    if (productLinks.length > 0) {
+      const uniqueProductIds = Array.from(new Set(productLinks.map((link) => link.product_id).filter((id) => id != null))) as number[];
+      let productDetailsMap = new Map<number, RawProductEntry>();
+      if (uniqueProductIds.length > 0) {
+        const { data: productDetails, error: productError } = await supabase
+          .from('products')
+          .select('id, name, default_code, colour, size')
+          .in('id', uniqueProductIds);
+
+        if (!productError && Array.isArray(productDetails)) {
+          productDetailsMap = new Map(productDetails.map((prod) => [prod.id, prod]));
+        }
+      }
+
+      productLinks.forEach((link) => {
+        const list = productsByBom.get(link.bom_header_id) ?? [];
+        const productDetail = productDetailsMap.get(link.product_id);
+        if (productDetail) {
+          list.push(productDetail);
+        } else {
+          list.push({ id: link.product_id });
+        }
+        productsByBom.set(link.bom_header_id, list);
+      });
+    }
+
+    const processedData = Array.from(dedupedMap.values()).map((bom) => {
+      const sortedLines = Array.isArray(bom.lines) ? [...bom.lines].sort((a, b) => a.sort_order - b.sort_order) : [];
+      const headerProductIds = Array.isArray((bom as any).product_ids) ? ((bom as any).product_ids as number[]) : [];
+      const extraProducts: RawProductEntry[] = [];
+      headerProductIds.forEach((id) => {
+        const existing = extraProducts.find((product) => product.id === id);
+        if (!existing) {
+          extraProducts.push({ id });
+        }
+      });
+
+      const normalizedProducts = normalizeBomProducts([
+        ...(productsByBom.get(bom.id) ?? []),
+        ...extraProducts,
+      ]);
+
+      return {
+        ...bom,
+        lines: sortedLines,
+        products: normalizedProducts,
+      } satisfies BOMWithLines;
+    });
+
+    console.log(`✅ BOMService Debug: Found ${processedData.length} BOMs (including multi-product) for product ${productId}`);
     return processedData;
   }
 
@@ -422,7 +580,10 @@ export class BOMService {
         quantity: bomData.quantity,
         unit: bomData.unit,
         is_category_wise: bomData.is_category_wise || false,
-        active: true
+        active: true,
+        product_ids: bomData.product_ids,
+        bom_type: 'multi',
+        description: bomData.description ?? null,
       })
       .select()
       .single();
@@ -432,6 +593,16 @@ export class BOMService {
       throw bomError;
     }
 
+    if (bomHeader && Array.isArray(bomData.product_ids) && bomData.product_ids.length > 0) {
+      const { error: productLinkError } = await supabase
+        .from('bom_products')
+        .insert(bomData.product_ids.map(id => ({ bom_header_id: bomHeader.id, product_id: id })))
+        .select();
+      if (productLinkError) {
+        console.warn('Warning: failed to link products to multi-product BOM', productLinkError.message);
+      }
+    }
+
     // Create BOM lines with averaged/aggregated consumption data
     const lines: BOMLineWithConsumptions[] = [];
     for (const material of bomData.raw_materials) {
@@ -439,14 +610,17 @@ export class BOMService {
       const avgQuantity = material.consumptions.reduce((sum, c) => sum + c.quantity, 0) / material.consumptions.length;
       const avgWaste = material.consumptions.reduce((sum, c) => sum + c.waste_percentage, 0) / material.consumptions.length;
       
-      // Create detailed notes with variant consumption info
-      const variantDetails = material.consumptions.map(c => 
-        bomData.is_category_wise 
-          ? `${c.attribute_value}: ${c.quantity} ${c.unit} (${c.waste_percentage}% waste)`
-          : `${c.attribute_value}: ${c.quantity} ${c.unit} (${c.waste_percentage}% waste)`
-      ).join('; ');
-      
-      const detailedNotes = `${material.notes ? material.notes + '. ' : ''}Variant consumptions: ${variantDetails}`;
+      // Create detailed notes with variant consumption info (include product_id for reliable matching)
+      const variantDetailsPayload = material.consumptions.map(c => ({
+        product_id: c.product_id ?? null,
+        label: c.attribute_value,
+        quantity: c.quantity,
+        unit: c.unit,
+        waste_percentage: c.waste_percentage,
+      }));
+
+      const variantDetailsJson = JSON.stringify(variantDetailsPayload);
+      const detailedNotes = `${material.notes ? material.notes + '. ' : ''}Variant consumptions: ${variantDetailsJson}`;
 
       // For category-wise BOMs with negative raw_material_id, we need to handle this specially
       let rawMaterialId = material.raw_material_id;
@@ -487,6 +661,7 @@ export class BOMService {
         quantity: c.quantity,
         unit: c.unit,
         waste_percentage: c.waste_percentage,
+        product_id: c.product_id ?? null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       }));

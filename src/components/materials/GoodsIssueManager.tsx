@@ -38,6 +38,7 @@ import {
 } from '../../services/goodsIssueService';
 import { markerRequestService, MarkerRequest } from '@/services/markerRequestService';
 import { MarkerFabricAssignment } from '@/types/marker';
+import { parseVariantConsumptionsFromNotes } from '@/utils/variantConsumptions';
 import { RawMaterialsService, RawMaterialWithInventory } from '../../services/rawMaterialsService';
 import { PurchaseOrderService, PurchaseOrder } from '../../services/purchaseOrderService';
 import { supabase } from '@/integrations/supabase/client';
@@ -179,6 +180,12 @@ const extractCodeFromName = (input?: string | null) => {
   return null;
 };
 
+const extractVariantNamesFromNotes = (notes?: string | null): string[] => {
+  return parseVariantConsumptionsFromNotes(notes)
+    .map(variant => variant.label)
+    .filter((label): label is string => Boolean(label && label.length > 0));
+};
+
 const buildProductBaseKey = (name?: string | null) => {
   if (!name) return '';
   const normalized = normalizeProductIdentifier(name);
@@ -266,6 +273,7 @@ export const GoodsIssueManager: React.FC = () => {
     available_quantity: number;
     category_id?: number; // For category-based consumption
     category_materials?: { id: number; name: string; base_unit: string; }[]; // Available materials in this category
+    is_fabric?: boolean;
   }[]>([]);
   const [showBOMSelection, setShowBOMSelection] = useState(false);
   const [categorySelections, setCategorySelections] = useState<{[categoryId: string]: {materialId: number, quantity: number}[]}>({});
@@ -1119,6 +1127,45 @@ export const GoodsIssueManager: React.FC = () => {
           });
         }
 
+        const existingProductIds = new Set<string>(
+          associatedProducts
+            .map(prod => (prod?.id != null ? String(prod.id) : null))
+            .filter((id): id is string => Boolean(id))
+        );
+
+        const existingNameKeys = new Set<string>(
+          associatedProducts
+            .map(prod => normalizeProductIdentifier(prod?.name))
+            .filter((key): key is string => Boolean(key))
+        );
+
+        (bom.lines || []).forEach(line => {
+          const variants = parseVariantConsumptionsFromNotes((line as any)?.notes);
+          variants.forEach(variant => {
+            const variantId = variant.productId != null ? String(variant.productId) : null;
+            const normalizedVariantName = normalizeProductIdentifier(variant.label);
+
+            if ((variantId && existingProductIds.has(variantId)) || (normalizedVariantName && existingNameKeys.has(normalizedVariantName))) {
+              return;
+            }
+
+            associatedProducts.push({
+              id: variantId,
+              name: variant.label ?? null,
+              default_code: null,
+              colour: null,
+              size: null,
+            });
+
+            if (variantId) {
+              existingProductIds.add(variantId);
+            }
+            if (normalizedVariantName) {
+              existingNameKeys.add(normalizedVariantName);
+            }
+          });
+        });
+
         const validProducts = associatedProducts.filter(prod => {
           return Boolean(
             (prod?.id != null && prod.id !== '') ||
@@ -1196,7 +1243,43 @@ export const GoodsIssueManager: React.FC = () => {
               });
             }
 
-            return rawMaterialMatch;
+            if (rawMaterialMatch) {
+              return true;
+            }
+
+            const variantMatch = (bom.lines || []).some(line => {
+              const variants = extractVariantNamesFromNotes((line as any)?.notes);
+              return variants.some(variant => {
+                const normalized = normalizeProductIdentifier(variant);
+                if (!normalized) return false;
+                const baseVariant = buildProductBaseKey(variant);
+                const matches =
+                  poProductNameKeys.has(normalized) ||
+                  poProductBaseKeys.has(normalized) ||
+                  (baseVariant && poProductBaseKeys.has(baseVariant)) ||
+                  nameMatchesKey(normalized, poProductNameKeys) ||
+                  nameMatchesKey(normalized, poProductBaseKeys) ||
+                  (baseVariant && (nameMatchesKey(baseVariant, poProductNameKeys) || nameMatchesKey(baseVariant, poProductBaseKeys)));
+                if (matches) {
+                  console.log('✅ Debug: BOM variant note matched PO product', {
+                    bomName: bom.name,
+                    variant,
+                    normalized,
+                    baseVariant,
+                  });
+                }
+                return matches;
+              });
+            });
+
+            if (!variantMatch) {
+              console.log('⛔ Debug: BOM variant notes did not match PO products', {
+                bomName: bom.name,
+                variants: (bom.lines || []).flatMap(line => extractVariantNamesFromNotes((line as any)?.notes)),
+              });
+            }
+
+            return variantMatch;
           }
 
           return consumptionMatch;
@@ -1646,6 +1729,8 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
             .eq('active', true);
 
           // Add category as a requirement entry
+          const categoryIsFabric = isFabricCategory(categoryInfo.id, categoryInfo.name);
+
           materialRequirements.push({
             material_id: `category-${categoryInfo.id}`,
             material_name: `📁 ${categoryInfo.name} (Category)`,
@@ -1655,7 +1740,8 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
             unit: bomLine.unit,
             available_quantity: 999999, // Categories don't have stock limits
             category_id: categoryInfo.id,
-            category_materials: categoryMaterials || []
+            category_materials: categoryMaterials || [],
+            is_fabric: categoryIsFabric
           });
         }
       } else {
@@ -1667,7 +1753,8 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
           let totalRequired = 0;
           
           const bomBaseQty = bom.quantity && bom.quantity > 0 ? bom.quantity : 1;
-          const isFabricLine = (bomLine.raw_material?.name || '').toLowerCase().includes('fabric');
+          const rawMaterialCategoryName = bomLine.raw_material?.category?.name || bomLine.material_category?.name || '';
+          const isFabricLine = Boolean(bomLine.fabric_usage) || isFabricCategory(bomLine.material_category?.id, rawMaterialCategoryName);
           const sizeMap = isFabricLine ? parseSizeConsumptionsFromNotes(bomLine.notes) : {};
           for (const product of purchaseOrder.products || []) {
             const productQty = (Number(product.quantity) || Number(product.pending_qty) || Number(product.outstanding_qty) || 0);
@@ -1698,22 +1785,59 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
               issued_so_far: issuedSoFar,
               issuing_quantity: 0,
               unit: bomLine.raw_material.base_unit,
-              available_quantity: availableQty
+              available_quantity: availableQty,
+              is_fabric: isFabricLine
             });
           }
         }
       }
 
-      let adjustedRequirements = materialRequirements;
+      const mergedRequirements = (() => {
+        const map = new Map<string, typeof materialRequirements[number]>();
+        materialRequirements.forEach(req => {
+          const key = req.category_id ? `category-${req.category_id}` : req.material_id;
+          const existing = map.get(key);
+          if (!existing) {
+            map.set(key, { ...req });
+            return;
+          }
+
+          const combineCategoryMaterials = () => {
+            if (!existing.category_materials && !req.category_materials) return undefined;
+            const combined = [...(existing.category_materials || []), ...(req.category_materials || [])];
+            const seen = new Set<string>();
+            return combined.filter(material => {
+              const id = material?.id != null ? String(material.id) : JSON.stringify(material);
+              if (seen.has(id)) return false;
+              seen.add(id);
+              return true;
+            });
+          };
+
+          map.set(key, {
+            ...existing,
+            required_quantity: (Number(existing.required_quantity) || 0) + (Number(req.required_quantity) || 0),
+            issued_so_far: Math.max(Number(existing.issued_so_far) || 0, Number(req.issued_so_far) || 0),
+            category_materials: combineCategoryMaterials(),
+            is_fabric: (existing.is_fabric ?? false) || (req.is_fabric ?? false),
+          });
+        });
+        return Array.from(map.values());
+      })();
+
+      let adjustedRequirements = mergedRequirements;
       const rawMarkerKg = markerOverride ? parseNumeric((markerOverride as any)?.total_fabric_kg) : null;
       const markerRequirementForScaling = markerOverride
         ? extractMarkerFabricKg(markerOverride, (markerOverride as any)?.details) ?? rawMarkerKg ?? markerTotalRequirement
         : markerTotalRequirement;
-      const isFabricRequirement = (req: typeof materialRequirements[number]) =>
-        req.category_id ? isFabricCategory(req.category_id, req.material_name) : isFabricMaterialId(req.material_id);
+      const isFabricRequirement = (req: typeof mergedRequirements[number]) => {
+        if (req.is_fabric === true) return true;
+        if (req.is_fabric === false) return false;
+        return req.category_id ? isFabricCategory(req.category_id, req.material_name) : isFabricMaterialId(req.material_id);
+      };
 
       if (issueTab === 'fabric' && (markerOverride || selectedMarkerRequest) && markerRequirementForScaling != null) {
-        const relevantRequirements = materialRequirements.filter(isFabricRequirement);
+        const relevantRequirements = mergedRequirements.filter(isFabricRequirement);
         const totalRelevant = relevantRequirements.reduce((sum, req) => sum + (Number(req.required_quantity) || 0), 0);
         console.log('🧮 Scaling BOM requirements (fabric subset)', {
           markerRequirementForScaling,
@@ -1723,7 +1847,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
 
         if (totalRelevant > 0) {
           const scale = markerRequirementForScaling / totalRelevant;
-          adjustedRequirements = materialRequirements.map(req => {
+          adjustedRequirements = mergedRequirements.map(req => {
             if (!isFabricRequirement(req)) return req;
             return {
               ...req,
@@ -1731,7 +1855,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
             };
           });
         } else if (relevantRequirements.length > 0) {
-          adjustedRequirements = materialRequirements.map(req => {
+          adjustedRequirements = mergedRequirements.map(req => {
             if (!isFabricRequirement(req)) return req;
             const isFirst = relevantRequirements[0] === req;
             return {
@@ -1779,7 +1903,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       });
       setBomMaterialRequirements(filtered);
 
-      if (materialRequirements.length === 0) {
+      if (mergedRequirements.length === 0) {
         toast({
           title: 'No Requirements Calculated',
           description: 'Could not derive quantities from PO items. Please verify PO line quantities and BOM base quantity.',
@@ -2074,11 +2198,15 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
 
   // Restrict scanning to Fabric only (category_id === 1, or name contains 'fabric')
   const isFabricMaterialId = (materialId: string): boolean => {
+    const requirement = bomMaterialRequirements.find(req => !req.category_id && req.material_id === materialId);
+    if (requirement?.is_fabric === true) return true;
+    if (requirement?.is_fabric === false) return false;
+
     const mat = rawMaterials.find(m => m.id.toString() === materialId);
     if (!mat) return false;
     if ((mat as any).category_id === 1 || mat.category?.id === 1) return true;
-    const name = (mat.name || '').toLowerCase();
-    return name.includes('fabric');
+    const categoryName = mat.category?.name || '';
+    return categoryName.toLowerCase().includes('fabric');
   };
 
   const isFabricCategory = (categoryId?: number, categoryName?: string): boolean => {

@@ -35,6 +35,7 @@ import {
 import { cn } from '@/lib/utils';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { supabase } from '@/integrations/supabase/client';
+import { parseVariantConsumptionsFromNotes } from '@/utils/variantConsumptions';
 
 interface AggregatedLine {
   key: string;
@@ -50,11 +51,11 @@ const markerTypes: { value: 'body' | 'gusset'; label: string }[] = [
   { value: 'gusset', label: 'Gusset Marker' },
 ];
 
-type MarkerFabricUsage = Extract<FabricUsageOption, 'body' | 'gusset_1'>;
+type MarkerFabricUsage = 'body' | 'gusset_1';
 
 const FABRIC_USAGE_LABELS: Record<MarkerFabricUsage, string> = {
   body: 'Body',
-  gusset_1: 'Gusset 1',
+  gusset_1: 'Gusset',
 };
 
 type FabricRequirementSource = 'variant_notes' | 'bom_default';
@@ -125,6 +126,7 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
   const [selectedFabricAssignments, setSelectedFabricAssignments] = useState<Record<string, FabricUsageOptionItem | null>>({});
   const [fabricAssignmentError, setFabricAssignmentError] = useState<string | null>(null);
   const previousFabricAssignmentsRef = useRef<Record<string, FabricUsageOptionItem | null>>({});
+  const [fabricUnitLock, setFabricUnitLock] = useState<'yard' | 'kg' | null>(null);
 
   const formatQuantity = useCallback((value: number | null | undefined, decimals = 3) => {
     if (value == null || Number.isNaN(value)) return '-';
@@ -224,8 +226,8 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
 
     if (!entries.length) {
       return {
-        entries: [] as typeof entries,
-        entryMap: new Map<string, never>(),
+        entries,
+        entryMap: new Map<string, typeof entries[number]>(),
         aggregate: null as {
           pendingPieces: number;
           baseRequirement: number | null;
@@ -233,6 +235,7 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
         } | null,
         usageSet: new Set<MarkerFabricUsage>(),
         missingAssignments: selectedPoIds.map(String),
+        unitLock: null as 'yard' | 'kg' | null,
       };
     }
 
@@ -240,6 +243,8 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
     let pendingSum = 0;
     let baseSum: number | null = 0;
     let totalSum: number | null = 0;
+
+    const unitSet = new Set<string>();
 
     entries.forEach(entry => {
       usageSet.add(entry.usage);
@@ -251,6 +256,13 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
       }
       if (entry.detail.totalRequirement != null && !Number.isNaN(entry.detail.totalRequirement)) {
         totalSum = (totalSum ?? 0) + entry.detail.totalRequirement;
+      }
+      const detailUnit = entry.detail.consumptionUnit?.toLowerCase?.();
+      const optionUnit = entry.option.consumptionUnit?.toLowerCase?.();
+      const bomUnit = entry.option.bomLineUnit?.toLowerCase?.();
+      const pickedUnit = detailUnit || optionUnit || bomUnit || null;
+      if (pickedUnit) {
+        unitSet.add(pickedUnit);
       }
     });
 
@@ -265,6 +277,16 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
       .map(String)
       .filter(poId => !selectedFabricAssignments[poId]);
 
+    let unitLock: 'yard' | 'kg' | null = null;
+    if (unitSet.size === 1) {
+      const unitValue = Array.from(unitSet)[0];
+      if (unitValue.includes('kg')) {
+        unitLock = 'kg';
+      } else if (unitValue.includes('yard') || unitValue.includes('yd')) {
+        unitLock = 'yard';
+      }
+    }
+
     return {
       entries,
       entryMap,
@@ -275,6 +297,7 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
       },
       usageSet,
       missingAssignments,
+      unitLock,
     };
   }, [selectedPoIds, selectedFabricAssignments, computeFabricDetail]);
 
@@ -296,7 +319,8 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
       ? aggregateDetail.baseRequirement / aggregateDetail.pendingPieces
       : null;
   const aggregateConsumptionUnit =
-    fabricRequirementSummary.entries[0]?.detail.consumptionUnit || (measurementType === 'kg' ? 'kg' : 'yard');
+    fabricRequirementSummary.entries[0]?.detail.consumptionUnit ||
+    (fabricRequirementSummary.unitLock ?? (measurementType === 'kg' ? 'kg' : 'yard'));
   const aggregateRequirementSource = (() => {
     if (!fabricRequirementSummary.entries.length) return null;
     const [first] = fabricRequirementSummary.entries;
@@ -333,10 +357,18 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
     [purchaseOrders, selectedPoIds]
   );
 
+  const normalizeUsage = (usage: FabricUsageOption | null | undefined): MarkerFabricUsage => {
+    if (usage === 'gusset_1' || usage === 'gusset_2') return 'gusset_1';
+    return 'body';
+  };
+
   const usedFabricSet = useMemo(() => {
     const set = new Set<string>();
     usedFabricAssignments.forEach(assignment => {
-      set.add(`${assignment.bom_id}__${assignment.fabric_usage}`);
+      if (!assignment?.bom_id) return;
+      const normalized = normalizeUsage(assignment.fabric_usage as FabricUsageOption | null | undefined);
+      const rawMaterialKey = assignment.raw_material_id != null ? String(assignment.raw_material_id) : 'none';
+      set.add(`${assignment.bom_id}__${normalized}__${rawMaterialKey}`);
     });
     return set;
   }, [usedFabricAssignments]);
@@ -345,8 +377,25 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
     previousFabricAssignmentsRef.current = selectedFabricAssignments;
   }, [selectedFabricAssignments]);
 
-  const isSupportedUsage = (usage: FabricUsageOption | null): usage is MarkerFabricUsage =>
-    usage === 'body' || usage === 'gusset_1';
+  useEffect(() => {
+    const lock = fabricRequirementSummary.unitLock;
+    if (lock) {
+      if (fabricUnitLock !== lock) {
+        setFabricUnitLock(lock);
+      }
+      if (measurementType !== lock) {
+        setMeasurementType(lock);
+        if (lock === 'yard') {
+          setMarkerGsm('');
+        }
+      }
+    } else if (fabricUnitLock !== null) {
+      setFabricUnitLock(null);
+    }
+  }, [fabricRequirementSummary.unitLock, measurementType, fabricUnitLock]);
+
+  const isSupportedUsage = (usage: FabricUsageOption | null): boolean =>
+    usage === null || usage === undefined || usage === 'body' || usage === 'gusset_1' || usage === 'gusset_2';
 
   useEffect(() => {
     if (fabricRequirementSummary.usageSet.size === 1) {
@@ -365,6 +414,13 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
       return;
     }
 
+    const logDebug = (..._args: any[]) => {
+      if (import.meta.env?.DEV) {
+        // eslint-disable-next-line no-console
+        console.log('[MarkerRequest]', ..._args);
+      }
+    };
+
     type MaterialContext = {
       poId: string;
       poNumber: string;
@@ -381,8 +437,26 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
     const contexts: MaterialContext[] = [];
     const contextsByProductId = new Map<number, MaterialContext[]>();
     const contextsByName = new Map<string, MaterialContext[]>();
+    const linkedProductsByBom = new Map<string, Set<number>>();
+    let bomProductsUnavailable = false;
 
-    const normalizeName = (value: string | null | undefined) => value?.trim().toUpperCase() || '';
+    const normalizeName = (value: string | null | undefined) =>
+      value
+        ? value
+            .replace(/[_-]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toUpperCase()
+        : '';
+
+    const registerLinkedProduct = (bomId: unknown, productId: unknown) => {
+      const bomKey = bomId != null ? String(bomId) : null;
+      const numericProductId = Number(productId);
+      if (!bomKey || !Number.isFinite(numericProductId)) return;
+      const set = linkedProductsByBom.get(bomKey) ?? new Set<number>();
+      set.add(numericProductId);
+      linkedProductsByBom.set(bomKey, set);
+    };
 
     const rebuildProductContextMap = () => {
       contextsByProductId.clear();
@@ -427,6 +501,7 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
         list.push(context);
         contextsByName.set(context.fullProductNameUpper, list);
       }
+      logDebug('Context registered', context);
     };
 
     selectedPurchaseOrders.forEach(po => {
@@ -587,6 +662,8 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
         bom_lines(
           id,
           fabric_usage,
+          raw_material_id,
+          raw_material:raw_materials(id, name, base_unit, category_id, category:material_categories(id, name)),
           notes,
           quantity,
           unit,
@@ -594,13 +671,103 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
         )
       `;
 
+      const bomMap = new Map<string, any>();
+      const appendBoms = (rows?: any[]) => {
+        (rows || []).forEach(row => {
+          if (!row || !row.id) return;
+          const key = String(row.id);
+          if (!bomMap.has(key)) {
+            bomMap.set(key, row);
+            logDebug('BOM header added', row);
+          }
+        });
+      };
+
+      const loadLinkedProductsForHeaders = async (headerIds: string[]) => {
+        if (bomProductsUnavailable) return { error: null as any };
+        const missing = headerIds
+          .map(id => String(id))
+          .filter(id => !linkedProductsByBom.has(id));
+        if (!missing.length) return { error: null as any };
+        const { data, error } = await supabase
+          .from('bom_products')
+          .select('bom_header_id, product_id')
+          .in('bom_header_id', missing);
+        if (error) {
+          if (isMissingBomProductsTable(error)) {
+            bomProductsUnavailable = true;
+            return { error: null as any };
+          }
+          return { error };
+        }
+        (data || []).forEach(record => registerLinkedProduct(record?.bom_header_id, record?.product_id));
+        return { error: null as any };
+      };
+
       const fetchByProductIds = async () => {
-        if (!uniqueProductIds.length) return { data: [] as any[], error: null as any };
-        return supabase
-          .from('bom_headers')
-          .select(bomSelect)
-          .eq('active', true)
-          .in('product_id', uniqueProductIds);
+        if (!uniqueProductIds.length) return { error: null as any };
+
+        const [directRes, linkRes] = await Promise.all([
+          supabase
+            .from('bom_headers')
+            .select(bomSelect)
+            .eq('active', true)
+            .in('product_id', uniqueProductIds),
+          supabase
+            .from('bom_products')
+            .select('bom_header_id, product_id')
+            .in('product_id', uniqueProductIds)
+        ]);
+
+        if (directRes.error) {
+          logDebug('fetchByProductIds headers error', directRes.error);
+          return { error: directRes.error };
+        }
+        appendBoms(directRes.data);
+
+        if (linkRes.error) {
+          logDebug('fetchByProductIds bom_products error', linkRes.error);
+          if (isMissingBomProductsTable(linkRes.error)) {
+            bomProductsUnavailable = true;
+            return { error: null as any };
+          }
+          return { error: linkRes.error };
+        }
+
+        const linkedIds = Array.from(
+          new Set(
+            (linkRes.data || [])
+              .map(record => {
+                registerLinkedProduct(record?.bom_header_id, record?.product_id);
+                return record?.bom_header_id;
+              })
+              .filter((value): value is string => Boolean(value))
+          )
+        ).filter(id => !bomMap.has(String(id)));
+
+        if (!bomProductsUnavailable && linkedIds.length) {
+          const linkedHeaders = await supabase
+            .from('bom_headers')
+            .select(bomSelect)
+            .eq('active', true)
+            .in('id', linkedIds);
+
+          if (linkedHeaders.error) {
+            logDebug('fetch linked headers error', linkedHeaders.error);
+            return { error: linkedHeaders.error };
+          }
+          appendBoms(linkedHeaders.data);
+        }
+
+        if (!bomProductsUnavailable && linkedIds.length) {
+          const extra = await loadLinkedProductsForHeaders(linkedIds);
+          if (extra.error) {
+            logDebug('loadLinkedProductsForHeaders error', extra.error);
+            return { error: extra.error };
+          }
+        }
+
+        return { error: null as any };
       };
 
       const fetchByNames = async () => {
@@ -630,44 +797,70 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
           .limit(200);
       };
 
-      let bomData: any[] = [];
       let bomError: any = null;
-
-      const { data: byIdData, error: byIdError } = await fetchByProductIds();
-      if (byIdError) {
-        bomError = byIdError;
-      } else if (Array.isArray(byIdData) && byIdData.length) {
-        bomData = byIdData;
+      const productFetchResult = await fetchByProductIds();
+      if (productFetchResult.error) {
+        bomError = productFetchResult.error;
       }
 
-      if (!bomData.length && !bomError) {
+      if (!bomMap.size) {
         const { data: byNameData, error: byNameError } = await fetchByNames();
         if (byNameError) {
+          logDebug('fetchByNames error', byNameError);
           bomError = byNameError;
-        } else if (Array.isArray(byNameData) && byNameData.length) {
-          bomData = byNameData;
+        } else {
+          appendBoms(byNameData);
         }
       }
 
-      if (!bomData.length && !bomError) {
+      if (!bomMap.size) {
         const { data: byRootData, error: byRootError } = await fetchByRootNames();
         if (byRootError) {
+          logDebug('fetchByRootNames error', byRootError);
           bomError = byRootError;
-        } else if (Array.isArray(byRootData) && byRootData.length) {
-          bomData = byRootData;
+        } else {
+          appendBoms(byRootData);
         }
       }
 
-      if (!bomData.length && !bomError) {
-        const noteKeys = Array.from(contextsByName.keys())
-          .map(key => key.trim())
-          .filter(Boolean);
+      if (!bomMap.size) {
+        const collectNoteKeys = (): string[] => {
+          const set = new Set<string>();
+          const register = (value?: string | null) => {
+            if (!value) return;
+            const trimmed = value.trim();
+            if (!trimmed) return;
+            set.add(trimmed);
+            set.add(trimmed.replace(/\s+/g, ' '));
+            const bracketless = trimmed.replace(/^\[[^\]]+\]\s*/, '');
+            if (bracketless && bracketless !== trimmed) {
+              set.add(bracketless);
+              set.add(bracketless.replace(/\s+/g, ' '));
+            }
+          };
+
+          contexts.forEach(ctx => {
+            register(ctx.fullProductName);
+            register(ctx.productName);
+          });
+
+          contextsByName.forEach((_, key) => {
+            register(key);
+          });
+
+          return Array.from(set)
+            .map(key => key.trim())
+            .filter(Boolean);
+        };
+
+        const noteKeys = collectNoteKeys();
         const noteFilters = Array.from(new Set(noteKeys))
           .map(key => `notes.ilike.%${escapeIlikeValue(key)}%`)
           .filter(Boolean)
           .join(',');
 
         if (noteFilters) {
+          logDebug('Searching bom_lines with filters', noteFilters);
           const { data: bomLinesByNotes, error: notesError } = await supabase
             .from('bom_lines')
             .select(
@@ -678,6 +871,8 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
                 quantity,
                 unit,
                 waste_percentage,
+                raw_material_id,
+                raw_material:raw_materials(id, name, base_unit, category_id, category:material_categories(id, name)),
                 bom_header:bom_headers!inner (
                   id,
                   name,
@@ -691,32 +886,56 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
             .limit(200);
 
           if (notesError) {
+            logDebug('bom_lines by notes error', notesError);
             bomError = notesError;
           } else if (Array.isArray(bomLinesByNotes) && bomLinesByNotes.length) {
-            const grouped = new Map<string, any>();
-            bomLinesByNotes.forEach(line => {
-              const header = line.bom_header;
-              if (!header?.id || header.active === false) return;
-              const existing = grouped.get(header.id) || {
-                id: header.id,
-                name: header.name,
-                product_id: header.product_id,
-                bom_lines: [],
-              };
-              existing.bom_lines.push({
-                id: line.id,
-                fabric_usage: line.fabric_usage,
-                notes: line.notes,
-              });
-              grouped.set(header.id, existing);
-            });
+            logDebug('bom_lines by notes results', bomLinesByNotes.length);
+            const headerIds = Array.from(
+              new Set(
+                bomLinesByNotes
+                  .map(line => line?.bom_header?.id)
+                  .filter((value): value is string => Boolean(value))
+              )
+            );
 
-            bomData = Array.from(grouped.values());
+            if (headerIds.length) {
+              logDebug('Fetching headers from note results', headerIds);
+              const headersFromNotes = await supabase
+                .from('bom_headers')
+                .select(bomSelect)
+                .eq('active', true)
+                .in('id', headerIds);
+
+              if (headersFromNotes.error) {
+                logDebug('headersFromNotes error', headersFromNotes.error);
+                bomError = headersFromNotes.error;
+              } else {
+                appendBoms(headersFromNotes.data);
+                if (!bomProductsUnavailable) {
+                  const extra = await loadLinkedProductsForHeaders(headerIds.map(id => String(id)));
+                  if (extra.error && !bomError) {
+                    logDebug('linked products for note headers error', extra.error);
+                    bomError = extra.error;
+                  }
+                }
+              }
+            }
           }
         }
       }
 
-      if (bomError) throw bomError;
+      if (!bomMap.size && bomError) throw bomError;
+
+      const bomData = Array.from(bomMap.values());
+      logDebug('Final BOM headers', bomData);
+      if (!bomProductsUnavailable) {
+        const ensureLinked = await loadLinkedProductsForHeaders(
+          bomData.map((bom: any) => bom?.id).filter((value: any) => value != null)
+        );
+        if (ensureLinked.error && !bomError) {
+          bomError = ensureLinked.error;
+        }
+      }
 
       const optionMap = new Map<string, FabricUsageOptionItem>();
 
@@ -736,41 +955,28 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
 
       const parseVariantConsumptions = (
         notes?: string | null
-      ): Array<{ key: string; label: string; amount: number; unit: string | null; waste: number | null }> => {
-        if (!notes) return [];
-        const marker = 'Variant consumptions:';
-        const idx = notes.indexOf(marker);
-        if (idx === -1) return [];
-        const section = notes.slice(idx + marker.length).trim();
-        if (!section) return [];
-        return section
-          .split(';')
-          .map(part => part.trim())
-          .filter(Boolean)
-          .map(entry => {
-            const match = entry.match(/^(.*?):\s*([\d.,]+)\s*([a-zA-Z]+)?(?:\s*\(([-\d.,]+)%\s*waste\))?/);
-            if (!match) {
-              const [rawLabel] = entry.split(':');
-              const label = (rawLabel || entry).trim();
-              return {
-                key: normalizeName(label),
-                label,
-                amount: NaN,
-                unit: null,
-                waste: null,
-              };
-            }
-            const [, labelRaw, amountRaw, unitRaw, wasteRaw] = match;
-            const amount = parseNumber(amountRaw);
-            const waste = parseNumber(wasteRaw);
-            return {
-              key: normalizeName(labelRaw || ''),
-              label: (labelRaw || '').trim(),
-              amount: Number.isFinite(amount) ? amount : NaN,
-              unit: unitRaw ? unitRaw.trim().toLowerCase() : null,
-              waste: Number.isFinite(waste) ? waste : null,
-            };
-          });
+      ): Array<{
+        key: string;
+        looseKey: string;
+        label: string;
+        amount: number;
+        unit: string | null;
+        waste: number | null;
+        productId: number | null;
+      }> => {
+        return parseVariantConsumptionsFromNotes(notes).map(entry => {
+          const key = normalizeName(entry.label);
+          const looseKey = key.replace(/[^A-Z0-9]/g, '');
+          return {
+            key,
+            looseKey,
+            label: entry.label,
+            amount: entry.quantity != null ? entry.quantity : Number.NaN,
+            unit: entry.unit ? entry.unit.toLowerCase() : null,
+            waste: entry.waste,
+            productId: entry.productId ?? null,
+          };
+        });
       };
 
       const extractNamesFromNotes = (notes?: string | null) =>
@@ -779,17 +985,65 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
       (bomData || []).forEach((bom: any) => {
         if (!bom?.id) return;
 
-        const bomContexts = contextsByProductId.get(Number(bom.product_id)) || [];
+        const productIdsForBom = new Set<number>();
+        const addProductId = (value: unknown) => {
+          const num = Number(value);
+          if (!Number.isFinite(num)) return;
+          productIdsForBom.add(num);
+        };
+
+        addProductId(bom.product_id);
+
+
+        const linkedSet = linkedProductsByBom.get(String(bom.id));
+        if (linkedSet) {
+          linkedSet.forEach(value => addProductId(value));
+        }
+
+        const bomContexts = Array.from(productIdsForBom).flatMap(productId =>
+          contextsByProductId.get(productId) ?? []
+        );
+
+        logDebug('Processing BOM', {
+          bomId: bom.id,
+          bomName: bom.name,
+          lineCount: (bom.bom_lines || []).length,
+        });
 
         (bom.bom_lines || []).forEach((line: any) => {
           const usage = line?.fabric_usage as FabricUsageOption | null;
           if (!isSupportedUsage(usage)) return;
-          if (usedFabricSet.has(`${bom.id}__${usage}`)) return;
+          const normalizedUsage = normalizeUsage(usage);
+          const rawMaterial = line?.raw_material ?? null;
+          const rawMaterialId = Number.isFinite(Number(line?.raw_material_id)) ? Number(line.raw_material_id) : null;
+          if (rawMaterialId == null) {
+            return;
+          }
+          const rawMaterialName = typeof rawMaterial?.name === 'string' ? rawMaterial.name : null;
+          const rawMaterialCategoryName = (rawMaterial?.category?.name ?? '').toString().toLowerCase();
+          if (!rawMaterialCategoryName.includes('fabric')) {
+            return;
+          }
+          const rawMaterialKey = String(rawMaterialId);
+          if (usedFabricSet.has(`${bom.id}__${normalizedUsage}__${rawMaterialKey}`)) return;
 
           const variantConsumptions = parseVariantConsumptions(line?.notes);
           const variantMap = new Map(
             variantConsumptions.map(item => [item.key, item])
           );
+          const variantLooseMap = new Map<string, typeof variantConsumptions[number][]>();
+          variantConsumptions.forEach(item => {
+            if (!item.looseKey) return;
+            const list = variantLooseMap.get(item.looseKey) ?? [];
+            list.push(item);
+            variantLooseMap.set(item.looseKey, list);
+          });
+          const variantByProductId = new Map<number, ReturnType<typeof parseVariantConsumptions>[number]>();
+          variantConsumptions.forEach(item => {
+            if (item.productId != null && Number.isFinite(item.productId)) {
+              variantByProductId.set(Number(item.productId), item);
+            }
+          });
 
           let contextsForLine = bomContexts;
           if (!contextsForLine.length) {
@@ -800,7 +1054,41 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
             }
           }
 
+          if (!contextsForLine.length) {
+            contextsForLine = contexts;
+          }
+
+          logDebug('Contexts for line', {
+            bomId: bom.id,
+            usage: normalizedUsage,
+            contextCount: contextsForLine.length,
+          });
+
           if (!contextsForLine.length) return;
+
+          const findVariantForCandidate = (candidate: string | null | undefined) => {
+            if (!candidate) return null;
+            const normalized = candidate;
+            const direct = variantMap.get(normalized);
+            if (direct) return direct;
+            const loose = normalized.replace(/[^A-Z0-9]/g, '');
+            if (loose) {
+              const looseMatches = variantLooseMap.get(loose);
+              if (looseMatches && looseMatches.length) {
+                return looseMatches[0];
+              }
+            }
+            for (const item of variantConsumptions) {
+              if (!item) continue;
+              if (loose && item.looseKey && (item.looseKey.startsWith(loose) || loose.startsWith(item.looseKey))) {
+                return item;
+              }
+              if (!loose && item.key.includes(normalized)) {
+                return item;
+              }
+            }
+            return null;
+          };
 
           const aggregatedByVariant = new Map<
             string,
@@ -820,13 +1108,25 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
 
             let variantKey: string | null = null;
             let matchedVariant: ReturnType<typeof parseVariantConsumptions>[number] | null = null;
-            for (const candidate of candidateKeys) {
-              if (!candidate) continue;
-              const variant = variantMap.get(candidate);
-              if (variant) {
-                matchedVariant = variant;
-                variantKey = candidate;
-                break;
+
+            if (ctx.productId != null) {
+              const variantById = variantByProductId.get(Number(ctx.productId));
+              if (variantById) {
+                matchedVariant = variantById;
+                variantKey = variantById.key;
+              }
+            }
+
+            if (!matchedVariant) {
+              for (const candidate of candidateKeys) {
+                if (!candidate) continue;
+                const variant = findVariantForCandidate(candidate);
+                if (variant) {
+                  matchedVariant = variant;
+                  variantKey = variant.key;
+                  // Variant matched by candidate
+                  break;
+                }
               }
             }
 
@@ -851,7 +1151,7 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
             const ctxSample = bucket.contexts[0];
             if (!ctxSample) return;
 
-            const key = `${bom.id}__${usage}__${poId}`;
+            const key = `${bom.id}__${normalizedUsage}__${poId}__${rawMaterialKey}`;
             const matchedVariant = bucket.variant;
             const bomLineQuantity = normalizeNumeric(line?.quantity);
             const bomLineWaste = normalizeNumeric(line?.waste_percentage);
@@ -927,35 +1227,35 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
 
             optionMap.set(key, {
               key,
-              usage,
+              usage: normalizedUsage,
               bomId: bom.id as string,
               bomName: bom.name || 'Unnamed BOM',
-              rawMaterialId: undefined,
-              rawMaterialName: undefined,
+              rawMaterialId: rawMaterialId,
+              rawMaterialName: rawMaterialName,
               productId: ctxSample.productId,
               productName: ctxSample.productName,
               poId: ctxSample.poId,
-              poNumber: ctxSample.poNumber,
-              pendingPieces,
-              matchedVariantKey: matchedVariant?.label || null,
-              consumptionPerPiece:
-                pendingPieces != null && Number.isFinite(baseConsumption)
-                  ? baseConsumption
-                  : null,
-              consumptionUnit: matchedVariant?.unit || bomLineUnit,
-              wastePercentage: wastePercentage != null ? wastePercentage : null,
-              totalRequirement:
-                totalRequirementContribution != null ? Number(totalRequirementContribution) : null,
-              baseRequirement:
-                baseRequirementContribution != null ? Number(baseRequirementContribution) : null,
-              requirementSource: matchedVariant ? 'variant_notes' : bomLineQuantity != null ? 'bom_default' : null,
-              bomLineQuantity: bomLineQuantity != null ? bomLineQuantity : null,
-              bomLineUnit,
-              bomLineWaste: bomLineWaste != null ? bomLineWaste : null,
-              bomLineNotes: typeof line?.notes === 'string' ? line.notes : null,
-            });
+            poNumber: ctxSample.poNumber,
+            pendingPieces,
+            matchedVariantKey: matchedVariant?.label || null,
+            consumptionPerPiece:
+              pendingPieces != null && Number.isFinite(baseConsumption)
+                ? baseConsumption
+                : null,
+            consumptionUnit: matchedVariant?.unit || bomLineUnit,
+            wastePercentage: wastePercentage != null ? wastePercentage : null,
+            totalRequirement:
+              totalRequirementContribution != null ? Number(totalRequirementContribution) : null,
+            baseRequirement:
+              baseRequirementContribution != null ? Number(baseRequirementContribution) : null,
+            requirementSource: matchedVariant ? 'variant_notes' : bomLineQuantity != null ? 'bom_default' : null,
+            bomLineQuantity: bomLineQuantity != null ? bomLineQuantity : null,
+            bomLineUnit,
+            bomLineWaste: bomLineWaste != null ? bomLineWaste : null,
+            bomLineNotes: typeof line?.notes === 'string' ? line.notes : null,
           });
         });
+      });
       });
 
       const optionsByPo: Record<string, FabricUsageOptionItem[]> = {};
@@ -985,6 +1285,7 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
 
       selectedPurchaseOrders.forEach(po => {
         const options = optionsByPo[String(po.id)] ?? [];
+        logDebug('Options for PO', po.po_number || po.id, options);
         const previous = prevAssignments[String(po.id)];
         const stillValid = previous && options.some(option => option.key === previous.key);
         newAssignments[String(po.id)] = stillValid ? previous : options[0] ?? null;
@@ -999,6 +1300,7 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
         setFabricAssignmentError(
           'No matching BOM fabric usage options were found for the selected purchase orders.'
         );
+        logDebug('No fabric options matched');
       } else {
         setFabricAssignmentError(null);
       }
@@ -1632,22 +1934,27 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
                     {[
                       { value: 'yard' as const, label: 'Yard Request' },
                       { value: 'kg' as const, label: 'KG Request' },
-                    ].map(option => (
-                      <Button
-                        key={option.value}
-                        type="button"
-                        variant={measurementType === option.value ? 'default' : 'outline'}
-                        onClick={() => {
-                          setMeasurementType(option.value);
-                          if (option.value === 'yard') {
-                            setMarkerGsm('');
-                          }
-                        }}
-                        className="w-full"
-                      >
-                        {option.label}
-                      </Button>
-                    ))}
+                    ].map(option => {
+                      const locked = fabricUnitLock !== null && fabricUnitLock !== option.value;
+                      return (
+                        <Button
+                          key={option.value}
+                          type="button"
+                          variant={measurementType === option.value ? 'default' : 'outline'}
+                          disabled={locked}
+                          onClick={() => {
+                            if (locked) return;
+                            setMeasurementType(option.value);
+                            if (option.value === 'yard') {
+                              setMarkerGsm('');
+                            }
+                          }}
+                          className="w-full"
+                        >
+                          {option.label}
+                        </Button>
+                      );
+                    })}
                   </div>
                 </div>
                 <div className="space-y-2">
@@ -1747,6 +2054,7 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
                       value={markerGsm}
                       onChange={e => setMarkerGsm(e.target.value)}
                       placeholder="e.g. 180"
+                      disabled={fabricUnitLock === 'yard'}
                     />
                   </div>
                 )}
@@ -1851,3 +2159,8 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
 };
 
 export default MarkerRequestForm;
+    const isMissingBomProductsTable = (error: any) => {
+      if (!error) return false;
+      const message = String(error.message || '').toLowerCase();
+      return error.code === 'PGRST200' || error.code === 'PGRST301' || message.includes('bom_products');
+    };

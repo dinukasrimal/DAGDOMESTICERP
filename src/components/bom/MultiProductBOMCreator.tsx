@@ -530,11 +530,12 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
             if (consumption.quantity > 0) {
               consumptions.push({
                 attribute_type: 'category',
-            attribute_value: variant.product.name || variant.variant_key,
-            quantity: consumption.quantity,
-            unit: consumption.unit,
-            waste_percentage: consumption.waste_percentage
-          });
+                attribute_value: variant.product.name || variant.variant_key,
+                quantity: consumption.quantity,
+                unit: consumption.unit,
+                waste_percentage: consumption.waste_percentage,
+                product_id: variant.product.id,
+              });
             }
           }
           
@@ -559,7 +560,8 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
             attribute_value: vc.product_name || vc.variant_key,
             quantity: vc.quantity,
             unit: vc.unit,
-            waste_percentage: vc.waste_percentage
+            waste_percentage: vc.waste_percentage,
+            product_id: vc.product_id,
           })),
           fabric_usage: isFabricMaterial(rm.raw_material) ? rm.fabricUsage : null,
           notes: rm.notes

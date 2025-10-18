@@ -246,6 +246,7 @@ const MarkerRequests: React.FC = () => {
                       <TableHead className="text-right">Pieces / Marker</TableHead>
                       <TableHead>Purchase Orders</TableHead>
                       <TableHead>Created</TableHead>
+                      <TableHead className="w-[160px]">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -286,6 +287,34 @@ const MarkerRequests: React.FC = () => {
                           </div>
                         </TableCell>
                         <TableCell>{request.created_at ? new Date(request.created_at).toLocaleString() : '—'}</TableCell>
+                        <TableCell>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                toast({
+                                  title: 'View marker request',
+                                  description: `Marker ${request.marker_number} view coming soon.`,
+                                });
+                              }}
+                            >
+                              View
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => {
+                                toast({
+                                  title: 'Edit marker request',
+                                  description: 'Edit flow is not available yet.',
+                                });
+                              }}
+                            >
+                              Edit
+                            </Button>
+                          </div>
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
