@@ -518,6 +518,13 @@ export const GoodsIssueManager: React.FC = () => {
     }
   }, [issueTab, selectedPurchaseOrder]);
 
+  // Goods Issue scanning unit helpers
+  const giUnit = useMemo(() => {
+    const mat = giCurrentMaterialId ? rawMaterials.find(m => m.id.toString() === giCurrentMaterialId) : null;
+    return (mat?.purchase_unit || 'kg');
+  }, [giCurrentMaterialId, rawMaterials]);
+  const giIsWeightMode = useMemo(() => giUnit.toLowerCase().includes('kg'), [giUnit]);
+
   useEffect(() => {
     const nextCheck = computeRequirementCheck(formData.lines);
     setRequirementCheck(prev => requirementChecksEqual(prev, nextCheck) ? prev : nextCheck);
@@ -2000,7 +2007,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       // Look up barcode from Goods Received lines
       const { data: lines, error } = await supabase
         .from('goods_received_lines')
-        .select('raw_material_id, roll_barcode, roll_weight')
+        .select('raw_material_id, roll_barcode, roll_weight, roll_length')
         .eq('roll_barcode', barcode)
         .limit(1);
       if (error) throw error;
@@ -2011,10 +2018,10 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       }
 
       const line = lines[0];
-      // Fetch material to validate category and identity
+      // Fetch material to validate category and get unit
       const { data: material } = await supabase
         .from('raw_materials')
-        .select('id, name, category_id')
+        .select('id, name, category_id, purchase_unit')
         .eq('id', line.raw_material_id)
         .single();
 
@@ -2048,24 +2055,42 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         return;
       }
 
-      const weight = Number(line.roll_weight) || 0;
-      if (weight <= 0) {
-        toast({ title: 'Invalid Roll Weight', description: 'This roll has no recorded weight. Cannot issue.', variant: 'destructive' });
-        return;
-      }
+      const unit = (material?.purchase_unit || 'kg').toLowerCase();
+      const isWeightMode = unit.includes('kg');
+      const recordedWeight = Number(line.roll_weight) || 0;
+      const recordedLength = Number((line as any).roll_length) || 0;
 
-      // Accept and add the roll with recorded weight
+      // When scanned, bring up the overlay with the recorded value filled
       setGiScannedBarcode(barcode);
-      setGiRollWeight(weight);
-      setGiRollLength(0);
-      handleAddScannedRollGI();
+      if (isWeightMode) {
+        if (recordedWeight <= 0) {
+          toast({ title: 'Invalid Roll', description: 'This roll has no recorded weight in GRN.', variant: 'destructive' });
+          return;
+        }
+        setGiRollWeight(recordedWeight);
+        setGiRollLength(0);
+      } else {
+        if (recordedLength <= 0) {
+          toast({ title: 'Invalid Roll', description: 'This roll has no recorded length in GRN.', variant: 'destructive' });
+          return;
+        }
+        setGiRollWeight(0);
+        setGiRollLength(recordedLength);
+      }
+      setGiShowWeightEntry(true);
     } catch (err: any) {
       toast({ title: 'Scan Error', description: err?.message || 'Failed to validate scanned roll.', variant: 'destructive' });
     }
   };
 
   const handleAddScannedRollGI = () => {
-    if (!giCurrentMaterialId || !giScannedBarcode || giRollWeight <= 0) return;
+    if (!giCurrentMaterialId || !giScannedBarcode) return;
+
+    const mat = rawMaterials.find(m => m.id.toString() === giCurrentMaterialId);
+    const unit = (mat?.purchase_unit || 'kg').toLowerCase();
+    const isWeightMode = unit.includes('kg');
+    const primary = isWeightMode ? giRollWeight : giRollLength;
+    if (!primary || primary <= 0) return;
 
     setGiFabricRolls(prev => {
       const existing = prev[giCurrentMaterialId] || [];
@@ -2077,8 +2102,8 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         ...prev,
         [giCurrentMaterialId]: [...existing, { barcode: giScannedBarcode, weight: giRollWeight, length: giRollLength }]
       };
-      // Update issuing quantity to total scanned weight
-      const total = updated[giCurrentMaterialId].reduce((s, r) => s + r.weight, 0);
+      // Update issuing quantity to total scanned quantity based on unit
+      const total = updated[giCurrentMaterialId].reduce((s, r) => s + (isWeightMode ? (r.weight || 0) : (r.length || 0)), 0);
       updateIssuingQuantity(giCurrentMaterialId, total);
       // If scanning under a category selection, mirror into categorySelections to reflect in UI input
       if (giCurrentCategoryKey) {
@@ -2218,10 +2243,11 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         return;
       }
 
-      if (issueTab === 'fabric' && markerSelectOptions.length > 0 && !selectedMarkerRequest) {
+      // Require a marker request for fabric issues regardless of availability list
+      if (issueTab === 'fabric' && !selectedMarkerRequest) {
         toast({
-          title: 'Select Marker Request',
-          description: 'Multiple marker requests are available. Please choose which marker to issue against.',
+          title: 'Marker Request Required',
+          description: 'Select a marker request before creating a fabric goods issue.',
           variant: 'destructive',
         });
         return;
@@ -3833,7 +3859,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
             </Button>
             <Button 
               onClick={handleCreateIssue} 
-              disabled={loading || formData.lines.length === 0}
+              disabled={loading || formData.lines.length === 0 || (issueTab === 'fabric' && !selectedMarkerRequest)}
               className="bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600"
             >
               {loading ? 'Creating...' : 'Create Goods Issue'}
@@ -3851,6 +3877,8 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
             ? (rawMaterials.find(m => m.id.toString() === giCurrentMaterialId)?.name || 'Material')
             : 'Material'
         }
+        unitLabel={(giCurrentMaterialId ? (rawMaterials.find(m => m.id.toString() === giCurrentMaterialId)?.purchase_unit) : '') || 'kg'}
+        quantityMetric={(giCurrentMaterialId ? ((rawMaterials.find(m => m.id.toString() === giCurrentMaterialId)?.purchase_unit || 'kg').toLowerCase().includes('kg') ? 'weight' : 'length') : 'weight')}
         onRemoveRoll={(barcode) => handleRemoveScannedRollGI(barcode)}
         onDone={handleFinishScanningGI}
         onClose={handleFinishScanningGI}
@@ -3900,32 +3928,26 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label>Weight (kg) *</Label>
+                    <Label>{`${giIsWeightMode ? 'Weight' : 'Length'} (${giUnit}) *`}</Label>
                     <Input
                       ref={giWeightInputRef}
                       type="number"
                       step="0.01"
-                      value={giRollWeight || ''}
-                      onChange={(e) => setGiRollWeight(parseFloat(e.target.value) || 0)}
+                      value={(giIsWeightMode ? giRollWeight : giRollLength) || ''}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 0;
+                        if (giIsWeightMode) setGiRollWeight(val); else setGiRollLength(val);
+                      }}
                       placeholder="0.00"
                     />
                   </div>
-                  <div>
-                    <Label>Length (m)</Label>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      value={giRollLength || ''}
-                      onChange={(e) => setGiRollLength(parseFloat(e.target.value) || 0)}
-                      placeholder="0.00"
-                    />
-                  </div>
+                  {/* Secondary field hidden for simplicity in GI */}
                 </div>
                 <div className="flex space-x-2">
                   <Button 
                     onClick={handleAddScannedRollGI}
                     className="flex-1 bg-green-600 hover:bg-green-700"
-                    disabled={!giRollWeight || giRollWeight <= 0}
+                    disabled={!((giIsWeightMode ? giRollWeight : giRollLength) > 0)}
                     type="button"
                   >
                     Add Roll

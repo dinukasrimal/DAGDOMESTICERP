@@ -433,19 +433,23 @@ export const GoodsReceivedManager: React.FC = () => {
   };
 
   const handleWeightConfirmed = () => {
-    const parsedWeight = parseFloat(rollWeightInput);
-    if (!scannedBarcode || Number.isNaN(parsedWeight) || parsedWeight <= 0) {
+    const unit = currentScanningLine 
+      ? (selectedPO?.lines?.find(l => l.id === currentScanningLine)?.raw_material?.purchase_unit || 'kg')
+      : 'kg';
+    const isWeightMode = unit.toLowerCase().includes('kg');
+    const parsedPrimary = parseFloat(rollWeightInput);
+    if (!scannedBarcode || Number.isNaN(parsedPrimary) || parsedPrimary <= 0) {
       toast({
         title: 'Validation Error',
-        description: 'Please provide valid barcode and weight',
+        description: `Please provide valid ${isWeightMode ? 'weight' : 'length'} (${unit})`,
         variant: 'destructive'
       });
       return false;
     }
-    
+
     // Store values before resetting state
     const currentBarcode = scannedBarcode.trim();
-    const currentWeight = parsedWeight;
+    const currentQty = parsedPrimary;
     
     const result = handleAddFabricRoll();
     
@@ -460,14 +464,18 @@ export const GoodsReceivedManager: React.FC = () => {
       // Show success message with stored values
       toast({
         title: 'Roll Added Successfully',
-        description: `Barcode: ${currentBarcode} | Weight: ${currentWeight}kg`,
+        description: `Barcode: ${currentBarcode} | ${isWeightMode ? 'Weight' : 'Length'}: ${currentQty}${unit}`,
         variant: 'default'
       });
     }
   };
 
   const handleAddFabricRoll = () => {
-    const parsedWeight = parseFloat(rollWeightInput);
+    const unit = currentScanningLine 
+      ? (selectedPO?.lines?.find(l => l.id === currentScanningLine)?.raw_material?.purchase_unit || 'kg')
+      : 'kg';
+    const isWeightMode = unit.toLowerCase().includes('kg');
+    const parsedPrimary = parseFloat(rollWeightInput);
     const sanitizedBarcode = scannedBarcode.trim();
     let parsedLength: number | undefined;
     if (rollLengthInput) {
@@ -483,10 +491,10 @@ export const GoodsReceivedManager: React.FC = () => {
       parsedLength = maybeLength;
     }
 
-    if (!currentScanningLine || !sanitizedBarcode || Number.isNaN(parsedWeight) || parsedWeight <= 0) {
+    if (!currentScanningLine || !sanitizedBarcode || Number.isNaN(parsedPrimary) || parsedPrimary <= 0) {
       toast({
         title: 'Validation Error',
-        description: 'Please provide barcode and weight for the roll',
+        description: `Please provide barcode and ${isWeightMode ? 'weight' : 'length'} (${unit}) for the roll`,
         variant: 'destructive'
       });
       return false;
@@ -518,20 +526,18 @@ export const GoodsReceivedManager: React.FC = () => {
       return false;
     }
 
-    const newRoll: FabricRoll = {
-      barcode: sanitizedBarcode,
-      weight: parsedWeight,
-      length: parsedLength !== undefined && parsedLength > 0 ? parsedLength : undefined,
-    };
+    const newRoll: FabricRoll = isWeightMode
+      ? { barcode: sanitizedBarcode, weight: parsedPrimary, length: parsedLength !== undefined && parsedLength > 0 ? parsedLength : undefined }
+      : { barcode: sanitizedBarcode, weight: 0 as any, length: parsedPrimary };
 
     setFabricRolls(prev => ({
       ...prev,
       [currentScanningLine]: [...(prev[currentScanningLine] || []), newRoll]
     }));
 
-    // Update total weight in receiving line
-    const totalWeight = [...existingRolls, newRoll].reduce((sum, roll) => sum + roll.weight, 0);
-    handleUpdateReceivingLine(currentScanningLine, 'quantity_received', totalWeight);
+    // Update total quantity in receiving line
+    const totalQty = [...existingRolls, newRoll].reduce((sum, roll) => sum + (isWeightMode ? (roll.weight || 0) : (roll.length || 0)), 0);
+    handleUpdateReceivingLine(currentScanningLine, 'quantity_received', totalQty);
 
     return true;
   };
@@ -557,16 +563,18 @@ export const GoodsReceivedManager: React.FC = () => {
     }
 
     try {
-      // Update the receiving line with the total scanned weight
+      // Update the receiving line with the total scanned quantity based on unit
+      const unit = selectedPO?.lines?.find(l => l.id === currentScanningLine)?.raw_material?.purchase_unit || 'kg';
+      const isWeightMode = unit.toLowerCase().includes('kg');
       const scannedRolls = fabricRolls[currentScanningLine] || [];
-      const totalWeight = scannedRolls.reduce((sum, roll) => sum + roll.weight, 0);
+      const totalQty = scannedRolls.reduce((sum, roll) => sum + (isWeightMode ? (roll.weight || 0) : (roll.length || 0)), 0);
       
-      if (totalWeight > 0) {
-        handleUpdateReceivingLine(currentScanningLine, 'quantity_received', totalWeight);
+      if (totalQty > 0) {
+        handleUpdateReceivingLine(currentScanningLine, 'quantity_received', totalQty);
         
         toast({
           title: 'Receiving Completed',
-          description: `${scannedRolls.length} rolls (${totalWeight}kg) marked as received. You can continue with other materials.`,
+          description: `${scannedRolls.length} rolls (${totalQty}${unit}) marked as received. You can continue with other materials.`,
           variant: 'default'
         });
       }
@@ -584,10 +592,12 @@ export const GoodsReceivedManager: React.FC = () => {
   const handleRemoveFabricRoll = (lineId: string, barcode: string) => {
     setFabricRolls(prev => {
       const updatedRolls = (prev[lineId] || []).filter(roll => roll.barcode !== barcode);
-      const totalWeight = updatedRolls.reduce((sum, roll) => sum + roll.weight, 0);
+      const unit = selectedPO?.lines?.find(l => l.id === lineId)?.raw_material?.purchase_unit || 'kg';
+      const isWeightMode = unit.toLowerCase().includes('kg');
+      const totalQty = updatedRolls.reduce((sum, roll) => sum + (isWeightMode ? (roll.weight || 0) : (roll.length || 0)), 0);
       
-      // Update total weight in receiving line
-      handleUpdateReceivingLine(lineId, 'quantity_received', totalWeight);
+      // Update total quantity in receiving line
+      handleUpdateReceivingLine(lineId, 'quantity_received', totalQty);
       
       return {
         ...prev,
@@ -715,14 +725,16 @@ export const GoodsReceivedManager: React.FC = () => {
         
         if (isFabric) {
           // For fabric materials, create separate entries for each roll
+          const unit = poLine?.raw_material?.purchase_unit || 'kg';
+          const weightMode = unit.toLowerCase().includes('kg');
           const rolls = fabricRolls[lineId] || [];
           rolls.forEach(roll => {
             allLines.push({
               ...receivingLine,
-              quantity_received: roll.weight,
+              quantity_received: weightMode ? (roll.weight || 0) : (roll.length || 0),
               roll_barcode: roll.barcode,
-              roll_weight: roll.weight,
-              roll_length: roll.length,
+              roll_weight: weightMode ? (roll.weight || 0) : null as any,
+              roll_length: !weightMode ? (roll.length || 0) : null as any,
               batch_number: roll.batch_number,
             });
           });
@@ -1252,7 +1264,14 @@ export const GoodsReceivedManager: React.FC = () => {
                                   </Button>
                                   <div className="text-right">
                                     <div className="font-semibold text-green-700">
-                                      {totalScannedWeight.toFixed(2)} kg
+                                      {(() => {
+                                        const unit = line.raw_material?.purchase_unit || 'kg';
+                                        const isWeightMode = (unit || '').toLowerCase().includes('kg');
+                                        const qty = isWeightMode 
+                                          ? totalScannedWeight
+                                          : fabricRollsForLine.reduce((s, r) => s + (r.length || 0), 0);
+                                        return `${qty.toFixed(2)} ${unit}`;
+                                      })()}
                                     </div>
                                     <div className="text-xs text-gray-600">
                                       {fabricRollsForLine.length} rolls
@@ -1551,19 +1570,24 @@ export const GoodsReceivedManager: React.FC = () => {
             {currentScanningLine && fabricRolls[currentScanningLine]?.length > 0 && (
               <div className="mt-4">
                 <h4 className="font-medium mb-2">Scanned Rolls</h4>
-                {fabricRolls[currentScanningLine].map((roll, index) => (
-                  <div key={roll.barcode} className="flex justify-between items-center p-2 border rounded mb-2">
-                    <span className="font-mono">{roll.barcode}</span>
-                    <span>{roll.weight} kg</span>
-                    <Button 
-                      size="sm" 
-                      variant="ghost"
-                      onClick={() => handleRemoveFabricRoll(currentScanningLine!, roll.barcode)}
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  </div>
-                ))}
+                {fabricRolls[currentScanningLine].map((roll, index) => {
+                  const unit = selectedPO?.lines?.find(l => l.id === currentScanningLine)?.raw_material?.purchase_unit || 'kg';
+                  const isWeightMode = unit.toLowerCase().includes('kg');
+                  const qty = isWeightMode ? (roll.weight || 0) : (roll.length || 0);
+                  return (
+                    <div key={roll.barcode} className="flex justify-between items-center p-2 border rounded mb-2">
+                      <span className="font-mono">{roll.barcode}</span>
+                      <span>{qty} {unit}</span>
+                      <Button 
+                        size="sm" 
+                        variant="ghost"
+                        onClick={() => handleRemoveFabricRoll(currentScanningLine!, roll.barcode)}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1587,6 +1611,8 @@ export const GoodsReceivedManager: React.FC = () => {
             ? selectedPO?.lines?.find(line => line.id === currentScanningLine)?.raw_material?.name || 'Material'
             : 'Material'
         }
+        unitLabel={(currentScanningLine ? (selectedPO?.lines?.find(line => line.id === currentScanningLine)?.raw_material?.purchase_unit) : '') || 'kg'}
+        quantityMetric={(currentScanningLine ? ((selectedPO?.lines?.find(line => line.id === currentScanningLine)?.raw_material?.purchase_unit || 'kg').toLowerCase().includes('kg') ? 'weight' : 'length') : 'weight')}
         onRemoveRoll={(barcode) => {
           if (currentScanningLine) {
             handleRemoveFabricRoll(currentScanningLine, barcode);
@@ -1623,7 +1649,11 @@ export const GoodsReceivedManager: React.FC = () => {
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label htmlFor="weight">Weight (kg) *</Label>
+                    <Label htmlFor="weight">{(() => {
+                      const unit = currentScanningLine ? (selectedPO?.lines?.find(l => l.id === currentScanningLine)?.raw_material?.purchase_unit || 'kg') : 'kg';
+                      const isWeightMode = unit.toLowerCase().includes('kg');
+                      return `${isWeightMode ? 'Weight' : 'Length'} (${unit}) *`;
+                    })()}</Label>
                     <Input
                       id="weight"
                       ref={weightInputRef}
@@ -1640,22 +1670,7 @@ export const GoodsReceivedManager: React.FC = () => {
                       autoFocus
                     />
                   </div>
-                  <div>
-                    <Label htmlFor="length">Length (m)</Label>
-                    <Input
-                      id="length"
-                      type="text"
-                      inputMode="decimal"
-                      value={rollLengthInput}
-                      onChange={(e) => {
-                        const raw = e.target.value.replace(',', '.');
-                        if (raw === '' || decimalInputPattern.test(raw)) {
-                          setRollLengthInput(raw);
-                        }
-                      }}
-                      placeholder="0.00"
-                    />
-                  </div>
+                  {/* Optional secondary field remains available but unlabeled per unit */}
                 </div>
 
                 <div className="flex space-x-2">

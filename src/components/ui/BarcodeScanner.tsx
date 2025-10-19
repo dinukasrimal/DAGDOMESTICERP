@@ -68,6 +68,15 @@ interface BarcodeScannerProps {
    * Cooldown in ms to ignore repeated scans. Default 1000ms.
    */
   scanCooldownMs?: number;
+  /**
+   * Label for unit to display in totals (e.g., 'kg', 'yd').
+   */
+  unitLabel?: string;
+  /**
+   * Which roll field to aggregate for totals: 'weight' or 'length'.
+   * Defaults to 'weight'.
+   */
+  quantityMetric?: 'weight' | 'length';
 }
 
 export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScannerProps>(({ 
@@ -81,6 +90,8 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
   onDone,
   autoPauseOnScan = true,
   scanCooldownMs = 1000,
+  unitLabel = 'kg',
+  quantityMetric = 'weight',
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
@@ -413,9 +424,14 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
               </div>
               <div>
                 <div className="text-2xl font-bold text-blue-400">
-                  {scannedRolls.reduce((s, r) => s + (Number(r.weight) || 0), 0).toFixed(1)}kg
+                  {(
+                    scannedRolls.reduce((s, r) => {
+                      const v = quantityMetric === 'length' ? (Number(r.length) || 0) : (Number(r.weight) || 0);
+                      return s + v;
+                    }, 0)
+                  ).toFixed(1)}{unitLabel}
                 </div>
-                <div className="text-xs text-gray-400">Total Weight</div>
+                <div className="text-xs text-gray-400">Total {unitLabel}</div>
               </div>
             </div>
           </div>
@@ -438,15 +454,15 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
                       </div>
                       <div className="flex items-center space-x-2">
                         <div className="text-right">
-                          <div className="text-sm font-semibold text-green-400">{roll.weight}kg</div>
-                          {roll.length ? (
-                            <div className="text-xs text-blue-400">{roll.length}m</div>
-                          ) : null}
+                          <div className="text-sm font-semibold text-green-400">
+                            {quantityMetric === 'length' ? (roll.length ?? 0) : (roll.weight ?? 0)}{unitLabel}
+                          </div>
                         </div>
                         {onRemoveRoll && (
                           <Button
                             onClick={() => {
-                              if (confirm(`Remove roll ${roll.barcode} (${roll.weight}kg)?`)) onRemoveRoll(roll.barcode);
+                              const qty = quantityMetric === 'length' ? (roll.length ?? 0) : (roll.weight ?? 0);
+                              if (confirm(`Remove roll ${roll.barcode} (${qty}${unitLabel})?`)) onRemoveRoll(roll.barcode);
                             }}
                             variant="ghost"
                             size="sm"
