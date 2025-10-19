@@ -23,6 +23,7 @@ import {
   NotebookPen,
   BookOpen,
   ChevronDown,
+  QrCode,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -56,6 +57,16 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
   { id: 'purchase-orders', label: 'Purchase Orders', icon: ShoppingCart, path: '/purchase-orders', available: true, isSpecial: false, componentKey: 'purchase-orders' },
   { id: 'goods-received', label: 'Goods Received', icon: Truck, path: '/goods-received', available: true, isSpecial: false, componentKey: 'goods-received' },
   { id: 'goods-issue', label: 'Goods Issue', icon: Minus, path: '/goods-issue', available: true, isSpecial: false, componentKey: 'goods-issue' },
+  {
+    id: 'returns',
+    label: 'Returns',
+    icon: QrCode,
+    available: true,
+    isSpecial: false,
+    children: [
+      { id: 'return-fabric-marker', label: 'Return Fabric (Marker)', icon: QrCode, path: '/returns/fabric', available: true, componentKey: 'goods-received' },
+    ],
+  },
   { id: 'cutting-records', label: 'Cutting Records', icon: Scissors, path: '/cutting-records', available: true, isSpecial: false, componentKey: 'cutting-records' },
   { id: 'cut-issue-records', label: 'Cut Issue Records', icon: ScissorsSquare, path: '/cut-issue-records', available: true, isSpecial: false, componentKey: 'cut-issue-records' },
   { id: 'sewing-output', label: 'Sewing Output', icon: Shirt, path: '/sewing-output', available: true, isSpecial: false, componentKey: 'sewing-output' },

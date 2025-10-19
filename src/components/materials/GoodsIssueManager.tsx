@@ -452,6 +452,28 @@ export const GoodsIssueManager: React.FC = () => {
     ? `${formatNumeric(markerPendingPieces, 0) ?? markerPendingPieces}`
     : null;
 
+  // Focused material context (when scanning or using manual material selector)
+  const activeMaterialIdForRequirement = useMemo(() => {
+    return giCurrentMaterialId || (currentLine.raw_material_id || '');
+  }, [giCurrentMaterialId, currentLine.raw_material_id]);
+
+  // Per-material requirement from BOM requirements (filtered to this material only)
+  const perMaterialRequirement = useMemo(() => {
+    if (!activeMaterialIdForRequirement) return null;
+    const req = bomMaterialRequirements.find(r => !r.category_id && r.material_id === activeMaterialIdForRequirement);
+    if (!req) return null;
+    const required = Number(req.required_quantity) || 0;
+    const unit = req.unit || (markerRequirementUnit || '');
+    return { required, unit, name: req.material_name };
+  }, [activeMaterialIdForRequirement, bomMaterialRequirements, markerRequirementUnit]);
+
+  const perMaterialRequirementText = useMemo(() => {
+    if (!perMaterialRequirement) return null;
+    const digits = (perMaterialRequirement.unit || '').toLowerCase().includes('kg') ? 3 : 2;
+    const formatted = formatNumeric(perMaterialRequirement.required, digits) ?? perMaterialRequirement.required;
+    return `${formatted} ${perMaterialRequirement.unit || ''}`;
+  }, [perMaterialRequirement]);
+
   const bomRequirementMap = useMemo(() => {
     const map = new Map<string, { required: number; name: string }>();
     bomMaterialRequirements.forEach(req => {
@@ -1771,7 +1793,19 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       };
 
       if (issueTab === 'fabric' && (markerOverride || selectedMarkerRequest) && markerRequirementForScaling != null) {
-        const relevantRequirements = mergedRequirements.filter(isFabricRequirement);
+        // If marker has explicit fabric assignments, restrict scaling only to those materials
+        const assignedMaterialIds = new Set<string>(
+          [
+            ...(((markerOverride as any)?.fabric_assignments as MarkerFabricAssignment[] | null | undefined) ?? []),
+            ...(((markerOverride as any)?.fabric_assignment ? [(markerOverride as any).fabric_assignment] : []) as MarkerFabricAssignment[]),
+          ]
+            .map(a => (a?.raw_material_id != null ? String(a.raw_material_id) : null))
+            .filter((id): id is string => Boolean(id))
+        );
+
+        const relevantRequirements = assignedMaterialIds.size > 0
+          ? mergedRequirements.filter(req => !req.category_id && assignedMaterialIds.has(req.material_id))
+          : mergedRequirements.filter(isFabricRequirement);
         const totalRelevant = relevantRequirements.reduce((sum, req) => sum + (Number(req.required_quantity) || 0), 0);
         console.log('🧮 Scaling BOM requirements (fabric subset)', {
           markerRequirementForScaling,
@@ -1782,7 +1816,10 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         if (totalRelevant > 0) {
           const scale = markerRequirementForScaling / totalRelevant;
           adjustedRequirements = mergedRequirements.map(req => {
-            if (!isFabricRequirement(req)) return req;
+            const isRelevant = assignedMaterialIds.size > 0
+              ? (!req.category_id && assignedMaterialIds.has(req.material_id))
+              : isFabricRequirement(req);
+            if (!isRelevant) return req;
             return {
               ...req,
               required_quantity: (Number(req.required_quantity) || 0) * scale
@@ -1790,7 +1827,10 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
           });
         } else if (relevantRequirements.length > 0) {
           adjustedRequirements = mergedRequirements.map(req => {
-            if (!isFabricRequirement(req)) return req;
+            const isRelevant = assignedMaterialIds.size > 0
+              ? (!req.category_id && assignedMaterialIds.has(req.material_id))
+              : isFabricRequirement(req);
+            if (!isRelevant) return req;
             const isFirst = relevantRequirements[0] === req;
             return {
               ...req,
@@ -1800,12 +1840,17 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         }
 
         const scaledRelevantTotal = adjustedRequirements
-          .filter(isFabricRequirement)
+          .filter(req => (assignedMaterialIds.size > 0
+            ? (!req.category_id && assignedMaterialIds.has(req.material_id))
+            : isFabricRequirement(req)))
           .reduce((sum, req) => sum + (Number(req.required_quantity) || 0), 0);
         if (markerRequirementForScaling > 0 && scaledRelevantTotal > 0 && Math.abs(scaledRelevantTotal - markerRequirementForScaling) > 1e-6) {
           const ratio = markerRequirementForScaling / scaledRelevantTotal;
           adjustedRequirements = adjustedRequirements.map(req => {
-            if (!isFabricRequirement(req)) return req;
+            const isRelevant = assignedMaterialIds.size > 0
+              ? (!req.category_id && assignedMaterialIds.has(req.material_id))
+              : isFabricRequirement(req);
+            if (!isRelevant) return req;
             return {
               ...req,
               required_quantity: (Number(req.required_quantity) || 0) * ratio
@@ -1825,7 +1870,20 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       // Filter based on tab
       const filterFn = (req: typeof adjustedRequirements[number]) => {
         const isFab = isFabricRequirement(req);
-        return issueTab === 'fabric' ? isFab : !isFab;
+        if (issueTab !== 'fabric') return !isFab;
+        // In fabric tab: if marker assigns specific materials, only include those
+        const assignedMaterialIds = new Set<string>(
+          [
+            ...(((markerOverride as any)?.fabric_assignments as MarkerFabricAssignment[] | null | undefined) ?? []),
+            ...(((markerOverride as any)?.fabric_assignment ? [(markerOverride as any).fabric_assignment] : []) as MarkerFabricAssignment[]),
+          ]
+            .map(a => (a?.raw_material_id != null ? String(a.raw_material_id) : null))
+            .filter((id): id is string => Boolean(id))
+        );
+        if (assignedMaterialIds.size > 0) {
+          return !req.category_id && assignedMaterialIds.has(req.material_id);
+        }
+        return isFab;
       };
       const filtered = adjustedRequirements.filter(filterFn);
       console.log('📋 Final BOM requirements for UI', {
@@ -3032,8 +3090,8 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
                   <div className="mt-4 space-y-2">
                     <Label>Marker &amp; BOM Requirements</Label>
                     <div className="text-xs text-muted-foreground space-y-1">
-                      {markerRequirementText && (
-                        <div>Marker total: {markerRequirementText}{markerNetRequirementText ? ` • Net ${markerNetRequirementText}` : ''}</div>
+                      {(perMaterialRequirementText || markerRequirementText) && (
+                        <div>Marker total: {perMaterialRequirementText || markerRequirementText}{(!perMaterialRequirementText && markerNetRequirementText) ? ` • Net ${markerNetRequirementText}` : ''}</div>
                       )}
                       {markerPendingPiecesText && (
                         <div>Marker pending pieces: {markerPendingPiecesText}</div>
@@ -3085,12 +3143,12 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
                   <div className="mt-6">
                     {issueTab === 'fabric' && (
                       <div className="mb-4 grid gap-3 md:grid-cols-2">
-                        {markerRequirementText && (
+                        {(perMaterialRequirementText || markerRequirementText) && (
                           <div className="rounded-md border border-rose-200 bg-rose-50/80 p-3">
                             <p className="text-xs uppercase tracking-wide text-rose-700">Marker Requirement</p>
                             <p className="mt-1 text-sm font-medium text-rose-900">
-                              {markerRequirementText}
-                              {markerNetRequirementText ? ` • Net ${markerNetRequirementText}` : ''}
+                              {perMaterialRequirementText || markerRequirementText}
+                              {(!perMaterialRequirementText && markerNetRequirementText) ? ` • Net ${markerNetRequirementText}` : ''}
                             </p>
                             {markerPendingPiecesText && (
                               <p className="text-xs text-rose-700">Pieces: {markerPendingPiecesText}</p>
@@ -3143,7 +3201,10 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {bomMaterialRequirements.map((req, index) => {
+                          {bomMaterialRequirements
+                            .filter(req => !req.category_id)
+                            .filter(req => !perMaterialRequirement || req.material_id === activeMaterialIdForRequirement)
+                            .map((req, index) => {
                             const remainingToIssue = Math.max(0, req.required_quantity - req.issued_so_far);
                             const isOverIssuing = req.issuing_quantity > remainingToIssue;
                             const isInsufficientStock = req.issuing_quantity > req.available_quantity;
@@ -3889,10 +3950,10 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
               <span className="text-sm font-semibold">
                 Marker {selectedMarkerRequest.marker_number}
               </span>
-              {markerRequirementText && (
+              {(perMaterialRequirementText || markerRequirementText) && (
                 <span className="text-xs">
-                  Requirement: {markerRequirementText}
-                  {markerNetRequirementText ? ` • Net ${markerNetRequirementText}` : ''}
+                  Requirement: {perMaterialRequirementText || markerRequirementText}
+                  {(!perMaterialRequirementText && markerNetRequirementText) ? ` • Net ${markerNetRequirementText}` : ''}
                 </span>
               )}
               {markerPendingPiecesText && (

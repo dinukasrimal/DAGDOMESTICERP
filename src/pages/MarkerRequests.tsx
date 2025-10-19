@@ -6,7 +6,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { Ruler, Plus, Loader2, RefreshCw, Search } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
@@ -15,6 +16,8 @@ import { MarkerFabricAssignment, MarkerPurchaseOrder, MarkerPurchaseOrderLine } 
 const MarkerRequests: React.FC = () => {
   const { toast } = useToast();
   const [markerRequests, setMarkerRequests] = useState<MarkerRequest[]>([]);
+  const [viewRequest, setViewRequest] = useState<MarkerRequest | null>(null);
+  const [editRequest, setEditRequest] = useState<MarkerRequest | null>(null);
   const [purchaseOrders, setPurchaseOrders] = useState<MarkerPurchaseOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isPoLoading, setIsPoLoading] = useState(false);
@@ -292,24 +295,14 @@ const MarkerRequests: React.FC = () => {
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => {
-                                toast({
-                                  title: 'View marker request',
-                                  description: `Marker ${request.marker_number} view coming soon.`,
-                                });
-                              }}
+                              onClick={() => setViewRequest(request)}
                             >
                               View
                             </Button>
                             <Button
                               variant="secondary"
                               size="sm"
-                              onClick={() => {
-                                toast({
-                                  title: 'Edit marker request',
-                                  description: 'Edit flow is not available yet.',
-                                });
-                              }}
+                              onClick={() => setEditRequest(request)}
                             >
                               Edit
                             </Button>
@@ -348,6 +341,100 @@ const MarkerRequests: React.FC = () => {
             onCreated={handleMarkerCreated}
             onClose={handleCloseDialog}
           />
+        </DialogContent>
+      </Dialog>
+
+      {/* View Marker Request */}
+      <Dialog open={!!viewRequest} onOpenChange={(open) => !open && setViewRequest(null)}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Marker {viewRequest?.marker_number}</DialogTitle>
+            <DialogDescription>View marker request details</DialogDescription>
+          </DialogHeader>
+          {viewRequest && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <Label>Type</Label>
+                  <div className="mt-1 capitalize">{viewRequest.marker_type}</div>
+                </div>
+                <div>
+                  <Label>Measurement</Label>
+                  <div className="mt-1 uppercase">{viewRequest.measurement_type}</div>
+                </div>
+                <div>
+                  <Label>Width (in)</Label>
+                  <div className="mt-1">{viewRequest.width}</div>
+                </div>
+                <div>
+                  <Label>Layers</Label>
+                  <div className="mt-1">{viewRequest.layers}</div>
+                </div>
+                <div>
+                  <Label>Efficiency %</Label>
+                  <div className="mt-1">{viewRequest.efficiency}</div>
+                </div>
+                <div>
+                  <Label>Pieces/Marker</Label>
+                  <div className="mt-1">{viewRequest.pieces_per_marker}</div>
+                </div>
+                <div>
+                  <Label>Marker Length</Label>
+                  <div className="mt-1">{viewRequest.marker_length_yards} yd {viewRequest.marker_length_inches} in</div>
+                </div>
+                <div>
+                  <Label>Total Fabric</Label>
+                  <div className="mt-1">
+                    {viewRequest.measurement_type === 'kg'
+                      ? (viewRequest.total_fabric_kg != null ? `${viewRequest.total_fabric_kg} kg` : '—')
+                      : (viewRequest.total_fabric_yards != null ? `${viewRequest.total_fabric_yards} yd` : '—')}
+                  </div>
+                </div>
+                <div className="col-span-2">
+                  <Label>Purchase Orders</Label>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {viewRequest.po_ids.map(po => (
+                      <Badge key={po} variant="outline" className="text-xs">{po}</Badge>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {viewRequest.details && (
+                <div>
+                  <Label>Details JSON</Label>
+                  <pre className="bg-slate-50 border rounded p-3 text-xs overflow-auto max-h-64">
+                    {JSON.stringify(viewRequest.details, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Marker Request */}
+      <Dialog open={!!editRequest} onOpenChange={(open) => !open && setEditRequest(null)}>
+        <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Edit Marker {editRequest?.marker_number}</DialogTitle>
+          </DialogHeader>
+          {editRequest && (
+            <MarkerRequestForm
+              key={`edit-${editRequest.id}`}
+              mode="edit"
+              initialRequest={editRequest}
+              purchaseOrders={purchaseOrders}
+              usedFabricAssignments={usedFabricAssignments}
+              onRefreshPurchaseOrders={loadPurchaseOrders}
+              onCreated={() => {}}
+              onUpdated={(updated) => {
+                setMarkerRequests(prev => prev.map(m => m.id === updated.id ? updated : m));
+                setEditRequest(null);
+                toast({ title: 'Marker Request Updated', description: `Marker ${updated.marker_number} saved.` });
+              }}
+              onClose={() => setEditRequest(null)}
+            />
+          )}
         </DialogContent>
       </Dialog>
     </ModernLayout>

@@ -16,6 +16,7 @@ import { BOMManager } from "./components/bom/BOMManager";
 import { PurchaseOrderManager } from "./components/materials/PurchaseOrderManager";
 import { GoodsReceivedManager } from "./components/materials/GoodsReceivedManager";
 import { GoodsIssueManager } from "./components/materials/GoodsIssueManager";
+import ReturnFabricAgainstMarker from "./components/materials/ReturnFabricAgainstMarker";
 import MarkerRequests from "./pages/MarkerRequests";
 import CuttingRecords from "./pages/CuttingRecords";
 import CutIssueRecords from "./pages/CutIssueRecords";
@@ -82,6 +83,11 @@ const App: React.FC = () => {
             <Route path="/goods-issue" element={
               <ProtectedRoute componentKey="goods-issue">
                 <GoodsIssueManager />
+              </ProtectedRoute>
+            } />
+            <Route path="/returns/fabric" element={
+              <ProtectedRoute componentKey="goods-received">
+                <ReturnFabricAgainstMarker />
               </ProtectedRoute>
             } />
             <Route path="/marker-requests" element={

@@ -10,7 +10,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Plus, Edit, Trash2, Search, Package, AlertTriangle, TrendingUp, DollarSign, Boxes, MoreVertical, Pencil } from 'lucide-react';
+import { Plus, Edit, Trash2, Search, Package, AlertTriangle, TrendingUp, DollarSign, Boxes, MoreVertical, Pencil, QrCode } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { RawMaterialsService, RawMaterialWithInventory, RawMaterialInsert, RawMaterialUpdate, MaterialCategory, MaterialSupplier } from '../../services/rawMaterialsService';
 import { getUnitSuggestions, validateConversionFactor } from '../../utils/unitConversion';
@@ -413,6 +413,13 @@ export const RawMaterialsManager: React.FC = () => {
   const newAdjQtyRef = useRef<HTMLInputElement | null>(null);
   const [fabricRolls, setFabricRolls] = useState<Array<{ id: string, roll_barcode: string | null, roll_weight: number | null, roll_length: number | null, unit_price: number }>>([]);
   const [isFabricAdjustment, setIsFabricAdjustment] = useState(false);
+  // Read-only fabric rolls view states
+  const [viewRollsOpen, setViewRollsOpen] = useState(false);
+  const [viewRollsLoading, setViewRollsLoading] = useState(false);
+  const [viewRollsMaterialId, setViewRollsMaterialId] = useState<number | null>(null);
+  const [viewRollsMaterialName, setViewRollsMaterialName] = useState<string>('');
+  const [viewRollsUnit, setViewRollsUnit] = useState<string>('kg');
+  const [viewFabricRolls, setViewFabricRolls] = useState<Array<{ id: string, roll_barcode: string | null, roll_weight: number | null, roll_length: number | null, unit_price: number, goods_received_id: string }>>([]);
   const { toast } = useToast();
 
   const defaultFormData: Partial<RawMaterialInsert> = {
@@ -483,6 +490,33 @@ export const RawMaterialsManager: React.FC = () => {
     setAdjustMaterialId(null);
     setAdjustLayers([]);
     adjustPendingRef.current = {};
+  };
+
+  const isFabric = (m: RawMaterialWithInventory | null | undefined) => {
+    if (!m) return false;
+    if ((m as any).category_id === 1) return true;
+    if (m.category?.id === 1) return true;
+    return (m.category?.name || m.name || '').toLowerCase().includes('fabric');
+  };
+
+  const openViewRolls = async (material: RawMaterialWithInventory) => {
+    if (!isFabric(material)) {
+      toast({ title: 'Not a fabric', description: 'Barcode stock view is available for fabrics only.', variant: 'destructive' });
+      return;
+    }
+    setViewRollsMaterialId(material.id);
+    setViewRollsMaterialName(material.name || 'Fabric');
+    setViewRollsUnit((material.purchase_unit || 'kg'));
+    setViewRollsOpen(true);
+    setViewRollsLoading(true);
+    try {
+      const rolls = await rawMaterialsService.getFabricRolls(material.id);
+      setViewFabricRolls(rolls as any);
+    } catch (err: any) {
+      toast({ title: 'Error', description: err?.message || 'Failed to load fabric rolls', variant: 'destructive' });
+    } finally {
+      setViewRollsLoading(false);
+    }
   };
 
   const onSelectAdjustMaterial = async (idStr: string) => {
@@ -1216,6 +1250,17 @@ export const RawMaterialsManager: React.FC = () => {
                         >
                           <Edit className="h-4 w-4" />
                         </Button>
+                        {isFabric(material) && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openViewRolls(material)}
+                            title="View fabric rolls"
+                            className="hover:bg-purple-50 hover:border-purple-300 hover:text-purple-700 transition-all duration-300"
+                          >
+                            <QrCode className="h-4 w-4" />
+                          </Button>
+                        )}
                         <Button
                           variant="outline"
                           size="sm"
@@ -1258,6 +1303,69 @@ export const RawMaterialsManager: React.FC = () => {
             onCancel={() => setShowEditDialog(false)}
             submitLabel="Update Material"
           />
+        </DialogContent>
+      </Dialog>
+
+      {/* View Fabric Rolls (Barcode-wise stock) */}
+      <Dialog open={viewRollsOpen} onOpenChange={setViewRollsOpen}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto bg-white">
+          <DialogHeader>
+            <DialogTitle>Fabric Rolls — {viewRollsMaterialName}</DialogTitle>
+            <DialogDescription>Barcode-wise stock for this fabric material</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {viewRollsLoading ? (
+              <div className="text-sm text-gray-600">Loading rolls…</div>
+            ) : (
+              <>
+                <div className="text-sm text-gray-700">
+                  Total Rolls: <span className="font-medium">{viewFabricRolls.length}</span> • Total: {' '}
+                  <span className="font-medium">
+                    {(() => {
+                      const isKg = (viewRollsUnit || 'kg').toLowerCase().includes('kg');
+                      const total = viewFabricRolls.reduce((s, r) => s + (isKg ? (Number(r.roll_weight) || 0) : (Number(r.roll_length) || 0)), 0);
+                      return `${total.toFixed(isKg ? 3 : 2)} ${viewRollsUnit}`;
+                    })()}
+                  </span>
+                </div>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Barcode</TableHead>
+                        <TableHead>Quantity ({viewRollsUnit})</TableHead>
+                        <TableHead>Unit Price</TableHead>
+                        <TableHead>GRN</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {viewFabricRolls.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={4} className="text-center text-gray-500 text-sm">No rolls found</TableCell>
+                        </TableRow>
+                      ) : (
+                        viewFabricRolls.map((r) => {
+                          const isKg = (viewRollsUnit || 'kg').toLowerCase().includes('kg');
+                          const qty = isKg ? (r.roll_weight ?? 0) : (r.roll_length ?? 0);
+                          return (
+                            <TableRow key={r.id}>
+                              <TableCell className="font-mono">{r.roll_barcode || '-'}</TableCell>
+                              <TableCell>{qty}</TableCell>
+                              <TableCell>LKR {Number(r.unit_price || 0).toFixed(2)}</TableCell>
+                              <TableCell>{r.goods_received_id}</TableCell>
+                            </TableRow>
+                          );
+                        })
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setViewRollsOpen(false)}>Close</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

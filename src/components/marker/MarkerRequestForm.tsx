@@ -96,6 +96,9 @@ interface MarkerRequestFormProps {
   onRefreshPurchaseOrders: () => Promise<void> | void;
   onCreated: (markerRequest: MarkerRequest) => void;
   onClose: () => void;
+  mode?: 'create' | 'edit';
+  initialRequest?: MarkerRequest | null;
+  onUpdated?: (markerRequest: MarkerRequest) => void;
 }
 
 export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
@@ -104,6 +107,9 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
   onRefreshPurchaseOrders,
   onCreated,
   onClose,
+  mode = 'create',
+  initialRequest = null,
+  onUpdated,
 }) => {
   const { toast } = useToast();
   const [isGeneratingNumber, setIsGeneratingNumber] = useState(false);
@@ -348,9 +354,22 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
   };
 
   useEffect(() => {
-    generateMarkerNumber();
+    if (mode === 'edit' && initialRequest) {
+      setMarkerNumber(initialRequest.marker_number);
+      setSelectedPoIds(initialRequest.po_ids || []);
+      setWidth(String(initialRequest.width || ''));
+      setLayers(String(initialRequest.layers || ''));
+      setEfficiency(String(initialRequest.efficiency || ''));
+      setMarkerType(initialRequest.marker_type);
+      setMarkerLengthYards(String(initialRequest.marker_length_yards || ''));
+      setMarkerLengthInches(String(initialRequest.marker_length_inches || ''));
+      setMeasurementType(initialRequest.measurement_type || 'yard');
+      setMarkerGsm(String(initialRequest.marker_gsm ?? ''));
+    } else {
+      generateMarkerNumber();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [mode, initialRequest?.id]);
 
   const selectedPurchaseOrders = useMemo(
     () => purchaseOrders.filter(po => selectedPoIds.includes(po.id)),
@@ -1435,7 +1454,9 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
     setSelectedFabricAssignments({});
     previousFabricAssignmentsRef.current = {};
     setFabricAssignmentError(null);
-    await generateMarkerNumber();
+    if (mode === 'create') {
+      await generateMarkerNumber();
+    }
   };
 
   const handleSubmit = async () => {
@@ -1564,18 +1585,23 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
         },
       };
 
-      const result = await markerRequestService.createMarkerRequest(payload);
-      await onRefreshPurchaseOrders();
-      toast({
-        title: 'Marker Request Created',
-        description: `Marker ${result.marker_number} saved successfully.`,
-      });
-      onCreated(result);
-      await resetForm();
-      onClose();
+      if (mode === 'edit' && initialRequest) {
+        const result = await markerRequestService.updateMarkerRequest(initialRequest.id, payload);
+        await onRefreshPurchaseOrders();
+        toast({ title: 'Marker Request Updated', description: `Marker ${result.marker_number} saved.` });
+        onUpdated?.(result);
+        onClose();
+      } else {
+        const result = await markerRequestService.createMarkerRequest(payload);
+        await onRefreshPurchaseOrders();
+        toast({ title: 'Marker Request Created', description: `Marker ${result.marker_number} saved successfully.` });
+        onCreated(result);
+        await resetForm();
+        onClose();
+      }
     } catch (error: any) {
       toast({
-        title: 'Failed to create marker request',
+        title: mode === 'edit' ? 'Failed to update marker request' : 'Failed to create marker request',
         description: error?.message || 'Please check the details and try again.',
         variant: 'destructive',
       });
@@ -2151,7 +2177,7 @@ export const MarkerRequestForm: React.FC<MarkerRequestFormProps> = ({
         </Button>
         <Button onClick={handleSubmit} disabled={isSubmitting || isGeneratingNumber}>
           {isSubmitting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
-          Create Marker Request
+          {mode === 'edit' ? 'Update Marker Request' : 'Create Marker Request'}
         </Button>
       </div>
     </div>
