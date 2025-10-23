@@ -140,10 +140,6 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
       });
     }
 
-    if (typeof window !== 'undefined' && window.isSecureContext === false) {
-      throw new Error('Camera access requires HTTPS or running from localhost.');
-    }
-
     throw new Error('Camera not supported on this device or browser.');
   };
 
@@ -161,8 +157,12 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
     if (name === 'NotReadableError') {
       return 'Camera is already in use by another application.';
     }
-    if (message.toLowerCase().includes('secure') || message.toLowerCase().includes('https')) {
-      return 'Camera access requires HTTPS or running from localhost.';
+    const lowerMessage = message.toLowerCase();
+    if (lowerMessage.includes('secure') || lowerMessage.includes('https')) {
+      return 'Camera access blocked. Use https:// on your domain or run the app from localhost.';
+    }
+    if (typeof window !== 'undefined' && window.isSecureContext === false) {
+      return 'Browser blocked camera on insecure connection. Serve the app over HTTPS or enable a secure reverse proxy.';
     }
 
     return message || 'Failed to start camera';
