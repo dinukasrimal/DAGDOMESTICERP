@@ -9,9 +9,9 @@ import { SalesTargetDialog } from '@/components/reports/SalesTargetDialog';
 import { SavedTargetsManager } from '@/components/reports/SavedTargetsManager';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
-import { FileText, BarChart3, Package, Download, RefreshCw, ArrowLeft, Target, Calendar, Settings, Home, Users, Sparkles, ClipboardList, CheckCircle, XCircle, Clock, AlertCircle, RotateCcw, Zap } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { FileText, BarChart3, Package, Download, RefreshCw, Target, Calendar, Settings, Home, Users, Sparkles, ClipboardList, CheckCircle, XCircle, Clock, AlertCircle, RotateCcw, Zap } from 'lucide-react';
 import { supabaseBatchFetch, SupabaseTable } from '@/lib/utils';
+import { ModernLayout } from '@/components/layout/ModernLayout';
 
 interface SalesData {
   id: string;
@@ -43,7 +43,6 @@ interface PurchaseData {
 
 const Reports: React.FC = () => {
   const { toast } = useToast();
-  const navigate = useNavigate();
   const [activeDialog, setActiveDialog] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [syncProgress, setSyncProgress] = useState<string[]>([]);
