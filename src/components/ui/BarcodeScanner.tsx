@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import { BrowserMultiFormatReader } from '@zxing/browser';
+import { BarcodeFormat, DecodeHintType } from '@zxing/library';
 import { X, Keyboard, QrCode, Flashlight, FlashlightOff, Trash2, CheckCircle } from 'lucide-react';
 
 /**
@@ -88,7 +89,7 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
   currentScanningLine = 'Material',
   onRemoveRoll,
   onDone,
-  autoPauseOnScan = true,
+  autoPauseOnScan = false,
   scanCooldownMs = 1000,
   unitLabel = 'kg',
   quantityMetric = 'weight',
@@ -96,8 +97,8 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
   const videoRef = useRef<HTMLVideoElement>(null);
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const hintsRef = useRef<Map<DecodeHintType, any> | null>(null);
 
-  const scanLockRef = useRef(false);
   const lastCodeRef = useRef<string | null>(null);
   const cooldownTimerRef = useRef<number | null>(null);
 
@@ -124,7 +125,6 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
       window.clearTimeout(cooldownTimerRef.current);
       cooldownTimerRef.current = null;
     }
-    scanLockRef.current = false;
     lastCodeRef.current = null;
 
     // Stop the reader
@@ -172,8 +172,25 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
         await videoRef.current.play();
       }
 
-      // ZXing reader
-      readerRef.current = new BrowserMultiFormatReader();
+      // ZXing reader with support for 1D + QR formats
+      if (!hintsRef.current) {
+        const hints = new Map<DecodeHintType, any>();
+        hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+          BarcodeFormat.CODE_128,
+          BarcodeFormat.CODE_39,
+          BarcodeFormat.EAN_13,
+          BarcodeFormat.EAN_8,
+          BarcodeFormat.UPC_A,
+          BarcodeFormat.UPC_E,
+          BarcodeFormat.ITF,
+          BarcodeFormat.DATA_MATRIX,
+          BarcodeFormat.PDF_417,
+          BarcodeFormat.QR_CODE,
+        ]);
+        hintsRef.current = hints;
+      }
+
+      readerRef.current = new BrowserMultiFormatReader(hintsRef.current, 350);
 
       await readerRef.current.decodeFromVideoDevice(
         undefined,
@@ -182,11 +199,8 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
           if (!result) return;
           const code = result.getText().trim();
 
-          // 1) Debounce + ignore the same code still in frame
-          if (scanLockRef.current) return;
+          // 1) Debounce current code
           if (lastCodeRef.current === code) return;
-
-          scanLockRef.current = true;
           lastCodeRef.current = code;
 
           // 2) Haptics + visual
@@ -197,15 +211,13 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
           onScan(code);
 
           // 4) Optionally pause the scanner to let user type weight/width
-          if (autoPauseOnScan) {
-            pauseScanning();
-          }
-
           // 5) Cooldown to allow next code
           cooldownTimerRef.current = window.setTimeout(() => {
-            scanLockRef.current = false;
             lastCodeRef.current = null;
             cooldownTimerRef.current = null;
+            if (autoPauseOnScan) {
+              pauseScanning();
+            }
           }, Math.max(250, scanCooldownMs));
         }
       );
@@ -371,22 +383,6 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
                     playsInline
                     muted
                   />
-
-                  {/* Scan overlay */}
-                  {isScanning && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="relative">
-                        <div className="w-80 h-48 border-4 border-red-500 rounded-lg relative">
-                          <div className="absolute -top-2 -left-2 w-8 h-8 border-t-4 border-l-4 border-white rounded-tl-lg" />
-                          <div className="absolute -top-2 -right-2 w-8 h-8 border-t-4 border-r-4 border-white rounded-tr-lg" />
-                          <div className="absolute -bottom-2 -left-2 w-8 h-8 border-b-4 border-l-4 border-white rounded-bl-lg" />
-                          <div className="absolute -bottom-2 -right-2 w-8 h-8 border-b-4 border-r-4 border-white rounded-br-lg" />
-                          <div className="absolute top-0 left-0 w-full h-1 bg-red-500 animate-pulse" />
-                        </div>
-                        <p className="text-white text-center mt-4 text-lg font-medium">Position barcode within the frame</p>
-                      </div>
-                    </div>
-                  )}
 
                   {isScanning && (
                     <div className="absolute top-4 left-4 bg-red-600 text-white px-3 py-1 rounded-full text-sm font-medium">
