@@ -167,6 +167,12 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
     }
   }, [selectedProducts]);
 
+  useEffect(() => {
+    if (step === 2) {
+      setSearchTerm('');
+    }
+  }, [step]);
+
   const loadInitialData = async () => {
     try {
       setLoading(true);
@@ -1405,7 +1411,10 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                           min="0.01"
                           step="0.01"
                           value={bulkQuantity}
-                          onChange={(e) => setBulkQuantity(parseFloat(e.target.value) || 1)}
+                          onChange={(e) => {
+                            const next = parseFloat(e.target.value);
+                            setBulkQuantity(Number.isNaN(next) ? 0 : next);
+                          }}
                           className="h-8 text-sm"
                         />
                       </div>
@@ -1417,7 +1426,10 @@ export const MultiProductBOMCreator: React.FC<MultiProductBOMCreatorProps> = ({
                           max="100"
                           step="0.1"
                           value={bulkWaste}
-                          onChange={(e) => setBulkWaste(parseFloat(e.target.value) || 0)}
+                          onChange={(e) => {
+                            const next = parseFloat(e.target.value);
+                            setBulkWaste(Number.isNaN(next) ? 0 : next);
+                          }}
                           className="h-8 text-sm"
                         />
                       </div>

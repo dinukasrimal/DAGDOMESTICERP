@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -396,7 +396,6 @@ const MaterialForm: React.FC<MaterialFormProps> = React.memo(({
 
 export const RawMaterialsManager: React.FC = () => {
   const [materials, setMaterials] = useState<RawMaterialWithInventory[]>([]);
-  const [filteredMaterials, setFilteredMaterials] = useState<RawMaterialWithInventory[]>([]);
   const [valuationMap, setValuationMap] = useState<Record<number, { totalQty: number; totalValue: number; avgCost: number }>>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
@@ -411,6 +410,7 @@ export const RawMaterialsManager: React.FC = () => {
   const adjustPendingRef = useRef<Record<string, string>>({});
   const newAdjPriceRef = useRef<HTMLInputElement | null>(null);
   const newAdjQtyRef = useRef<HTMLInputElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [fabricRolls, setFabricRolls] = useState<Array<{ id: string, roll_barcode: string | null, roll_weight: number | null, roll_length: number | null, unit_price: number }>>([]);
   const [isFabricAdjustment, setIsFabricAdjustment] = useState(false);
   // Read-only fabric rolls view states
@@ -442,6 +442,9 @@ export const RawMaterialsManager: React.FC = () => {
     loadMaterials();
     loadCategories();
     loadSuppliers();
+    if (searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
   }, []);
 
   // Refresh when inventory updates elsewhere (e.g., after GRN approval)
@@ -451,26 +454,31 @@ export const RawMaterialsManager: React.FC = () => {
     return () => window.removeEventListener('inventory-updated', handler as any);
   }, []);
 
+  const filteredMaterials = useMemo(() => {
+    if (!searchTerm) return materials;
+    const needle = searchTerm.toLowerCase();
+    return materials.filter(material =>
+      material.name.toLowerCase().includes(needle) ||
+      material.code?.toLowerCase().includes(needle) ||
+      material.description?.toLowerCase().includes(needle) ||
+      material.supplier?.name?.toLowerCase().includes(needle)
+    );
+  }, [materials, searchTerm]);
+
   useEffect(() => {
-    if (searchTerm) {
-      const filtered = materials.filter(material =>
-        material.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        material.code?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        material.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        material.supplier?.name?.toLowerCase().includes(searchTerm.toLowerCase())
-      );
-      setFilteredMaterials(filtered);
-    } else {
-      setFilteredMaterials(materials);
+    if (searchInputRef.current) {
+      const input = searchInputRef.current;
+      input.focus();
+      const end = input.value.length;
+      input.setSelectionRange(end, end);
     }
-  }, [searchTerm, materials]);
+  }, [searchTerm]);
 
   const loadMaterials = async () => {
     try {
       setLoading(true);
       const data = await rawMaterialsService.getRawMaterials(false); // Get all including inactive
       setMaterials(data);
-      setFilteredMaterials(data);
       const ids = data.map(m => m.id);
       const valuation = await rawMaterialsService.getInventoryValuation(ids);
       setValuationMap(valuation);
@@ -993,7 +1001,13 @@ export const RawMaterialsManager: React.FC = () => {
               autoComplete="off"
               placeholder="Search materials, codes, suppliers..."
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => {
+                setSearchTerm(e.target.value);
+                if (searchInputRef.current) {
+                  searchInputRef.current.focus();
+                }
+              }}
+              ref={searchInputRef}
               className="pl-10 bg-white/80 border-gray-200/50 focus:bg-white focus:border-purple-300 transition-all duration-300"
             />
           </div>

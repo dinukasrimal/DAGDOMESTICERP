@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -33,6 +33,7 @@ import {
 } from '../../services/purchaseOrderService';
 import { RawMaterialsService, RawMaterialWithInventory, MaterialSupplier } from '../../services/rawMaterialsService';
 import { ModernLayout } from '../layout/ModernLayout';
+import { SearchableSelect } from '@/components/ui/searchable-select';
 
 const purchaseOrderService = new PurchaseOrderService();
 const rawMaterialsService = new RawMaterialsService();
@@ -67,6 +68,20 @@ export const PurchaseOrderManager: React.FC = () => {
   useEffect(() => {
     loadInitialData();
   }, []);
+
+  const materialOptions = useMemo(() => {
+    return rawMaterials.map(material => {
+      const available = Number(material.inventory?.quantity_available ?? 0);
+      const stockUnit = material.base_unit || material.inventory?.location || '';
+      const descriptor = stockUnit ? `${available.toLocaleString()} ${stockUnit}` : available.toLocaleString();
+      const purchaseUnit = material.purchase_unit || material.base_unit || '';
+      return {
+        value: material.id.toString(),
+        label: `${material.name}${material.code ? ` (${material.code})` : ''}`,
+        description: `Available: ${descriptor}${purchaseUnit ? ` • Purchase unit: ${purchaseUnit}` : ''}`,
+      };
+    });
+  }, [rawMaterials]);
 
   const loadInitialData = async () => {
     try {
@@ -514,24 +529,33 @@ export const PurchaseOrderManager: React.FC = () => {
                 <CardTitle className="text-sm">Add Line Item</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-5 gap-4">
-                  <div>
+                <div className="grid grid-cols-[minmax(16rem,2fr)_6rem_repeat(3,minmax(6rem,1fr))] gap-4 items-end">
+                  <div className="min-w-[16rem]">
                     <Label>Raw Material *</Label>
-                    <Select
-                      value={currentLine.raw_material_id.toString()}
-                      onValueChange={(value) => setCurrentLine(prev => ({ ...prev, raw_material_id: parseInt(value) }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select material" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {rawMaterials.map(material => (
-                          <SelectItem key={material.id} value={material.id.toString()}>
-                            {material.name} ({material.code})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <SearchableSelect
+                      value={currentLine.raw_material_id ? currentLine.raw_material_id.toString() : ''}
+                      onChange={(value) => {
+                        const parsed = parseInt(value, 10);
+                        setCurrentLine(prev => ({ ...prev, raw_material_id: Number.isNaN(parsed) ? 0 : parsed }));
+                      }}
+                      placeholder="Select material"
+                      searchPlaceholder="Search materials..."
+                      options={materialOptions}
+                      className="min-h-10"
+                    />
+                  </div>
+                  <div className="w-20">
+                    <Label>UOM</Label>
+                    <Input
+                      value={
+                        rawMaterials.find(m => m.id === currentLine.raw_material_id)?.purchase_unit ||
+                        rawMaterials.find(m => m.id === currentLine.raw_material_id)?.base_unit ||
+                        ''
+                      }
+                      readOnly
+                      placeholder="—"
+                      className="bg-gray-100 h-10 text-center"
+                    />
                   </div>
                   <div>
                     <Label>Quantity *</Label>
@@ -542,6 +566,7 @@ export const PurchaseOrderManager: React.FC = () => {
                       value={currentLine.quantity}
                       onChange={(e) => setCurrentLine(prev => ({ ...prev, quantity: parseFloat(e.target.value) || 0 }))}
                       placeholder="0.00"
+                      className="h-10"
                     />
                   </div>
                   <div>
@@ -553,6 +578,7 @@ export const PurchaseOrderManager: React.FC = () => {
                       value={currentLine.unit_price}
                       onChange={(e) => setCurrentLine(prev => ({ ...prev, unit_price: parseFloat(e.target.value) || 0 }))}
                       placeholder="0.00"
+                      className="h-10"
                     />
                   </div>
                   <div>
@@ -562,11 +588,12 @@ export const PurchaseOrderManager: React.FC = () => {
                       value={currentLine.reference || ''}
                       onChange={(e) => setCurrentLine(prev => ({ ...prev, reference: e.target.value }))}
                       placeholder="Optional reference"
+                      className="h-10"
                     />
                   </div>
-                  <div className="flex items-end">
-                    <Button onClick={handleAddLine} className="w-full">
-                      <Plus className="h-4 w-4 mr-2" />
+                  <div className="flex items-center justify-end">
+                    <Button onClick={handleAddLine} size="sm">
+                      <Plus className="h-4 w-4 mr-1" />
                       Add
                     </Button>
                   </div>
