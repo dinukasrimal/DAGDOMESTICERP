@@ -44,12 +44,51 @@ export class RawMaterialsService {
       .from('goods_received_lines')
       .select('id, goods_received_id, roll_barcode, roll_weight, roll_length, unit_price')
       .eq('raw_material_id', materialId)
-      .not('roll_barcode', 'is', null);
+      .not('roll_barcode', 'is', null)
+      .or('roll_weight.gt.0,roll_length.gt.0');
     if (error) {
       console.error('Error fetching fabric rolls:', error);
       return [];
     }
     return (data || []) as any;
+  }
+
+  // New: Fetch in-stock rolls directly from inventory layers using roll_barcode and available qty
+  async getInStockRollsFromInventory(materialId: number): Promise<Array<{ id: string, roll_barcode: string | null, qty: number, unit_price: number, last_updated: string }>> {
+    const { data, error } = await supabase
+      .from('raw_material_inventory')
+      .select('id, roll_barcode, quantity_available, unit_price, last_updated')
+      .eq('raw_material_id', materialId)
+      .not('roll_barcode', 'is', null)
+      .gt('quantity_available', 0)
+      .order('last_updated', { ascending: true });
+    if (error) {
+      console.error('Error fetching in-stock inventory rolls:', error);
+      return [];
+    }
+    return (data || []).map((r: any) => ({
+      id: r.id,
+      roll_barcode: r.roll_barcode,
+      qty: Number(r.quantity_available || 0),
+      unit_price: Number(r.unit_price || 0),
+      last_updated: r.last_updated,
+    }));
+  }
+
+  // Mark a set of barcodes as issued by zeroing out their recorded roll quantities in GRN lines.
+  // This is a tracking-only update to hide consumed rolls from the barcode stock view.
+  async markRollsIssuedByBarcodes(materialId: number, barcodes: string[]): Promise<void> {
+    if (!Array.isArray(barcodes) || barcodes.length === 0) return;
+    const clean = Array.from(new Set(barcodes.map(b => b?.trim()).filter(Boolean))) as string[];
+    if (clean.length === 0) return;
+    const { error } = await supabase
+      .from('goods_received_lines')
+      .update({ roll_weight: 0, roll_length: 0 })
+      .eq('raw_material_id', materialId)
+      .in('roll_barcode', clean);
+    if (error) {
+      console.warn('Failed to mark rolls as issued:', error);
+    }
   }
 
   async updateFabricRoll(lineId: string, newWeight: number, newLength: number | null): Promise<void> {
@@ -310,7 +349,7 @@ export class RawMaterialsService {
     // Load inventory rows, then fetch material info and compose
     const { data: invRows, error: invErr } = await supabase
       .from('raw_material_inventory')
-      .select('raw_material_id, quantity_on_hand, quantity_available, quantity_reserved, location, last_updated');
+      .select('raw_material_id, quantity_on_hand, quantity_available, quantity_reserved, location, last_updated, transaction_type');
     if (invErr) {
       console.error('Error fetching inventory (fallback):', invErr);
       return [];
@@ -345,6 +384,7 @@ export class RawMaterialsService {
     const invAgg = new Map<number, any>();
     for (const r of invRows || []) {
       if (!r?.raw_material_id) continue;
+      if ((r as any).transaction_type === 'issue') continue;
       const key = r.raw_material_id as number;
       const prev = invAgg.get(key) || { raw_material_id: key, quantity_on_hand: 0, quantity_available: 0, quantity_reserved: 0, location: r.location || 'Default Warehouse', last_updated: r.last_updated };
       invAgg.set(key, {
@@ -380,18 +420,24 @@ export class RawMaterialsService {
       if (error) throw error;
 
       const aggregateInventoryArray = (arr: any[]) => {
-        const onlyGrn = (arr || []).filter((r: any) => !r?.transaction_type || r.transaction_type === 'grn');
+        const entries = Array.isArray(arr) ? arr : [];
+        const relevant = entries.filter(r => (r?.transaction_type ?? 'grn') !== 'issue');
+        if (!relevant.length) return null;
         const acc = { quantity_on_hand: 0, quantity_available: 0, quantity_reserved: 0 } as any;
         let location: string | null = null;
         let last_updated: string | null = null;
-        for (const r of onlyGrn) {
+        for (const r of relevant) {
           acc.quantity_on_hand += Number(r?.quantity_on_hand || 0);
           acc.quantity_available += Number(r?.quantity_available || 0);
           acc.quantity_reserved += Number(r?.quantity_reserved || 0);
-          location = location || r?.location || 'Default Warehouse';
+          if (!location && r?.location) location = r.location;
           if (!last_updated || (r?.last_updated && r.last_updated > last_updated)) last_updated = r.last_updated;
         }
-        return onlyGrn && onlyGrn.length ? { ...acc, location, last_updated } : null;
+        return {
+          ...acc,
+          location: location || 'Default Warehouse',
+          last_updated,
+        };
       };
 
       let rows = (data || []).map((material: any) => {
@@ -409,12 +455,12 @@ export class RawMaterialsService {
         const { data: invRows } = await supabase
           .from('raw_material_inventory')
           .select('*')
-          .in('raw_material_id', missingIds)
-          .or('transaction_type.is.null,transaction_type.eq.grn');
+          .in('raw_material_id', missingIds);
         // Aggregate as above
         const agg = new Map<number, any>();
         for (const r of (invRows || [])) {
           if (!r?.raw_material_id) continue;
+          if (r.transaction_type === 'issue') continue;
           const key = r.raw_material_id as number;
           const prev = agg.get(key) || { raw_material_id: key, quantity_on_hand: 0, quantity_available: 0, quantity_reserved: 0, location: r.location || 'Default Warehouse', last_updated: r.last_updated };
           agg.set(key, {

@@ -357,7 +357,10 @@ export class GoodsReceivedService {
           quantity_received,
           unit_price,
           batch_number,
-          expiry_date
+          expiry_date,
+          roll_barcode,
+          roll_weight,
+          roll_length
         )
       `)
       .single();
@@ -381,6 +384,7 @@ export class GoodsReceivedService {
         transaction_type: 'grn',
         transaction_ref: null,
         last_updated: now,
+        roll_barcode: (line as any).roll_barcode || null,
       };
       const { error: insErr } = await supabase
         .from('raw_material_inventory')
@@ -440,7 +444,10 @@ export class GoodsReceivedService {
           quantity_received,
           unit_price,
           batch_number,
-          expiry_date
+          expiry_date,
+          roll_barcode,
+          roll_weight,
+          roll_length
         )
       `)
       .single();
@@ -450,21 +457,22 @@ export class GoodsReceivedService {
     }
 
     // Insert layer-wise rows into raw_material_inventory (FIFO layers)
-    for (const line of grnData.lines || []) {
-      const materialId = Number(line.raw_material_id);
-      const now = new Date().toISOString();
-      const payload: any = {
-        raw_material_id: materialId,
-        quantity_on_hand: line.quantity_received,
-        quantity_available: line.quantity_received,
-        quantity_reserved: 0,
-        unit_price: line.unit_price,
-        inventory_value: Number(line.quantity_received) * Number(line.unit_price || 0),
-        location: 'Default Warehouse',
-        transaction_type: 'grn',
-        transaction_ref: null,
-        last_updated: now,
-      };
+      for (const line of grnData.lines || []) {
+        const materialId = Number(line.raw_material_id);
+        const now = new Date().toISOString();
+        const payload: any = {
+          raw_material_id: materialId,
+          quantity_on_hand: line.quantity_received,
+          quantity_available: line.quantity_received,
+          quantity_reserved: 0,
+          unit_price: line.unit_price,
+          inventory_value: Number(line.quantity_received) * Number(line.unit_price || 0),
+          location: 'Default Warehouse',
+          transaction_type: 'grn',
+          transaction_ref: null,
+          last_updated: now,
+          roll_barcode: (line as any).roll_barcode || null,
+        };
       const { error: insErr } = await supabase
         .from('raw_material_inventory')
         .insert(payload as any);

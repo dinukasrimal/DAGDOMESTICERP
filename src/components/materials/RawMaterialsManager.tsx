@@ -510,8 +510,57 @@ export const RawMaterialsManager: React.FC = () => {
     setViewRollsOpen(true);
     setViewRollsLoading(true);
     try {
-      const rolls = await rawMaterialsService.getFabricRolls(material.id);
-      setViewFabricRolls(rolls as any);
+      // Prefer authoritative in-stock rolls from inventory layers with roll_barcode
+      const invRolls = await rawMaterialsService.getInStockRollsFromInventory(material.id);
+      if (invRolls.length > 0) {
+        // Map to view model shape similar to GRN rolls
+        const mapped = invRolls.map((r: any) => ({
+          id: r.id,
+          roll_barcode: r.roll_barcode,
+          roll_weight: (material.purchase_unit || 'kg').toLowerCase().includes('kg') ? r.qty : null,
+          roll_length: (material.purchase_unit || 'kg').toLowerCase().includes('kg') ? null : r.qty,
+          unit_price: r.unit_price,
+          goods_received_id: '-',
+        }));
+        setViewFabricRolls(mapped as any);
+      } else {
+        // Fallback to GRN lines filtered + FIFO match to available qty
+        const rolls = await rawMaterialsService.getFabricRolls(material.id);
+        const mat = materials.find(m => m.id === material.id) || material;
+        const available = Number((mat as any)?.inventory?.quantity_available || 0);
+        const isKg = (material.purchase_unit || 'kg').toLowerCase().includes('kg');
+        const grnIds = Array.from(new Set((rolls as any[]).map(r => r.goods_received_id).filter(Boolean)));
+        let grnDates = new Map<string, string>();
+        if (grnIds.length) {
+          const { data: grns } = await supabase
+            .from('goods_received')
+            .select('id, received_date')
+            .in('id', grnIds);
+          grnDates = new Map((grns || []).map((g: any) => [g.id, g.received_date]));
+        }
+        const sorted = (rolls as any[]).slice().sort((a, b) => {
+          const da = grnDates.get(a.goods_received_id) || '1970-01-01';
+          const db = grnDates.get(b.goods_received_id) || '1970-01-01';
+          if (da < db) return -1;
+          if (da > db) return 1;
+          return String(a.id) < String(b.id) ? -1 : 1;
+        });
+        const inStock: any[] = [];
+        let sum = 0;
+        const eps = 1e-6;
+        for (const r of sorted) {
+          const w = Number(r.roll_weight || 0);
+          const l = Number(r.roll_length || 0);
+          const qty = isKg ? (w > 0 ? w : l) : (l > 0 ? l : w);
+          if (qty <= 0) continue;
+          if (sum + qty <= available + eps) {
+            inStock.push(r);
+            sum += qty;
+            if (sum >= available - eps) break;
+          }
+        }
+        setViewFabricRolls(inStock as any);
+      }
     } catch (err: any) {
       toast({ title: 'Error', description: err?.message || 'Failed to load fabric rolls', variant: 'destructive' });
     } finally {
@@ -1346,7 +1395,9 @@ export const RawMaterialsManager: React.FC = () => {
                       ) : (
                         viewFabricRolls.map((r) => {
                           const isKg = (viewRollsUnit || 'kg').toLowerCase().includes('kg');
-                          const qty = isKg ? (r.roll_weight ?? 0) : (r.roll_length ?? 0);
+                          const w = Number(r.roll_weight ?? 0);
+                          const l = Number(r.roll_length ?? 0);
+                          const qty = isKg ? (w > 0 ? w : l) : (l > 0 ? l : w);
                           return (
                             <TableRow key={r.id}>
                               <TableCell className="font-mono">{r.roll_barcode || '-'}</TableCell>

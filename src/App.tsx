@@ -17,6 +17,8 @@ import { PurchaseOrderManager } from "./components/materials/PurchaseOrderManage
 import { GoodsReceivedManager } from "./components/materials/GoodsReceivedManager";
 import { GoodsIssueManager } from "./components/materials/GoodsIssueManager";
 import ReturnFabricAgainstMarker from "./components/materials/ReturnFabricAgainstMarker";
+import SupplierReturns from "./components/materials/SupplierReturns";
+import IssueReturns from "./components/materials/IssueReturns";
 import MarkerRequests from "./pages/MarkerRequests";
 import CuttingRecords from "./pages/CuttingRecords";
 import CutIssueRecords from "./pages/CutIssueRecords";
@@ -88,6 +90,16 @@ const App: React.FC = () => {
             <Route path="/returns/fabric" element={
               <ProtectedRoute componentKey="goods-received">
                 <ReturnFabricAgainstMarker />
+              </ProtectedRoute>
+            } />
+            <Route path="/returns/supplier" element={
+              <ProtectedRoute componentKey="goods-received">
+                <SupplierReturns />
+              </ProtectedRoute>
+            } />
+            <Route path="/returns/issues" element={
+              <ProtectedRoute componentKey="goods-received">
+                <IssueReturns />
               </ProtectedRoute>
             } />
             <Route path="/marker-requests" element={

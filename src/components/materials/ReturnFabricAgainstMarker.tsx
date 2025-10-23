@@ -4,75 +4,228 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { SearchableSelect } from '@/components/ui/searchable-select';
-import { useToast } from '@/hooks/use-toast';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { BarcodeScanner } from '@/components/ui/BarcodeScanner';
-import { markerRequestService, type MarkerRequest } from '@/services/markerRequestService';
-import { PurchaseOrderService, type PurchaseOrder } from '@/services/purchaseOrderService';
-import { GoodsReceivedService, type CreateGoodsReceived, type FabricRoll } from '@/services/goodsReceivedService';
+import { useToast } from '@/hooks/use-toast';
+import { markerRequestService } from '@/services/markerRequestService';
+import type { MarkerRequest } from '@/services/markerRequestService';
+import type { MarkerFabricAssignment } from '@/types/marker';
+import { markerReturnService } from '@/services/markerReturnService';
+import { PurchaseOrderService } from '@/services/purchaseOrderService';
+import { GoodsReceivedService, type FabricRoll, type CreateGoodsReceivedLine } from '@/services/goodsReceivedService';
 import { RawMaterialsService, type RawMaterialWithInventory } from '@/services/rawMaterialsService';
+import { generateMarkerReturnPdf } from '@/lib/pdfUtils';
 import { supabase } from '@/integrations/supabase/client';
-import { QrCode, Package, CheckCircle } from 'lucide-react';
+import { QrCode, FileDown } from 'lucide-react';
 
 const purchaseOrderService = new PurchaseOrderService();
 const goodsReceivedService = new GoodsReceivedService();
 const rawMaterialsService = new RawMaterialsService();
 
+interface ReturnLineDraft {
+  raw_material: RawMaterialWithInventory;
+  unit: string;
+  unit_price: number;
+  quantity: number;
+  barcodes: FabricRoll[];
+}
+
+interface MarkerReturnRow {
+  id: string;
+  return_number: string;
+  marker_number?: string;
+  po_number?: string;
+  return_date: string;
+  line_count: number;
+}
+
+type MarkerReturnLineRow = {
+  raw_material_id: number;
+  quantity: number;
+  unit?: string | null;
+  barcodes?: string[] | null;
+  raw_materials?: { name?: string | null; purchase_unit?: string | null } | null;
+};
+
 const ReturnFabricAgainstMarker: React.FC = () => {
+  const { toast } = useToast();
+  const [markerReturns, setMarkerReturns] = useState<MarkerReturnRow[]>([]);
+  const [loadingReturns, setLoadingReturns] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [dialogOpen, setDialogOpen] = useState(false);
+
+  const loadReturns = useCallback(async () => {
+    setLoadingReturns(true);
+    try {
+      const list = await markerReturnService.listReturns();
+      setMarkerReturns(list as MarkerReturnRow[]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Please try again.';
+      toast({ title: 'Failed to load marker returns', description: message, variant: 'destructive' });
+    } finally {
+      setLoadingReturns(false);
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    void loadReturns();
+  }, [loadReturns]);
+
+  const filteredReturns = useMemo(() => {
+    const needle = searchTerm.trim().toLowerCase();
+    if (!needle) return markerReturns;
+    return markerReturns.filter(row => {
+      return (
+        (row.return_number || '').toLowerCase().includes(needle) ||
+        (row.marker_number || '').toLowerCase().includes(needle) ||
+        (row.po_number || '').toLowerCase().includes(needle)
+      );
+    });
+  }, [markerReturns, searchTerm]);
+
+  return (
+    <ModernLayout
+      title="Return Fabric (Marker)"
+      description="Return fabric rolls back into stock against a marker request"
+      icon={QrCode}
+      gradient="bg-gradient-to-r from-purple-500 to-indigo-600"
+    >
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-xl">Marker Returns</CardTitle>
+          <Button onClick={() => setDialogOpen(true)}>Create Return</Button>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Label htmlFor="marker-return-search" className="text-sm text-gray-600">Search</Label>
+          <Input
+            id="marker-return-search"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search by return number, marker, or PO"
+            className="max-w-sm"
+          />
+        </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Return History</CardTitle>
+            <CardDescription>Recorded marker returns with auto-generated numbers</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {loadingReturns ? (
+              <div className="text-sm text-gray-600">Loading…</div>
+            ) : filteredReturns.length === 0 ? (
+              <div className="text-sm text-gray-500">No marker returns recorded yet.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Return No</TableHead>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Marker</TableHead>
+                      <TableHead>PO</TableHead>
+                      <TableHead>Lines</TableHead>
+                      <TableHead>PDF</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredReturns.map(row => (
+                      <TableRow key={row.id}>
+                        <TableCell className="font-mono">{row.return_number}</TableCell>
+                        <TableCell>{new Date(row.return_date).toLocaleDateString()}</TableCell>
+                        <TableCell>{row.marker_number || '—'}</TableCell>
+                        <TableCell>{row.po_number || '—'}</TableCell>
+                        <TableCell>{row.line_count}</TableCell>
+                        <TableCell>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={async () => {
+                              const [{ data: headerData }, { data: lineRows }] = await Promise.all([
+                                supabase
+                                  .from('marker_returns')
+                                  .select<{ marker_id: string | null; purchase_order_id: string | null }>('marker_id, purchase_order_id')
+                                  .eq('id', row.id)
+                                  .single(),
+                                supabase
+                                  .from('marker_return_lines')
+                                  .select<MarkerReturnLineRow>('raw_material_id, quantity, unit, barcodes, raw_materials(name, purchase_unit)')
+                                  .eq('marker_return_id', row.id),
+                              ]);
+                              const markerRes = headerData?.marker_id
+                                ? await supabase
+                                    .from('marker_requests')
+                                    .select<{ marker_number: string | null }>('marker_number')
+                                    .eq('id', headerData.marker_id)
+                                    .single()
+                                : null;
+                              const mapped = (lineRows || []).map((line) => ({
+                                material: line.raw_materials?.name || String(line.raw_material_id),
+                                unit: line.unit || line.raw_materials?.purchase_unit || 'kg',
+                                quantity: Number(line.quantity || 0),
+                                barcodes: (line.barcodes || []) ?? [],
+                              }));
+                              const today = new Date(row.return_date).toISOString().slice(0, 10);
+                              generateMarkerReturnPdf({
+                                markerNumber: markerRes?.data?.marker_number || 'Marker',
+                                poNumber: row.po_number,
+                                returnDate: today,
+                                lines: mapped,
+                              });
+                            }}
+                          >
+                            <FileDown className="h-4 w-4 mr-2" /> PDF
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <CreateMarkerReturnDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onSaved={() => {
+          setDialogOpen(false);
+          void loadReturns();
+        }}
+      />
+    </ModernLayout>
+  );
+};
+
+interface CreateMarkerReturnDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => void;
+}
+
+const CreateMarkerReturnDialog: React.FC<CreateMarkerReturnDialogProps> = ({ open, onOpenChange, onSaved }) => {
   const { toast } = useToast();
 
   const [markers, setMarkers] = useState<MarkerRequest[]>([]);
-  const [materials, setMaterials] = useState<RawMaterialWithInventory[]>([]);
-  const [selectedMarker, setSelectedMarker] = useState<MarkerRequest | null>(null);
-  const [selectedMaterialId, setSelectedMaterialId] = useState<string>('');
-  const selectedMaterial = useMemo(() => materials.find(m => String(m.id) === String(selectedMaterialId)) || null, [materials, selectedMaterialId]);
-  // Only allow materials assigned on the selected marker
-  const assignedMaterialIds = useMemo(() => {
-    const ids = new Set<string>();
-    if (!selectedMarker) return ids;
-    const anyMarker: any = selectedMarker as any;
-    const list = [
-      ...(((anyMarker?.fabric_assignments as any[]) ?? []) as any[]),
-      ...((anyMarker?.fabric_assignment ? [anyMarker.fabric_assignment] : []) as any[]),
-    ];
-    list.forEach((a) => {
-      const id = a?.raw_material_id != null ? String(a.raw_material_id) : null;
-      if (id) ids.add(id);
-    });
-    return ids;
-  }, [selectedMarker]);
+  const [rawMaterials, setRawMaterials] = useState<RawMaterialWithInventory[]>([]);
+  const [selectedMarkerId, setSelectedMarkerId] = useState('');
+  const selectedMarker = useMemo(() => markers.find(m => String(m.id) === String(selectedMarkerId)) || null, [markers, selectedMarkerId]);
 
-  // Filter to assigned materials only
-  const markerMaterials = useMemo(() => {
-    if (assignedMaterialIds.size === 0) return [] as RawMaterialWithInventory[];
-    return materials.filter(m => assignedMaterialIds.has(String(m.id)));
-  }, [materials, assignedMaterialIds]);
+  const [availableMaterials, setAvailableMaterials] = useState<RawMaterialWithInventory[]>([]);
+  const [selectedMaterialId, setSelectedMaterialId] = useState('');
+  const selectedMaterial = useMemo(() => availableMaterials.find(m => String(m.id) === String(selectedMaterialId)) || null, [availableMaterials, selectedMaterialId]);
 
+  const [rolls, setRolls] = useState<FabricRoll[]>([]);
   const [showScanner, setShowScanner] = useState(false);
   const [showWeightEntry, setShowWeightEntry] = useState(false);
   const [scannedBarcode, setScannedBarcode] = useState('');
   const [rollWeightInput, setRollWeightInput] = useState('');
-  const [rollLengthInput, setRollLengthInput] = useState('');
-  const [rolls, setRolls] = useState<FabricRoll[]>([]);
-  // Past returns list (for the selected marker/material)
-  const [returnsLoading, setReturnsLoading] = useState(false);
-  const [pastReturns, setPastReturns] = useState<
-    Array<{
-      grn_id: string;
-      grn_number: string;
-      received_date: string;
-      material_id: number;
-      material_name: string;
-      unit: string;
-      total_qty: number;
-      roll_count: number;
-      barcodes: string[];
-    }>
-  >([]);
-
-  const decimalInputPattern = /^\d*(?:\.\d*)?$/;
   const weightInputRef = useRef<HTMLInputElement | null>(null);
   const weightFocusTimeoutRef = useRef<number | null>(null);
 
@@ -90,462 +243,458 @@ const ReturnFabricAgainstMarker: React.FC = () => {
     }, delay);
   }, []);
 
-  const unitLabel = useMemo(() => (selectedMaterial?.purchase_unit || 'kg'), [selectedMaterial]);
-  const isWeightMode = useMemo(() => unitLabel.toLowerCase().includes('kg'), [unitLabel]);
+  const isWeightMode = useMemo(() => (selectedMaterial?.purchase_unit || 'kg').toLowerCase().includes('kg'), [selectedMaterial]);
+  const decimalInputPattern = /^\d*(?:\.\d*)?$/;
+  const totalQty = useMemo(() => rolls.reduce((sum, roll) => sum + (isWeightMode ? Number(roll.weight || 0) : Number(roll.length || 0)), 0), [rolls, isWeightMode]);
+
+  const [returnLines, setReturnLines] = useState<ReturnLineDraft[]>([]);
+
+  useEffect(() => {
+    if (!open) {
+      setSelectedMarkerId('');
+      setSelectedMaterialId('');
+      setAvailableMaterials([]);
+      setRolls([]);
+      setReturnLines([]);
+      setShowScanner(false);
+      setShowWeightEntry(false);
+      setScannedBarcode('');
+      setRollWeightInput('');
+    }
+  }, [open]);
 
   useEffect(() => {
     (async () => {
+      if (!open) return;
       try {
-        const list = await markerRequestService.getMarkerRequests();
+        const list = await markerRequestService.listMarkerRequests();
         setMarkers(list);
-      } catch {}
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Please try again.';
+        toast({ title: 'Failed to load marker requests', description: message, variant: 'destructive' });
+      }
       try {
         const mats = await rawMaterialsService.getRawMaterials(false);
-        // Only fabrics
-        setMaterials(mats.filter(m => m.category?.id === 1 || (m.category?.name || m.name || '').toLowerCase().includes('fabric')));
-      } catch {}
-    })();
-  }, []);
-
-  // Load past returns when marker/material changes
-  useEffect(() => {
-    const loadPastReturns = async () => {
-      setPastReturns([]);
-      if (!selectedMarker) return;
-      setReturnsLoading(true);
-      try {
-        // Fetch GRNs whose notes contain the marker return tag
-        const likeNote = `Marker Return ${selectedMarker.marker_number}`;
-        const { data: grns, error: grnErr } = await supabase
-          .from('goods_received')
-          .select('id, grn_number, received_date, notes')
-          .ilike('notes', `%${likeNote}%`)
-          .order('received_date', { ascending: false });
-        if (grnErr || !grns || grns.length === 0) { setReturnsLoading(false); return; }
-        const grnIds = grns.map(g => g.id);
-
-        // Fetch GRN lines for these GRNs (optionally filter by selected material)
-        let linesQuery = supabase
-          .from('goods_received_lines')
-          .select('goods_received_id, raw_material_id, quantity_received, roll_barcode')
-          .in('goods_received_id', grnIds);
-        if (selectedMaterialId) {
-          linesQuery = linesQuery.eq('raw_material_id', Number(selectedMaterialId));
-        }
-        const { data: lines, error: lineErr } = await linesQuery;
-        if (lineErr || !lines || lines.length === 0) { setReturnsLoading(false); return; }
-
-        // Fetch material names and units for involved materials
-        const materialIds = Array.from(new Set(lines.map(l => l.raw_material_id))).filter(Boolean) as number[];
-        let materialMap = new Map<number, { name: string; unit: string }>();
-        if (materialIds.length) {
-          const { data: mats } = await supabase
-            .from('raw_materials')
-            .select('id, name, purchase_unit')
-            .in('id', materialIds);
-          materialMap = new Map((mats || []).map((m: any) => [Number(m.id), { name: String(m.name || ''), unit: String(m.purchase_unit || 'kg') }]));
-        }
-
-        // Group by GRN and material
-        const grnMap = new Map<string, { grn_number: string; date: string }>();
-        for (const g of grns) grnMap.set(g.id, { grn_number: g.grn_number, date: g.received_date });
-
-        const keyMap = new Map<string, { grn_id: string; grn_number: string; received_date: string; material_id: number; material_name: string; unit: string; total_qty: number; roll_count: number; barcodes: Set<string> }>();
-        for (const l of lines) {
-          const grnMeta = grnMap.get(l.goods_received_id);
-          if (!grnMeta) continue;
-          const mid = Number(l.raw_material_id);
-          const mat = materialMap.get(mid) || { name: 'Material', unit: 'kg' };
-          const key = `${l.goods_received_id}-${mid}`;
-          const item = keyMap.get(key) || {
-            grn_id: l.goods_received_id,
-            grn_number: grnMeta.grn_number,
-            received_date: grnMeta.date,
-            material_id: mid,
-            material_name: mat.name,
-            unit: mat.unit,
-            total_qty: 0,
-            roll_count: 0,
-            barcodes: new Set<string>(),
-          };
-          item.total_qty += Number(l.quantity_received || 0);
-          if (l.roll_barcode) item.barcodes.add(String(l.roll_barcode));
-          item.roll_count = item.barcodes.size;
-          keyMap.set(key, item);
-        }
-
-        const result = Array.from(keyMap.values()).map(v => ({
-          grn_id: v.grn_id,
-          grn_number: v.grn_number,
-          received_date: v.received_date,
-          material_id: v.material_id,
-          material_name: v.material_name,
-          unit: v.unit,
-          total_qty: v.total_qty,
-          roll_count: v.roll_count,
-          barcodes: Array.from(v.barcodes),
-        }));
-        setPastReturns(result);
-      } finally {
-        setReturnsLoading(false);
+        setRawMaterials(mats);
+      } catch {
+        // ignore load errors for raw materials
       }
-    };
-    void loadPastReturns();
-  }, [selectedMarker, selectedMaterialId]);
+    })();
+  }, [open, toast]);
 
-  const markerOptions = useMemo(() => markers.map(m => ({ value: m.id, label: m.marker_number, description: (m.measurement_type || 'yard').toUpperCase() })), [markers]);
-  const materialOptions = useMemo(() => markerMaterials.map(m => ({ value: String(m.id), label: m.name, description: m.code || '' })), [markerMaterials]);
-
-  // If marker changes or assigned set shrinks, clear material if not allowed
   useEffect(() => {
-    if (selectedMaterialId && !assignedMaterialIds.has(String(selectedMaterialId))) {
+    if (!selectedMarker) {
+      setAvailableMaterials([]);
       setSelectedMaterialId('');
+      return;
     }
-  }, [assignedMaterialIds, selectedMaterialId]);
+    const assignments = new Set<number>();
+    const combined: MarkerFabricAssignment[] = [
+      ...((selectedMarker.fabric_assignments as MarkerFabricAssignment[] | undefined) ?? []),
+      ...(selectedMarker.fabric_assignment ? [selectedMarker.fabric_assignment as MarkerFabricAssignment] : []),
+    ];
+    combined.forEach(assign => {
+      if (assign && assign.raw_material_id != null) {
+        assignments.add(Number(assign.raw_material_id));
+      }
+    });
+    const filtered = rawMaterials.filter(mat => assignments.has(Number(mat.id)));
+    setAvailableMaterials(filtered);
+    if (!filtered.some(mat => String(mat.id) === String(selectedMaterialId))) {
+      setSelectedMaterialId(filtered.length ? String(filtered[0].id) : '');
+    }
+  }, [selectedMarker, rawMaterials, selectedMaterialId]);
+
+  const markerOptions = useMemo(() => markers.map(marker => ({ value: String(marker.id), label: marker.marker_number || `Marker ${marker.id}` })), [markers]);
+  const materialOptions = useMemo(() => availableMaterials.map(mat => ({ value: String(mat.id), label: mat.name, description: mat.code || '' })), [availableMaterials]);
+
+  const addLine = () => {
+    if (!selectedMaterial) {
+      toast({ title: 'Select fabric', description: 'Choose a fabric material before adding a line.', variant: 'destructive' });
+      return;
+    }
+    if (rolls.length === 0) {
+      toast({ title: 'Scan rolls first', description: 'Scan at least one roll for this fabric.', variant: 'destructive' });
+      return;
+    }
+    const barcodeEntries = rolls.map<FabricRoll>(roll => ({
+      barcode: roll.barcode,
+      weight: roll.weight,
+      length: roll.length,
+    }));
+    const newLine: ReturnLineDraft = {
+      raw_material: selectedMaterial,
+      unit: selectedMaterial.purchase_unit || 'kg',
+      unit_price: 0,
+      quantity: totalQty,
+      barcodes: barcodeEntries,
+    };
+    setReturnLines(prev => [...prev, newLine]);
+    setRolls([]);
+    setScannedBarcode('');
+    toast({ title: 'Line added', description: `${selectedMaterial.name} – ${totalQty.toFixed(3)} ${newLine.unit}` });
+  };
 
   const handleScan = async (barcode: string) => {
     const code = barcode.trim();
     if (!code) return;
-    // prevent duplicates in this session
-    if (rolls.some(r => r.barcode === code)) {
-      toast({ title: 'Duplicate', description: 'Barcode already scanned in this return session.', variant: 'destructive' });
+    if (!selectedMaterial) {
+      toast({ title: 'Select fabric', variant: 'destructive' });
       return;
     }
-    // ensure barcode not already exists in goods_received_lines
-    const { data, error } = await supabase
-      .from('goods_received_lines')
-      .select('id')
+    if (rolls.some(roll => roll.barcode === code)) {
+      toast({ title: 'Duplicate barcode', description: 'Already scanned for this line.', variant: 'destructive' });
+      return;
+    }
+    const { data } = await supabase
+      .from('raw_material_inventory')
+      .select('quantity_available')
+      .eq('raw_material_id', Number(selectedMaterial.id))
       .eq('roll_barcode', code)
+      .gt('quantity_available', 0)
       .limit(1);
-    if (!error && data && data.length > 0) {
-      toast({ title: 'Already in stock', description: 'This barcode already exists in Goods Received. Use Goods Issue to consume it.', variant: 'destructive' });
+    if (!data || data.length === 0) {
+      toast({ title: 'Not in stock', description: 'This barcode has no available quantity.', variant: 'destructive' });
       return;
     }
     setScannedBarcode(code);
     setRollWeightInput('');
-    setRollLengthInput('');
     setShowWeightEntry(true);
     requestWeightInputFocus(50);
   };
 
   const confirmAddRoll = () => {
-    const val = parseFloat(rollWeightInput);
-    if (!scannedBarcode || Number.isNaN(val) || val <= 0) {
-      toast({ title: 'Validation', description: `Enter a valid ${isWeightMode ? 'weight' : 'length'} in ${unitLabel}.`, variant: 'destructive' });
+    if (!scannedBarcode) return;
+    const qty = parseFloat(rollWeightInput);
+    if (Number.isNaN(qty) || qty <= 0) {
+      toast({ title: 'Invalid quantity', description: `Enter a valid ${isWeightMode ? 'weight' : 'length'} in ${selectedMaterial?.purchase_unit || 'kg'}.`, variant: 'destructive' });
       return;
     }
-    const newRoll: FabricRoll = isWeightMode
-      ? { barcode: scannedBarcode, weight: val, length: undefined }
-      : { barcode: scannedBarcode, weight: 0 as any, length: val };
-    setRolls(prev => [...prev, newRoll]);
+    const roll: FabricRoll = {
+      barcode: scannedBarcode,
+      weight: isWeightMode ? qty : 0,
+      length: !isWeightMode ? qty : undefined,
+    };
+    setRolls(prev => [...prev, roll]);
     setShowWeightEntry(false);
     setScannedBarcode('');
     setRollWeightInput('');
-    setRollLengthInput('');
   };
 
-  const removeRoll = (barcode: string) => setRolls(prev => prev.filter(r => r.barcode !== barcode));
+  const removeRoll = (barcode: string) => setRolls(prev => prev.filter(roll => roll.barcode !== barcode));
 
-  const totalQty = useMemo(() => rolls.reduce((s, r) => s + (isWeightMode ? (r.weight || 0) : (r.length || 0)), 0), [rolls, isWeightMode]);
+  const removeReturnLine = (index: number) => setReturnLines(prev => prev.filter((_, idx) => idx !== index));
 
-  const handlePostReturn = async () => {
+  const deriveUnitPrice = async (materialId: number, marker: MarkerRequest): Promise<number> => {
     try {
-      if (!selectedMarker) {
-        toast({ title: 'Marker required', description: 'Select a marker request first.', variant: 'destructive' });
-        return;
+      const { data: issues } = await supabase
+        .from('goods_issue')
+        .select<{ id: string }>('id')
+        .eq('reference_number', marker.marker_number || '')
+        .limit(20);
+      const issueIds = (issues ?? []).map(item => item.id);
+      if (issueIds.length) {
+        const { data: lines } = await supabase
+          .from('goods_issue_lines')
+          .select<{ quantity_issued: number; unit_cost: number }>('quantity_issued, unit_cost')
+          .in('goods_issue_id', issueIds)
+          .eq('raw_material_id', materialId);
+        const items = lines ?? [];
+        const totalQty = items.reduce((sum, line) => sum + Number(line.quantity_issued || 0), 0);
+        const totalValue = items.reduce((sum, line) => sum + Number(line.quantity_issued || 0) * Number(line.unit_cost || 0), 0);
+        if (totalQty > 0 && totalValue > 0) return totalValue / totalQty;
       }
-      if (!selectedMaterial) {
-        toast({ title: 'Material required', description: 'Select a fabric material to return.', variant: 'destructive' });
-        return;
+      const { data: layers } = await supabase
+        .from('raw_material_inventory')
+        .select<{ unit_price: number | null; last_updated: string | null }>('unit_price, last_updated')
+        .eq('raw_material_id', materialId)
+        .or('transaction_type.is.null,transaction_type.eq.grn')
+        .order('last_updated', { ascending: false })
+        .limit(1);
+      if (layers && layers.length) {
+        return Number(layers[0]?.unit_price ?? 0);
       }
-      if (rolls.length === 0) {
-        toast({ title: 'No rolls', description: 'Scan at least one roll to return.', variant: 'destructive' });
-        return;
-      }
+    } catch {
+      // ignore pricing errors; fallback to zero
+    }
+    return 0;
+  };
 
-      // Hard validation: none of the scanned barcodes may already exist in GRN
-      const codes = rolls.map(r => (r.barcode || '').trim()).filter(Boolean);
-      if (codes.length > 0) {
-        const { data: existing, error: dupErr } = await supabase
-          .from('goods_received_lines')
-          .select('roll_barcode')
-          .in('roll_barcode', codes)
-          .limit(codes.length);
-        if (!dupErr && existing && existing.length > 0) {
-          const dups = Array.from(new Set(existing.map(e => e.roll_barcode))).filter(Boolean) as string[];
-          toast({
-            title: 'Duplicate barcodes detected',
-            description: `Already in GRN: ${dups.join(', ')}`,
-            variant: 'destructive'
-          });
-          return;
-        }
-      }
+  const handleSave = async () => {
+    if (!selectedMarker) {
+      toast({ title: 'Select a marker request', variant: 'destructive' });
+      return;
+    }
+    if (!returnLines.length) {
+      toast({ title: 'Add at least one line', variant: 'destructive' });
+      return;
+    }
+    try {
+      // Derive supplier from first material (fallback 1)
+      const supplierId = Number(returnLines[0].raw_material.supplier_id ?? returnLines[0].raw_material.supplier?.id ?? 1);
+      const enhancedLines = await Promise.all(returnLines.map(async (line) => {
+        const unitPrice = line.unit_price > 0 ? line.unit_price : await deriveUnitPrice(line.raw_material.id, selectedMarker);
+        return { ...line, unit_price: unitPrice };
+      }));
 
-      // Derive unit price from issues against this marker for this material (weighted avg)
-      let unitPrice = 0;
-      try {
-        // Fetch goods_issue headers for this marker
-        const { data: issues } = await supabase
-          .from('goods_issue')
-          .select('id')
-          .eq('reference_number', selectedMarker.marker_number);
-        const issueIds = (issues || []).map(i => i.id);
-        if (issueIds.length) {
-          const { data: giLines } = await supabase
-            .from('goods_issue_lines')
-            .select('quantity_issued, unit_cost')
-            .in('goods_issue_id', issueIds)
-            .eq('raw_material_id', Number(selectedMaterial.id));
-          const lines = giLines || [];
-          const totalQty = lines.reduce((s: number, l: any) => s + Number(l.quantity_issued || 0), 0);
-          const totalCost = lines.reduce((s: number, l: any) => s + (Number(l.quantity_issued || 0) * Number(l.unit_cost || 0)), 0);
-          if (totalQty > 0) unitPrice = totalCost / totalQty;
-        }
-        // Fallback: use latest GRN layer cost for this material
-        if (!unitPrice || unitPrice <= 0) {
-          const { data: layers } = await supabase
-            .from('raw_material_inventory')
-            .select('unit_price, last_updated, transaction_type')
-            .eq('raw_material_id', Number(selectedMaterial.id))
-            .or('transaction_type.is.null,transaction_type.eq.grn')
-            .order('last_updated', { ascending: false })
-            .limit(1);
-          if (layers && layers.length) {
-            unitPrice = Number((layers[0] as any).unit_price || 0) || 0;
-          }
-        }
-      } catch {}
+      const poLines = enhancedLines.map(line => ({
+        raw_material_id: Number(line.raw_material.id),
+        quantity: line.quantity,
+        unit_price: line.unit_price,
+      }));
 
-      // 1) Create a temporary PO to anchor GRN (Internal Return). Use derived unit price.
-      const supplierId = selectedMaterial.supplier?.id || 1; // fallback supplier id
       const po = await purchaseOrderService.createPurchaseOrder({
         supplier_id: supplierId,
         order_date: new Date().toISOString().split('T')[0],
         notes: `Marker Return ${selectedMarker.marker_number}`,
-        lines: [{ raw_material_id: Number(selectedMaterial.id), quantity: totalQty, unit_price: unitPrice || 0 }],
+        lines: poLines,
       });
-      const poLine = po.lines?.find(l => String(l.raw_material_id) === String(selectedMaterial.id));
-      if (!poLine) throw new Error('Failed to resolve PO line for selected material');
 
-      // 2) Create GRN with rolls
-      const grn: CreateGoodsReceived = {
+      const header = await markerReturnService.createHeader({ marker_id: String(selectedMarker.id), purchase_order_id: po.id, notes: null });
+
+      const grnLines: CreateGoodsReceivedLine[] = [];
+      const rollDetails: Array<{ material: string; unit: string; quantity: number; barcodes?: string[] }> = [];
+
+      for (const line of enhancedLines) {
+        const poLine = po.lines?.find(pl => pl.raw_material_id === line.raw_material.id);
+        if (!poLine) continue;
+        if (line.barcodes.length === 0) continue;
+        const isWeightLine = (line.unit || 'kg').toLowerCase().includes('kg');
+        for (const roll of line.barcodes) {
+          const qty = isWeightLine ? Number(roll.weight || 0) : Number(roll.length || 0);
+          if (qty <= 0) continue;
+          grnLines.push({
+            purchase_order_line_id: poLine.id,
+            raw_material_id: Number(line.raw_material.id),
+            quantity_received: qty,
+            unit_price: line.unit_price,
+            roll_barcode: roll.barcode,
+            roll_weight: roll.weight,
+            roll_length: roll.length,
+          });
+        }
+        rollDetails.push({
+          material: line.raw_material.name,
+          unit: line.unit,
+          quantity: line.quantity,
+          barcodes: line.barcodes.map(b => b.barcode || ''),
+        });
+      }
+
+      if (!grnLines.length) {
+        toast({ title: 'No rolls to return', description: 'Scan at least one barcode before saving.', variant: 'destructive' });
+        return;
+      }
+
+      const grn = await goodsReceivedService.createGoodsReceived({
         purchase_order_id: po.id,
         received_date: new Date().toISOString().split('T')[0],
         notes: `Marker Return ${selectedMarker.marker_number}`,
-        lines: rolls.map(r => ({
-          purchase_order_line_id: poLine.id,
-          raw_material_id: Number(selectedMaterial.id),
-          quantity_received: isWeightMode ? (r.weight || 0) : (r.length || 0),
-          unit_price: poLine.unit_price,
-          roll_barcode: r.barcode,
-          roll_weight: r.weight,
-          roll_length: r.length,
-        }))
-      };
-      const newGrn = await goodsReceivedService.createGoodsReceived(grn);
-      // Post to inventory so layers are created
+        lines: grnLines,
+      });
+
       try {
-        await goodsReceivedService.verifyGoodsReceived(newGrn.id);
-      } catch (e) {
-        // fallback
-        try { await goodsReceivedService.postGoodsReceived(newGrn.id); } catch {}
+        await goodsReceivedService.verifyGoodsReceived(grn.id);
+      } catch (error) {
+        try { await goodsReceivedService.postGoodsReceived(grn.id); } catch {}
       }
-      toast({ title: 'Return posted', description: `${rolls.length} roll(s) added to stock for marker ${selectedMarker.marker_number}.` });
-      setRolls([]);
-      setShowScanner(false);
-    } catch (err: any) {
-      toast({ title: 'Failed to post return', description: err?.message || 'Please try again.', variant: 'destructive' });
+
+      await markerReturnService.addLines(header.id, enhancedLines.map(line => ({
+        raw_material_id: Number(line.raw_material.id),
+        quantity: line.quantity,
+        unit: line.unit,
+        unit_price: line.unit_price,
+        barcodes: line.barcodes.map(b => b.barcode || ''),
+      })));
+
+      generateMarkerReturnPdf({
+        markerNumber: selectedMarker.marker_number || 'Marker',
+        poNumber: po.po_number,
+        returnDate: new Date().toISOString().split('T')[0],
+        lines: rollDetails,
+      });
+
+      toast({ title: 'Marker return saved', description: header.return_number });
+      onSaved();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Please try again.';
+      toast({ title: 'Failed to save marker return', description: message, variant: 'destructive' });
     }
   };
 
   return (
-    <ModernLayout
-      title="Return Fabric Against Marker"
-      description="Scan fabric rolls and return them to stock against a marker"
-      icon={QrCode}
-      gradient="bg-gradient-to-r from-purple-500 to-indigo-600"
-    >
-      <div className="space-y-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>Return Details</CardTitle>
-            <CardDescription>Select a marker and the fabric material, then scan barcodes</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <Label>Marker Request</Label>
-                <SearchableSelect
-                  value={selectedMarker?.id ? String(selectedMarker.id) : ''}
-                  onChange={(v) => { setSelectedMarker(markers.find(m => String(m.id) === String(v)) || null); setSelectedMaterialId(''); }}
-                  placeholder="Select marker"
-                  searchPlaceholder="Search marker numbers..."
-                  options={markerOptions}
-                />
-              </div>
-              <div>
-                <Label>Fabric Material</Label>
-                <SearchableSelect
-                  value={selectedMaterialId}
-                  onChange={setSelectedMaterialId}
-                  placeholder="Select fabric material"
-                  searchPlaceholder="Search materials..."
-                  options={materialOptions}
-                />
-                {selectedMarker && assignedMaterialIds.size === 0 && (
-                  <div className="text-xs text-rose-600 mt-1">This marker has no fabric assignments. Cannot return rolls.</div>
-                )}
-              </div>
-              <div>
-                <Label>Unit</Label>
-                <Input value={unitLabel} disabled />
-              </div>
-            </div>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Create Marker Return</DialogTitle>
+          <CardDescription>Select a marker, add fabric lines, and return them to stock</CardDescription>
+        </DialogHeader>
 
-            <div className="flex items-center gap-3">
-              <Button
-                onClick={() => {
-                  if (!selectedMarker || !selectedMaterial) {
-                    toast({ title: 'Select marker and material', variant: 'destructive' });
-                    return;
-                  }
-                  setShowScanner(true);
-                }}
-                className="bg-purple-600 hover:bg-purple-700"
-              >
-                <QrCode className="h-4 w-4 mr-2" /> Scan Rolls
-              </Button>
-              <div className="text-sm text-gray-600">
-                Total: <span className="font-semibold">{totalQty.toFixed(isWeightMode ? 3 : 2)} {unitLabel}</span> • Rolls: <span className="font-semibold">{rolls.length}</span>
-              </div>
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <Label>Marker Request</Label>
+              <SearchableSelect
+                value={selectedMarkerId}
+                onChange={(value) => { setSelectedMarkerId(value); setSelectedMaterialId(''); setReturnLines([]); setRolls([]); }}
+                placeholder="Select marker request"
+                searchPlaceholder="Search markers..."
+                options={markerOptions}
+              />
             </div>
+            <div>
+              <Label>Return Date</Label>
+              <Input value={new Date().toISOString().slice(0, 10)} disabled />
+            </div>
+            <div>
+              <Label>Lines Added</Label>
+              <Input value={returnLines.length} disabled />
+            </div>
+          </div>
 
-            {rolls.length > 0 && (
-              <div className="mt-4">
+          {selectedMarker && (
+            <div className="space-y-3 border rounded-lg p-4 bg-gray-50">
+              <CardTitle className="text-base">Add Fabric Line</CardTitle>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <Label>Fabric Material</Label>
+                  <SearchableSelect
+                    value={selectedMaterialId}
+                    onChange={(value) => { setSelectedMaterialId(value); setRolls([]); }}
+                    placeholder="Select fabric"
+                    searchPlaceholder="Search fabrics..."
+                    options={materialOptions}
+                  />
+                </div>
+                <div>
+                  <Label>Unit</Label>
+                  <Input value={selectedMaterial?.purchase_unit || 'kg'} disabled />
+                </div>
+              </div>
+
+              {selectedMaterial && (
+                <>
+                  <div className="flex items-center gap-3">
+                    <Button className="bg-purple-600 hover:bg-purple-700" onClick={() => setShowScanner(true)}>
+                      <QrCode className="h-4 w-4 mr-2" /> Scan Fabric Rolls
+                    </Button>
+                    <div className="text-sm text-gray-600">
+                      Total: <span className="font-semibold">{totalQty.toFixed(isWeightMode ? 3 : 2)} {selectedMaterial.purchase_unit || 'kg'}</span> • Rolls: <span className="font-semibold">{rolls.length}</span>
+                    </div>
+                  </div>
+                  {rolls.length > 0 && (
+                    <div className="overflow-x-auto rounded border bg-white">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Barcode</TableHead>
+                            <TableHead>Qty ({selectedMaterial.purchase_unit || 'kg'})</TableHead>
+                            <TableHead>Actions</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {rolls.map((roll, idx) => (
+                            <TableRow key={`${roll.barcode}-${idx}`}>
+                              <TableCell className="font-mono">{roll.barcode}</TableCell>
+                              <TableCell>{(isWeightMode ? Number(roll.weight || 0) : Number(roll.length || 0)).toFixed(isWeightMode ? 3 : 2)}</TableCell>
+                              <TableCell>
+                                <Button variant="outline" size="sm" onClick={() => removeRoll(roll.barcode)}>Remove</Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={addLine}>Add Line</Button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {returnLines.length > 0 && (
+            <div className="space-y-2">
+              <CardTitle className="text-base">Lines Added</CardTitle>
+              <div className="overflow-x-auto rounded border bg-white">
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Barcode</TableHead>
-                      <TableHead>Qty ({unitLabel})</TableHead>
+                      <TableHead>Material</TableHead>
+                      <TableHead>Quantity</TableHead>
+                      <TableHead>Unit</TableHead>
+                      <TableHead>Barcodes</TableHead>
                       <TableHead>Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {rolls.map((r, i) => (
-                      <TableRow key={`${r.barcode}-${i}`}>
-                        <TableCell className="font-mono">{r.barcode}</TableCell>
-                        <TableCell>{(isWeightMode ? (r.weight || 0) : (r.length || 0)).toFixed(isWeightMode ? 3 : 2)}</TableCell>
+                    {returnLines.map((line, idx) => (
+                      <TableRow key={`${line.raw_material.id}-${idx}`}>
+                        <TableCell>{line.raw_material.name}</TableCell>
+                        <TableCell>{line.quantity.toFixed((line.unit || 'kg').toLowerCase().includes('kg') ? 3 : 2)}</TableCell>
+                        <TableCell>{line.unit}</TableCell>
+                        <TableCell className="text-xs text-gray-600 max-w-[360px] whitespace-pre-wrap break-words">{line.barcodes.map(b => b.barcode).join(', ')}</TableCell>
                         <TableCell>
-                          <Button variant="outline" size="sm" onClick={() => removeRoll(r.barcode!)}>Remove</Button>
+                          <Button variant="outline" size="sm" onClick={() => removeReturnLine(idx)}>Remove</Button>
                         </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
-                <div className="mt-3 flex justify-end">
-                  <Button onClick={handlePostReturn} className="bg-green-600 hover:bg-green-700">
-                    <CheckCircle className="h-4 w-4 mr-2" /> Post Return
-                  </Button>
-                </div>
               </div>
-            )}
-          </CardContent>
-        </Card>
+            </div>
+          )}
+        </div>
 
-        {selectedMarker && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Previous Returns</CardTitle>
-              <CardDescription>All returns posted against marker {selectedMarker.marker_number}{selectedMaterial ? ` for ${selectedMaterial.name}` : ''}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              {returnsLoading ? (
-                <div className="text-sm text-gray-600">Loading returns…</div>
-              ) : pastReturns.length === 0 ? (
-                <div className="text-sm text-gray-500">No returns found.</div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Date</TableHead>
-                        <TableHead>GRN</TableHead>
-                        <TableHead>Material</TableHead>
-                        <TableHead>Total Qty</TableHead>
-                        <TableHead>Rolls</TableHead>
-                        <TableHead>Barcodes</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {pastReturns.map((r) => (
-                        <TableRow key={`${r.grn_id}-${r.material_id}`}>
-                          <TableCell>{new Date(r.received_date).toLocaleDateString()}</TableCell>
-                          <TableCell className="font-mono">{r.grn_number}</TableCell>
-                          <TableCell>{r.material_name}</TableCell>
-                          <TableCell>{r.total_qty.toFixed((r.unit || 'kg').toLowerCase().includes('kg') ? 3 : 2)} {r.unit}</TableCell>
-                          <TableCell>{r.roll_count}</TableCell>
-                          <TableCell className="max-w-[420px] whitespace-pre-wrap break-words text-xs text-gray-600">
-                            {r.barcodes.join(', ')}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
-      </div>
+        <DialogFooter className="flex justify-between items-center">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button className="bg-green-600 hover:bg-green-700" onClick={handleSave}>Save & Post Return</Button>
+        </DialogFooter>
 
-      {/* Scanner */}
-      <BarcodeScanner
-        isOpen={showScanner}
-        onScan={handleScan}
-        onClose={() => setShowScanner(false)}
-        scannedRolls={rolls}
-        currentScanningLine={selectedMaterial?.name || 'Fabric'}
-        unitLabel={unitLabel}
-        quantityMetric={isWeightMode ? 'weight' : 'length'}
-        onRemoveRoll={(barcode) => removeRoll(barcode)}
-        onDone={() => setShowScanner(false)}
-      >
-        {showWeightEntry && scannedBarcode && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/50" style={{ zIndex: 2147483646, pointerEvents: 'auto' }} onClick={(e) => e.stopPropagation()}>
-            <Card className="w-full max-w-md mx-4 bg-white" onClick={(e) => e.stopPropagation()} style={{ position: 'relative', zIndex: 2147483647, pointerEvents: 'auto' }}>
-              <CardHeader>
-                <CardTitle className="text-lg">Enter {isWeightMode ? 'Weight' : 'Length'}</CardTitle>
-                <CardDescription>Barcode: <strong>{scannedBarcode}</strong></CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
+        <BarcodeScanner
+          isOpen={showScanner}
+          onScan={handleScan}
+          onClose={() => setShowScanner(false)}
+          scannedRolls={rolls}
+          currentScanningLine={selectedMaterial?.name || 'Fabric'}
+          unitLabel={selectedMaterial?.purchase_unit || 'kg'}
+          quantityMetric={isWeightMode ? 'weight' : 'length'}
+          onRemoveRoll={(barcode) => removeRoll(barcode)}
+          onDone={() => setShowScanner(false)}
+        >
+          {showWeightEntry && scannedBarcode && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/50" style={{ zIndex: 2147483646, pointerEvents: 'auto' }} onClick={(e) => e.stopPropagation()}>
+              <Card className="w-full max-w-md mx-4 bg-white" onClick={(e) => e.stopPropagation()} style={{ position: 'relative', zIndex: 2147483647, pointerEvents: 'auto' }}>
+                <CardHeader>
+                  <CardTitle className="text-lg">Enter {isWeightMode ? 'Weight' : 'Length'}</CardTitle>
+                  <CardDescription>Barcode: <strong>{scannedBarcode}</strong></CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
                   <div>
-                    <Label>{isWeightMode ? `Weight (${unitLabel}) *` : `Length (${unitLabel}) *`}</Label>
+                    <Label>{isWeightMode ? `Weight (${selectedMaterial?.purchase_unit || 'kg'}) *` : `Length (${selectedMaterial?.purchase_unit || 'kg'}) *`}</Label>
                     <Input
                       ref={weightInputRef}
-                      type="text"
-                      inputMode="decimal"
                       value={rollWeightInput}
+                      placeholder="0.00"
+                      inputMode="decimal"
                       onChange={(e) => {
                         const raw = e.target.value.replace(',', '.');
                         if (raw === '' || decimalInputPattern.test(raw)) setRollWeightInput(raw);
                       }}
-                      placeholder="0.00"
-                      autoFocus
                     />
                   </div>
-                </div>
-                <div className="flex space-x-2">
-                  <Button onClick={(e) => { e.preventDefault(); e.stopPropagation(); confirmAddRoll(); }} className="flex-1 bg-green-600 hover:bg-green-700">Add Roll</Button>
-                  <Button onClick={() => { setShowWeightEntry(false); setScannedBarcode(''); setRollWeightInput(''); setRollLengthInput(''); }} variant="outline" className="flex-1">Cancel</Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        )}
-      </BarcodeScanner>
-    </ModernLayout>
+                  <div className="flex gap-2">
+                    <Button className="flex-1 bg-green-600 hover:bg-green-700" onClick={(e) => { e.preventDefault(); e.stopPropagation(); confirmAddRoll(); }}>Add Roll</Button>
+                    <Button variant="outline" className="flex-1" onClick={() => { setShowWeightEntry(false); setScannedBarcode(''); setRollWeightInput(''); }}>Cancel</Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </BarcodeScanner>
+      </DialogContent>
+    </Dialog>
   );
 };
 

@@ -565,3 +565,157 @@ export const generateRequirementsPdf = (
 
   pdf.save(`Material_Requirements_${poNumber}.pdf`);
 };
+
+export interface SupplierReturnLinePdf {
+  material: string;
+  unit: string;
+  quantity: number;
+  barcodes?: string[];
+}
+
+export const generateSupplierReturnPdf = (params: {
+  poNumber: string;
+  supplierName?: string;
+  returnDate?: string;
+  lines: SupplierReturnLinePdf[];
+}) => {
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const margin = 15;
+  let y = margin;
+
+  // Header
+  pdf.setFillColor(245, 158, 11); // amber
+  pdf.rect(0, 0, pageWidth, 38, 'F');
+  pdf.setTextColor(255, 255, 255);
+  pdf.setFontSize(12);
+  pdf.setFont(undefined, 'bold');
+  pdf.text('DAG Clothing Pvt Ltd', margin, 14);
+  pdf.setFontSize(18);
+  pdf.text('SUPPLIER RETURN NOTE', margin, 28);
+
+  // Meta
+  pdf.setTextColor(0, 0, 0);
+  y = 45;
+  pdf.setFontSize(11);
+  const dateStr = params.returnDate || new Date().toISOString().slice(0, 10);
+  pdf.text(`PO Number: ${params.poNumber}`, margin, y);
+  if (params.supplierName) pdf.text(`Supplier: ${params.supplierName}`, margin + 80, y);
+  pdf.text(`Date: ${dateStr}`, margin, y + 6);
+  y += 12;
+
+  // Lines table
+  const head = [['Material', 'Quantity', 'Unit', 'Barcodes']];
+  const body = params.lines.map((l) => [
+    l.material,
+    (l.quantity || 0).toFixed((l.unit || 'kg').toLowerCase().includes('kg') ? 3 : 2),
+    l.unit || '',
+    (l.barcodes || []).join(', '),
+  ]);
+
+  autoTable(pdf, {
+    startY: y,
+    head,
+    body,
+    theme: 'grid',
+    styles: { fontSize: 9, cellPadding: 3 },
+    headStyles: { fillColor: [245, 158, 11], textColor: [255, 255, 255] },
+    columnStyles: {
+      0: { cellWidth: 70 },
+      1: { halign: 'right', cellWidth: 28 },
+      2: { cellWidth: 20 },
+      3: { cellWidth: 70 },
+    },
+    margin: { left: margin, right: margin },
+  });
+  // @ts-ignore
+  y = (pdf as any).lastAutoTable?.finalY + 10;
+
+  // Totals
+  const totalQty = params.lines.reduce((s, l) => s + Number(l.quantity || 0), 0);
+  pdf.setFontSize(10);
+  pdf.setFont(undefined, 'bold');
+  pdf.text(`Total Quantity: ${totalQty.toFixed(3)}`, margin, y);
+  pdf.setFont(undefined, 'normal');
+
+  // Footer
+  pdf.setFontSize(8);
+  pdf.text(`Generated on ${new Date().toLocaleString()}`, margin, 290);
+
+  const fileName = `Supplier_Return_${params.poNumber}_${dateStr}.pdf`;
+  pdf.save(fileName);
+};
+
+export interface MarkerReturnLinePdf {
+  material: string;
+  unit: string;
+  quantity: number;
+  barcodes?: string[];
+}
+
+export const generateMarkerReturnPdf = (params: {
+  markerNumber: string;
+  poNumber?: string;
+  returnDate?: string;
+  lines: MarkerReturnLinePdf[];
+}) => {
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const margin = 15;
+  let y = margin;
+
+  pdf.setFillColor(91, 33, 182); // purple
+  pdf.rect(0, 0, pageWidth, 38, 'F');
+  pdf.setTextColor(255, 255, 255);
+  pdf.setFontSize(12);
+  pdf.setFont(undefined, 'bold');
+  pdf.text('DAG Clothing Pvt Ltd', margin, 14);
+  pdf.setFontSize(18);
+  pdf.text('MARKER RETURN NOTE', margin, 28);
+
+  pdf.setTextColor(0, 0, 0);
+  y = 45;
+  const dateStr = params.returnDate || new Date().toISOString().slice(0, 10);
+  pdf.setFontSize(11);
+  pdf.text(`Marker: ${params.markerNumber}`, margin, y);
+  if (params.poNumber) pdf.text(`PO: ${params.poNumber}`, margin + 80, y);
+  pdf.text(`Date: ${dateStr}`, margin, y + 6);
+  y += 12;
+
+  const head = [['Material', 'Quantity', 'Unit', 'Barcodes']];
+  const body = params.lines.map((l) => [
+    l.material,
+    (l.quantity || 0).toFixed((l.unit || 'kg').toLowerCase().includes('kg') ? 3 : 2),
+    l.unit || '',
+    (l.barcodes || []).join(', '),
+  ]);
+
+  autoTable(pdf, {
+    startY: y,
+    head,
+    body,
+    theme: 'grid',
+    styles: { fontSize: 9, cellPadding: 3 },
+    headStyles: { fillColor: [91, 33, 182], textColor: [255, 255, 255] },
+    columnStyles: {
+      0: { cellWidth: 70 },
+      1: { halign: 'right', cellWidth: 28 },
+      2: { cellWidth: 20 },
+      3: { cellWidth: 70 },
+    },
+    margin: { left: margin, right: margin },
+  });
+  // @ts-ignore
+  y = (pdf as any).lastAutoTable?.finalY + 10;
+
+  const totalQty = params.lines.reduce((s, l) => s + Number(l.quantity || 0), 0);
+  pdf.setFontSize(10);
+  pdf.setFont(undefined, 'bold');
+  pdf.text(`Total Quantity: ${totalQty.toFixed(3)}`, margin, y);
+
+  pdf.setFontSize(8);
+  pdf.text(`Generated on ${new Date().toLocaleString()}`, margin, 290);
+
+  const fileName = `Marker_Return_${params.markerNumber}_${dateStr}.pdf`;
+  pdf.save(fileName);
+};

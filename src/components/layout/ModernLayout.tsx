@@ -65,6 +65,8 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
     isSpecial: false,
     children: [
       { id: 'return-fabric-marker', label: 'Return Fabric (Marker)', icon: QrCode, path: '/returns/fabric', available: true, componentKey: 'goods-received' },
+      { id: 'supplier-returns', label: 'Supplier Returns', icon: Truck, path: '/returns/supplier', available: true, componentKey: 'goods-received' },
+      { id: 'issue-returns', label: 'Issue Returns', icon: Package, path: '/returns/issues', available: true, componentKey: 'goods-received' },
     ],
   },
   { id: 'cutting-records', label: 'Cutting Records', icon: Scissors, path: '/cutting-records', available: true, isSpecial: false, componentKey: 'cutting-records' },

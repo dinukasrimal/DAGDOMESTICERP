@@ -291,6 +291,25 @@ export const GoodsIssueManager: React.FC = () => {
     return match?.name ?? '';
   }, [issueTab, legacySupplier, cuttingSuppliers, selectedSupplierId]);
 
+  const materialOptions = useMemo<SearchableOption[]>(() => {
+    return rawMaterials.map(material => {
+      const availableRaw =
+        material.inventory?.quantity_available ??
+        material.inventory?.quantity_on_hand ??
+        0;
+      const available =
+        typeof availableRaw === 'number' ? availableRaw : Number(availableRaw) || 0;
+      const label = `${material.name}${material.code ? ` (${material.code})` : ''}`;
+      const availableText = formatNumeric(available, 3) ?? available.toString();
+      const unit = material.base_unit ? ` ${material.base_unit}` : '';
+      return {
+        value: String(material.id),
+        label,
+        description: `Available: ${availableText}${unit}`,
+      };
+    });
+  }, [rawMaterials]);
+
   // Fabric scanning state for Goods Issue (per raw material)
   const [giFabricRolls, setGiFabricRolls] = useState<{[materialId: string]: { barcode: string; weight: number; length?: number }[]}>({});
   const [giShowBarcodeCamera, setGiShowBarcodeCamera] = useState(false);
@@ -2385,6 +2404,18 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         ].filter(Boolean).join('\n') || undefined,
       });
       setGoodsIssues(prev => [newIssue, ...prev]);
+      // Mark scanned fabric barcodes as issued (tracking-only) so stock barcode view matches on-hand
+      try {
+        const allEntries = Object.entries(giFabricRolls || {});
+        for (const [materialId, arr] of allEntries) {
+          const codes = (arr || []).map((r: any) => r.barcode).filter(Boolean);
+          if (codes.length) {
+            await rawMaterialsService.markRollsIssuedByBarcodes(Number(materialId), codes as string[]);
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to mark scanned rolls as issued:', e);
+      }
       // Refresh local materials and notify other views to refresh inventory
       try {
         const mats = await rawMaterialsService.getRawMaterials();
@@ -3740,44 +3771,37 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
             <div className="mt-6 p-4 border rounded-md">
               <div className="grid grid-cols-3 gap-4 items-end">
                 <div>
-                  <Label htmlFor="material-select">Material</Label>
-                  <Select 
+                  <Label>Material</Label>
+                  <SearchableSelect
                     value={currentLine.raw_material_id}
-                    onValueChange={(v: string) => {
-                      setCurrentLine(prev => ({ ...prev, raw_material_id: v }));
-                      // reset per-line weight state for a clean start
+                    onChange={(value: string) => {
+                      const qty = currentLine.quantity_issued || 0;
+                      setCurrentLine(prev => ({ ...prev, raw_material_id: value }));
                       setFormData(prev => {
-                        const qty = currentLine.quantity_issued || 0;
-                        const exists = prev.lines.some(l => l.raw_material_id === v);
+                        const exists = prev.lines.some(line => line.raw_material_id === value);
                         let newLines = prev.lines;
                         if (qty > 0) {
-                          newLines = exists 
-                            ? prev.lines.map(l => l.raw_material_id === v ? { ...l, quantity_issued: qty } : l)
-                            : [...prev.lines, { raw_material_id: v, quantity_issued: qty, batch_number: '', notes: '' }];
+                          newLines = exists
+                            ? prev.lines.map(line =>
+                                line.raw_material_id === value
+                                  ? { ...line, quantity_issued: qty }
+                                  : line
+                              )
+                            : [
+                                ...prev.lines,
+                                { raw_material_id: value, quantity_issued: qty, batch_number: '', notes: '' },
+                              ];
                         } else if (exists && qty <= 0) {
-                          newLines = prev.lines.filter(l => l.raw_material_id !== v);
+                          newLines = prev.lines.filter(line => line.raw_material_id !== value);
                         }
                         return { ...prev, lines: newLines };
                       });
                     }}
-                  >
-                    <SelectTrigger id="material-select">
-                      <SelectValue placeholder="Select material" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {rawMaterials.map(m => {
-                        const avl = m.inventory?.quantity_available ?? 0;
-                        return (
-                          <SelectItem key={m.id} value={String(m.id)}>
-                            <div className="flex items-center justify-between w-full">
-                              <span>{m.name} {m.code ? `(${m.code})` : ''}</span>
-                              <span className="text-xs text-gray-600">Avl: {avl} {m.base_unit}</span>
-                            </div>
-                          </SelectItem>
-                        );
-                      })}
-                    </SelectContent>
-                  </Select>
+                    placeholder="Select material"
+                    searchPlaceholder="Search materials..."
+                    options={materialOptions}
+                    className="w-full"
+                  />
                 </div>
                 <div>
                   <Label htmlFor="issue-qty">Quantity</Label>

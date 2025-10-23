@@ -289,6 +289,10 @@ export class MarkerRequestService {
       throw new Error(`Failed to update marker request: ${error?.message || error}`);
     }
   }
+
+  async listMarkerRequests(): Promise<MarkerRequest[]> {
+    return this.getMarkerRequests();
+  }
 }
 
 export const markerRequestService = new MarkerRequestService();
