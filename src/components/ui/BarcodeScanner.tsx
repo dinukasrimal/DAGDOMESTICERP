@@ -109,6 +109,65 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
   const [flashOn, setFlashOn] = useState(false);
   const [hasFlash, setHasFlash] = useState(false);
 
+  const requestCameraStream = async (): Promise<MediaStream> => {
+    const constraints: MediaStreamConstraints = {
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920, min: 1280 },
+        height: { ideal: 1080, min: 720 },
+      },
+    };
+
+    const mediaDevices = navigator.mediaDevices;
+    if (mediaDevices?.getUserMedia) {
+      return mediaDevices.getUserMedia(constraints);
+    }
+
+    const anyNavigator = navigator as any;
+    const legacyGetUserMedia =
+      anyNavigator?.getUserMedia ||
+      anyNavigator?.webkitGetUserMedia ||
+      anyNavigator?.mozGetUserMedia ||
+      anyNavigator?.msGetUserMedia;
+
+    if (legacyGetUserMedia) {
+      return new Promise<MediaStream>((resolve, reject) => {
+        try {
+          legacyGetUserMedia.call(navigator, constraints, resolve, reject);
+        } catch (legacyErr) {
+          reject(legacyErr);
+        }
+      });
+    }
+
+    if (typeof window !== 'undefined' && window.isSecureContext === false) {
+      throw new Error('Camera access requires HTTPS or running from localhost.');
+    }
+
+    throw new Error('Camera not supported on this device or browser.');
+  };
+
+  const getFriendlyCameraError = (err: any): string => {
+    if (!err) return 'Failed to start camera';
+    const name = err.name || '';
+    const message: string = err.message || '';
+
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+      return 'Camera permission denied. Please allow camera access in your browser settings and try again.';
+    }
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      return 'No camera device detected. Connect a camera and try again.';
+    }
+    if (name === 'NotReadableError') {
+      return 'Camera is already in use by another application.';
+    }
+    if (message.toLowerCase().includes('secure') || message.toLowerCase().includes('https')) {
+      return 'Camera access requires HTTPS or running from localhost.';
+    }
+
+    return message || 'Failed to start camera';
+  };
+
   // —————————————— Lifecycle ——————————————
   useEffect(() => {
     if (isOpen && !showManualEntry) {
@@ -148,17 +207,7 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
       setError(null);
       setIsScanning(true);
 
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error('Camera not supported');
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'environment',
-          width: { ideal: 1920, min: 1280 },
-          height: { ideal: 1080, min: 720 },
-        },
-      });
+      const stream = await requestCameraStream();
 
       streamRef.current = stream;
 
@@ -222,7 +271,7 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
         }
       );
     } catch (err: any) {
-      setError(err?.message || 'Failed to start camera');
+      setError(getFriendlyCameraError(err));
       setIsScanning(false);
     }
   };
