@@ -4,6 +4,58 @@ import html2canvas from 'html2canvas';
 import autoTable from 'jspdf-autotable';
 import type { GoodsIssue } from '@/services/goodsIssueService';
 
+export const shareOrDownloadPdf = async (
+  pdf: jsPDF,
+  fileName: string,
+  shareOptions?: { title?: string; text?: string }
+): Promise<void> => {
+  try {
+    if (typeof window !== 'undefined' && typeof navigator !== 'undefined') {
+      const blob = pdf.output('blob');
+      const nav = navigator as Navigator & { canShare?: (data: any) => boolean };
+      let file: File | null = null;
+      try {
+        file = new File([blob], fileName, { type: 'application/pdf' });
+      } catch (fileErr) {
+        file = null;
+        console.warn('Unable to construct File for sharing, falling back to download.', fileErr);
+      }
+
+      if (file && typeof nav.share === 'function') {
+        const canShareFiles = typeof nav.canShare === 'function' ? nav.canShare({ files: [file] }) : true;
+        if (canShareFiles) {
+          try {
+            await nav.share({ files: [file], title: shareOptions?.title || fileName, text: shareOptions?.text });
+            return;
+          } catch (shareErr: any) {
+            if (shareErr?.name === 'AbortError') {
+              // User dismissed the share sheet; do not force a download.
+              return;
+            }
+            console.warn('Share failed, falling back to download:', shareErr);
+          }
+        }
+      }
+
+      const blobUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      anchor.download = fileName;
+      anchor.rel = 'noopener';
+      anchor.target = '_blank';
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+      return;
+    }
+  } catch (err) {
+    console.warn('Falling back to direct PDF download:', err);
+  }
+
+  pdf.save(fileName);
+};
+
 export const downloadElementAsPdf = async (elementId: string, fileName: string): Promise<void> => {
   const input = document.getElementById(elementId);
   if (!input) {
@@ -39,7 +91,7 @@ export const downloadElementAsPdf = async (elementId: string, fileName: string):
     const y = (pdfHeight - newImgHeight) / 2;
 
     pdf.addImage(imgData, 'PNG', x, y, newImgWidth, newImgHeight);
-    pdf.save(`${fileName}.pdf`);
+    await shareOrDownloadPdf(pdf, `${fileName}.pdf`, { title: fileName });
   } catch (error) {
     console.error('Error generating PDF:', error);
   }
@@ -258,7 +310,10 @@ export const generatePlanningReportPdf = async (
     const fileName = `${selectedMonths}_Month_Planning_Analysis.pdf`;
     console.log('Downloading PDF as:', fileName);
     
-    pdf.save(fileName);
+    await shareOrDownloadPdf(pdf, fileName, {
+      title: `${selectedMonths} Month Planning Analysis`,
+      text: `Planning report for ${selectedMonths} months`,
+    });
     
     console.log('PDF download initiated successfully');
   } catch (error) {
@@ -269,7 +324,7 @@ export const generatePlanningReportPdf = async (
 
 // (generateGoodsIssuePdf detailed version defined below)
 
-export const generateGoodsIssuePdf = (
+export const generateGoodsIssuePdf = async (
   issue: GoodsIssue,
   supplierName?: string,
   issuedSoFarByMaterial?: Record<string, number>,
@@ -350,6 +405,7 @@ export const generateGoodsIssuePdf = (
   addRow('Issue No', issue.issue_number || '—');
   addRow('Issue Date', new Date(issue.issue_date).toLocaleDateString());
   addRow('Type', (issue.issue_type || '').toString());
+  if (issue.reference_number) addRow('PO Number', issue.reference_number);
   if (supplierName) addRow('Supplier', supplierName);
   if (issue.notes) addRow('Notes', issue.notes);
 
@@ -469,7 +525,10 @@ export const generateGoodsIssuePdf = (
   pdf.setFontSize(8);
   pdf.text(`Generated on ${new Date().toLocaleString()}`, margin, 290);
 
-  pdf.save(`${issue.issue_number || 'Goods_Issue'}.pdf`);
+  await shareOrDownloadPdf(pdf, `${issue.issue_number || 'Goods_Issue'}.pdf`, {
+    title: issue.issue_number || 'Goods Issue',
+    text: `Goods Issue ${issue.issue_number || ''}`.trim(),
+  });
 };
 
 type RequirementItem = {
@@ -480,7 +539,7 @@ type RequirementItem = {
   category_id?: number;
 };
 
-export const generateRequirementsPdf = (
+export const generateRequirementsPdf = async (
   poNumber: string,
   requirements: RequirementItem[],
   supplierName?: string,
@@ -563,7 +622,10 @@ export const generateRequirementsPdf = (
   pdf.setFontSize(8);
   pdf.text(`Generated on ${new Date().toLocaleString()}`, margin, 290);
 
-  pdf.save(`Material_Requirements_${poNumber}.pdf`);
+  await shareOrDownloadPdf(pdf, `Material_Requirements_${poNumber}.pdf`, {
+    title: `Material Requirements ${poNumber}`,
+    text: `PO ${poNumber} material requirements`,
+  });
 };
 
 export interface SupplierReturnLinePdf {
@@ -573,7 +635,7 @@ export interface SupplierReturnLinePdf {
   barcodes?: string[];
 }
 
-export const generateSupplierReturnPdf = (params: {
+export const generateSupplierReturnPdf = async (params: {
   poNumber: string;
   supplierName?: string;
   returnDate?: string;
@@ -643,7 +705,10 @@ export const generateSupplierReturnPdf = (params: {
   pdf.text(`Generated on ${new Date().toLocaleString()}`, margin, 290);
 
   const fileName = `Supplier_Return_${params.poNumber}_${dateStr}.pdf`;
-  pdf.save(fileName);
+  await shareOrDownloadPdf(pdf, fileName, {
+    title: `Supplier Return ${params.poNumber}`,
+    text: `Supplier return ${params.poNumber} on ${dateStr}`,
+  });
 };
 
 export interface MarkerReturnLinePdf {
@@ -653,7 +718,7 @@ export interface MarkerReturnLinePdf {
   barcodes?: string[];
 }
 
-export const generateMarkerReturnPdf = (params: {
+export const generateMarkerReturnPdf = async (params: {
   markerNumber: string;
   poNumber?: string;
   returnDate?: string;
@@ -717,5 +782,8 @@ export const generateMarkerReturnPdf = (params: {
   pdf.text(`Generated on ${new Date().toLocaleString()}`, margin, 290);
 
   const fileName = `Marker_Return_${params.markerNumber}_${dateStr}.pdf`;
-  pdf.save(fileName);
+  await shareOrDownloadPdf(pdf, fileName, {
+    title: `Marker Return ${params.markerNumber}`,
+    text: `Marker return ${params.markerNumber} ${dateStr}`,
+  });
 };

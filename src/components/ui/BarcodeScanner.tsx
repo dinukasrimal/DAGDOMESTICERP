@@ -197,6 +197,12 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
+    if (videoRef.current) {
+      try {
+        videoRef.current.pause();
+        videoRef.current.srcObject = null;
+      } catch {}
+    }
 
     setIsScanning(false);
     setFlashOn(false);
@@ -278,10 +284,7 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
 
   // —————————————— Controls ——————————————
   const pauseScanning = () => {
-    if (readerRef.current) {
-      try { readerRef.current.reset(); } catch {}
-    }
-    setIsScanning(false);
+    cleanup();
   };
 
   const resumeScanning = () => {

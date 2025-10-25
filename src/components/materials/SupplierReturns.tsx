@@ -152,7 +152,7 @@ const SupplierReturns: React.FC = () => {
                                 barcodes: (l.barcodes || []) as string[],
                               }));
                               const today = new Date(row.return_date).toISOString().slice(0, 10);
-                              generateSupplierReturnPdf({
+                              await generateSupplierReturnPdf({
                                 poNumber: row.po_number || 'PO',
                                 supplierName: row.supplier_name || undefined,
                                 returnDate: today,
@@ -239,25 +239,9 @@ const CreateSupplierReturnDialog: React.FC<CreateDialogProps> = ({ open, onOpenC
 
   // barcode scanning state
   const [showScanner, setShowScanner] = useState(false);
-  const [showWeightEntry, setShowWeightEntry] = useState(false);
-  const [scannedBarcode, setScannedBarcode] = useState('');
-  const [rollWeightInput, setRollWeightInput] = useState('');
   const [rolls, setRolls] = useState<Array<{ barcode: string; qty: number }>>([]);
-  const weightInputRef = useRef<HTMLInputElement | null>(null);
-  const weightFocusTimeoutRef = useRef<number | null>(null);
-  const requestWeightInputFocus = useCallback((delay = 10) => {
-    if (weightFocusTimeoutRef.current !== null) {
-      window.clearTimeout(weightFocusTimeoutRef.current);
-      weightFocusTimeoutRef.current = null;
-    }
-    weightFocusTimeoutRef.current = window.setTimeout(() => {
-      if (weightInputRef.current) {
-        weightInputRef.current.focus({ preventScroll: true });
-        weightInputRef.current.select();
-      }
-      weightFocusTimeoutRef.current = null;
-    }, delay);
-  }, []);
+  const scanningBarcodesRef = useRef<Set<string>>(new Set());
+  const scanErrorCooldownRef = useRef<Map<string, number>>(new Map());
 
   const isWeightMode = useMemo(() => (unitLabel || 'kg').toLowerCase().includes('kg'), [unitLabel]);
   const decimalInputPattern = /^\d*(?:\.\d*)?$/;
@@ -276,9 +260,8 @@ const CreateSupplierReturnDialog: React.FC<CreateDialogProps> = ({ open, onOpenC
       setReturnQty('');
       setReturnLines([]);
       setShowScanner(false);
-      setShowWeightEntry(false);
-      setScannedBarcode('');
-      setRollWeightInput('');
+      scanningBarcodesRef.current.clear();
+      scanErrorCooldownRef.current.clear();
     }
   }, [open]);
 
@@ -300,9 +283,19 @@ const CreateSupplierReturnDialog: React.FC<CreateDialogProps> = ({ open, onOpenC
     })) || []
   ), [selectedPO]);
 
+  const shouldShowScanError = (key: string, cooldownMs = 1500) => {
+    const now = Date.now();
+    const last = scanErrorCooldownRef.current.get(key) || 0;
+    if (now - last < cooldownMs) return false;
+    scanErrorCooldownRef.current.set(key, now);
+    return true;
+  };
+
   const addLine = () => {
     if (!selectedPO || !selectedLine) {
-      toast({ title: 'Select a material', description: 'Choose a purchase order line first.', variant: 'destructive' });
+      if (shouldShowScanError('line-required')) {
+        toast({ title: 'Select a material', description: 'Choose a purchase order line first.', variant: 'destructive' });
+      }
       return;
     }
     const qty = isFabric ? totalScannedQty : (parseFloat(returnQty) || 0);
@@ -322,7 +315,6 @@ const CreateSupplierReturnDialog: React.FC<CreateDialogProps> = ({ open, onOpenC
     setReturnLines(prev => [...prev, draft]);
     setRolls([]);
     setReturnQty('');
-    setScannedBarcode('');
     setShowScanner(false);
     toast({ title: 'Line added', description: `${draft.material} – ${draft.quantity} ${draft.unit}` });
   };
@@ -330,41 +322,77 @@ const CreateSupplierReturnDialog: React.FC<CreateDialogProps> = ({ open, onOpenC
   const handleScan = async (barcode: string) => {
     const code = barcode.trim();
     if (!code) return;
-    if (!selectedLine) {
-      toast({ title: 'Select material', description: 'Choose a purchase order line first.', variant: 'destructive' });
-      return;
-    }
-    if (rolls.some(r => r.barcode === code)) {
-      toast({ title: 'Duplicate barcode', description: 'This barcode is already scanned for the current line.', variant: 'destructive' });
-      return;
-    }
-    const { data } = await supabase
-      .from('raw_material_inventory')
-      .select('quantity_available')
-      .eq('raw_material_id', Number(selectedLine.raw_material_id))
-      .eq('roll_barcode', code)
-      .gt('quantity_available', 0)
-      .limit(1);
-    if (!data || data.length === 0) {
-      toast({ title: 'Not in stock', description: 'This barcode has no available quantity.', variant: 'destructive' });
-      return;
-    }
-    setScannedBarcode(code);
-    setRollWeightInput('');
-    setShowWeightEntry(true);
-    requestWeightInputFocus(50);
-  };
+    if (scanningBarcodesRef.current.has(code)) return;
+    scanningBarcodesRef.current.add(code);
 
-  const confirmAddRoll = () => {
-    const qty = parseFloat(rollWeightInput);
-    if (!scannedBarcode || Number.isNaN(qty) || qty <= 0) {
-      toast({ title: 'Invalid quantity', description: `Enter a valid ${isWeightMode ? 'weight' : 'length'} in ${unitLabel}.`, variant: 'destructive' });
-      return;
+    try {
+      if (!selectedLine) {
+        if (shouldShowScanError('line-required')) {
+          toast({ title: 'Select material', description: 'Choose a purchase order line first.', variant: 'destructive' });
+        }
+        return;
+      }
+      if (rolls.some(r => r.barcode === code)) {
+        if (shouldShowScanError(`duplicate:${code}`)) {
+          toast({ title: 'Duplicate barcode', description: 'This barcode is already scanned for the current line.', variant: 'destructive' });
+        }
+        return;
+      }
+
+      const materialId = Number(selectedLine.raw_material_id);
+      const { data: inventoryEntry, error: inventoryError } = await supabase
+        .from('raw_material_inventory')
+        .select('quantity_available, roll_barcode')
+        .eq('raw_material_id', materialId)
+        .eq('roll_barcode', code)
+        .gt('quantity_available', 0)
+        .limit(1)
+        .maybeSingle();
+
+      if (inventoryError) throw inventoryError;
+      if (!inventoryEntry) {
+        if (shouldShowScanError(`not-in-stock:${code}`)) {
+          toast({ title: 'Not in stock', description: 'This barcode is not available in inventory.', variant: 'destructive' });
+        }
+        return;
+      }
+
+      let qty = Number(inventoryEntry.quantity_available || 0);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        if (shouldShowScanError(`no-qty:${code}`)) {
+          toast({ title: 'No quantity available', description: 'This barcode has no remaining stock to return.', variant: 'destructive' });
+        }
+        return;
+      }
+
+      const { data: grnLine, error: grnError } = await supabase
+        .from('goods_received_lines')
+        .select('roll_weight, roll_length')
+        .eq('raw_material_id', materialId)
+        .eq('roll_barcode', code)
+        .limit(1)
+        .maybeSingle();
+
+      if (!grnError && grnLine) {
+        const grnQty = isWeightMode ? Number(grnLine.roll_weight || 0) : Number(grnLine.roll_length || 0);
+        if (Number.isFinite(grnQty) && grnQty > 0) {
+          qty = Math.min(qty, grnQty);
+        }
+      }
+
+      setRolls(prev => [...prev, { barcode: code, qty }]);
+      toast({ title: 'Roll added', description: `${code} • ${qty} ${unitLabel}` });
+    } catch (error: any) {
+      if (shouldShowScanError(`scan-error:${code}`)) {
+        toast({
+          title: 'Scan failed',
+          description: error?.message || 'Unable to look up this barcode right now.',
+          variant: 'destructive',
+        });
+      }
+    } finally {
+      scanningBarcodesRef.current.delete(code);
     }
-    setRolls(prev => [...prev, { barcode: scannedBarcode, qty }]);
-    setShowWeightEntry(false);
-    setScannedBarcode('');
-    setRollWeightInput('');
   };
 
   const removeRoll = (barcode: string) => setRolls(prev => prev.filter(r => r.barcode !== barcode));
@@ -413,7 +441,7 @@ const CreateSupplierReturnDialog: React.FC<CreateDialogProps> = ({ open, onOpenC
       }
 
       try {
-        generateSupplierReturnPdf({
+        await generateSupplierReturnPdf({
           poNumber: selectedPO.po_number,
           supplierName: selectedPO.supplier?.name || undefined,
           returnDate: today,
@@ -626,38 +654,7 @@ const CreateSupplierReturnDialog: React.FC<CreateDialogProps> = ({ open, onOpenC
           quantityMetric={isWeightMode ? 'weight' : 'length'}
           onRemoveRoll={(barcode) => removeRoll(barcode)}
           onDone={() => setShowScanner(false)}
-        >
-          {showWeightEntry && scannedBarcode && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/50" style={{ zIndex: 2147483646, pointerEvents: 'auto' }} onClick={(e) => e.stopPropagation()}>
-              <Card className="w-full max-w-md mx-4 bg-white" onClick={(e) => e.stopPropagation()} style={{ position: 'relative', zIndex: 2147483647, pointerEvents: 'auto' }}>
-                <CardHeader>
-                  <CardTitle className="text-lg">Enter {isWeightMode ? 'Weight' : 'Length'}</CardTitle>
-                  <CardDescription>Barcode: <strong>{scannedBarcode}</strong></CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div>
-                    <Label>{isWeightMode ? `Weight (${unitLabel}) *` : `Length (${unitLabel}) *`}</Label>
-                    <Input
-                      ref={weightInputRef}
-                      value={rollWeightInput}
-                      placeholder="0.00"
-                      inputMode="decimal"
-                      onChange={(e) => {
-                        const raw = e.target.value.replace(',', '.');
-                        if (raw === '' || decimalInputPattern.test(raw)) setRollWeightInput(raw);
-                      }}
-                      autoFocus
-                    />
-                  </div>
-                  <div className="flex gap-2">
-                    <Button className="flex-1 bg-green-600 hover:bg-green-700" onClick={(e) => { e.preventDefault(); e.stopPropagation(); confirmAddRoll(); }}>Add Roll</Button>
-                    <Button variant="outline" className="flex-1" onClick={() => { setShowWeightEntry(false); setScannedBarcode(''); setRollWeightInput(''); }}>Cancel</Button>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          )}
-        </BarcodeScanner>
+        />
       </DialogContent>
     </Dialog>
   );

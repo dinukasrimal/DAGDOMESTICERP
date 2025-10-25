@@ -1626,7 +1626,7 @@ export const GoodsReceivedManager: React.FC = () => {
         {/* Weight Entry Overlay */}
         {showWeightEntry && scannedBarcode && (
           <div 
-            className="absolute inset-0 flex items-center justify-center bg-black/50" 
+            className="absolute inset-0 flex items-center justify-center bg-black/50 p-4 md:p-8 overflow-y-auto" 
             style={{ 
               zIndex: 2147483646,
               pointerEvents: 'auto'
@@ -1636,7 +1636,7 @@ export const GoodsReceivedManager: React.FC = () => {
             }}
           >
             <Card 
-              className="w-full max-w-md mx-4 bg-white" 
+              className="w-full max-w-full md:max-w-lg bg-white max-h-[90vh] overflow-y-auto" 
               onClick={(e) => e.stopPropagation()}
               style={{ position: 'relative', zIndex: 2147483647, pointerEvents: 'auto' }}
             >
@@ -1647,7 +1647,7 @@ export const GoodsReceivedManager: React.FC = () => {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
                     <Label htmlFor="weight">{(() => {
                       const unit = currentScanningLine ? (selectedPO?.lines?.find(l => l.id === currentScanningLine)?.raw_material?.purchase_unit || 'kg') : 'kg';

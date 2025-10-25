@@ -24,6 +24,8 @@ import {
   BookOpen,
   ChevronDown,
   QrCode,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -154,13 +156,41 @@ export const ModernLayout: React.FC<ModernLayoutProps> = ({
   }, [sidebarItems, isPathActive]);
 
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(defaultExpanded);
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [userOverrideCollapse, setUserOverrideCollapse] = useState(false);
 
   useEffect(() => {
     setExpandedGroups((prev) => ({ ...defaultExpanded, ...prev }));
   }, [defaultExpanded]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const computeShouldCollapse = () => {
+      const isAndroid = /Android/i.test(navigator.userAgent || '');
+      return isAndroid || window.innerWidth < 1024;
+    };
+
+    if (!userOverrideCollapse) {
+      setIsCollapsed(computeShouldCollapse());
+    }
+
+    const handleResize = () => {
+      if (userOverrideCollapse) return;
+      setIsCollapsed(computeShouldCollapse());
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [userOverrideCollapse]);
+
   const toggleGroup = (id: string) => {
     setExpandedGroups((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const handleToggleSidebar = () => {
+    setIsCollapsed((prev) => !prev);
+    setUserOverrideCollapse(true);
   };
 
   const handleNavigate = (item: SidebarItem) => {
@@ -181,20 +211,35 @@ export const ModernLayout: React.FC<ModernLayoutProps> = ({
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100/50 flex">
       {/* Modern Sidebar */}
-      <div className="w-72 bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900 shadow-2xl">
-        <div className="p-8">
-          <div className="flex items-center space-x-3">
-            <div className="p-3 rounded-2xl bg-gradient-to-r from-blue-500 to-purple-600 shadow-lg">
+      <div
+        className={`bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900 shadow-2xl transition-[width] duration-300 ease-in-out ${
+          isCollapsed ? 'w-20' : 'w-72'
+        }`}
+      >
+        <div className={`${isCollapsed ? 'p-4' : 'p-8'} flex items-center justify-between`}>
+          <div className={`flex items-center ${isCollapsed ? 'justify-center w-full' : 'space-x-3'}`}>
+            <div className={`rounded-2xl bg-gradient-to-r from-blue-500 to-purple-600 shadow-lg ${isCollapsed ? 'p-2.5' : 'p-3'}`}>
               <Sparkles className="h-6 w-6 text-white" />
             </div>
-            <div>
-              <h2 className="text-xl font-bold text-white">Flow Planner</h2>
-              <p className="text-slate-300 text-sm">Production Suite</p>
-            </div>
+            {!isCollapsed && (
+              <div>
+                <h2 className="text-xl font-bold text-white">Flow Planner</h2>
+                <p className="text-slate-300 text-sm">Production Suite</p>
+              </div>
+            )}
           </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleToggleSidebar}
+            className="h-9 w-9 text-white hover:bg-white/10"
+            title={isCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+          >
+            {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+          </Button>
         </div>
-        
-        <nav className="mt-4 px-4">
+
+        <nav className={`mt-4 ${isCollapsed ? 'px-2' : 'px-4'}`}>
           {filteredSidebarItems.map((item) => {
             const active = isPathActive(item);
             const isGroup = Boolean(item.children?.length);
@@ -204,31 +249,34 @@ export const ModernLayout: React.FC<ModernLayoutProps> = ({
                 <button
                   onClick={() => handleNavigate(item)}
                   disabled={!item.available}
-                  className={`w-full flex items-center space-x-4 px-6 py-4 rounded-2xl text-left transition-all duration-300 group relative ${
+                  className={`w-full flex items-center rounded-2xl text-left transition-all duration-300 group relative ${
+                    isCollapsed ? 'justify-center px-0 py-4' : 'space-x-4 px-6 py-4'
+                  } ${
                     active
                       ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg shadow-blue-500/25'
                       : item.available
                       ? 'text-slate-300 hover:text-white hover:bg-slate-700/50 cursor-pointer'
                       : 'text-slate-500 cursor-not-allowed opacity-60'
                   }`}
+                  title={isCollapsed ? item.label : undefined}
                 >
                   <item.icon className={`h-5 w-5 transition-transform duration-300 ${
                     active ? 'scale-110' : item.available ? 'group-hover:scale-110' : ''
                   }`} />
-                  <span className="font-medium flex-1">{item.label}</span>
-                  {!item.available && (
+                  {!isCollapsed && <span className="font-medium flex-1">{item.label}</span>}
+                  {!item.available && !isCollapsed && (
                     <span className="text-xs text-slate-500 bg-slate-700 px-2 py-1 rounded-full">Soon</span>
                   )}
-                  {active && !isGroup && (
+                  {active && !isGroup && !isCollapsed && (
                     <div className="ml-auto w-2 h-2 bg-white rounded-full animate-pulse"></div>
                   )}
-                  {isGroup && (
+                  {isGroup && !isCollapsed && (
                     <ChevronDown
                       className={`h-4 w-4 transition-transform ${expanded ? 'rotate-180' : ''}`}
                     />
                   )}
                 </button>
-                {isGroup && expanded && (
+                {isGroup && expanded && !isCollapsed && (
                   <div className="mt-1 ml-6 space-y-1">
                     {item.children!.map((child) => {
                       const childActive = isPathActive(child);
@@ -257,7 +305,7 @@ export const ModernLayout: React.FC<ModernLayoutProps> = ({
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto transition-[margin] duration-300 ease-in-out">
         {/* Header Section */}
         <div className="relative overflow-hidden">
           <div className="absolute inset-0 bg-gradient-to-r from-blue-600/10 via-purple-600/10 to-emerald-600/10"></div>

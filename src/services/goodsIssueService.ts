@@ -27,6 +27,7 @@ export interface GoodsIssueLine {
   batch_number?: string;
   notes?: string;
   created_at: string;
+  barcodes?: string[];
   raw_material?: {
     id: string;
     name: string;
@@ -50,6 +51,7 @@ export interface CreateGoodsIssueLine {
   unit_cost?: number;
   batch_number?: string;
   notes?: string;
+  barcodes?: string[];
 }
 
 export interface BOMBasedGoodsIssue {
@@ -77,7 +79,7 @@ export interface UpdateGoodsIssue {
 }
 
 export class GoodsIssueService {
-  private async consumeInventoryLayersDetailed(materialId: number, requiredQty: number): Promise<{ avgCost: number, breakdown: { layerId: string, qty: number, unit_price: number }[] }> {
+  private async consumeInventoryLayersDetailed(materialId: number, requiredQty: number, options?: { barcodes?: string[] }): Promise<{ avgCost: number, breakdown: { layerId: string, qty: number, unit_price: number, roll_barcode?: string | null }[] }> {
     // FIFO over raw_material_inventory GRN rows; decrement layer quantities; return per-layer consumption
     let remaining = requiredQty;
     let costAccum = 0;
@@ -85,20 +87,37 @@ export class GoodsIssueService {
 
     const { data: rows, error } = await supabase
       .from('raw_material_inventory')
-      .select('id, quantity_on_hand, quantity_available, unit_price, last_updated, transaction_type')
+      .select('id, quantity_on_hand, quantity_available, unit_price, last_updated, transaction_type, roll_barcode')
       .eq('raw_material_id', materialId)
       .or('transaction_type.is.null,transaction_type.eq.grn');
     if (error) throw new Error(`Failed to load inventory for FIFO: ${error.message}`);
 
-    const layers = (rows || [])
+    const barcodeOrder = Array.from(new Set((options?.barcodes || []).map(b => b?.trim()).filter(Boolean))) as string[];
+
+    const sortedLayers = (rows || [])
       .map((r: any) => {
         const qty = Number(r.quantity_available ?? r.quantity_on_hand ?? 0);
         const cost = Number(r.unit_price ?? 0);
         const ts = r.last_updated || '1970-01-01T00:00:00Z';
-        return { id: r.id as string, qty, cost, ts };
+        return { id: r.id as string, qty, cost, ts, rollBarcode: r.roll_barcode || null };
       })
       .filter(l => l.qty > 0)
       .sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
+
+    const usedLayerIds = new Set<string>();
+    const prioritized: typeof sortedLayers = [];
+
+    for (const barcode of barcodeOrder) {
+      const match = sortedLayers.find(layer => !usedLayerIds.has(layer.id) && layer.rollBarcode === barcode);
+      if (match) {
+        prioritized.push(match);
+        usedLayerIds.add(match.id);
+      }
+    }
+
+    const remainingLayers = sortedLayers.filter(layer => !usedLayerIds.has(layer.id));
+
+    const layers = [...prioritized, ...remainingLayers];
 
     const updates: { id: string; newQtyAvail: number; newQtyOnHand: number; take: number; unit_price: number }[] = [];
 
@@ -118,18 +137,21 @@ export class GoodsIssueService {
     }
 
     // Persist updates back to raw_material_inventory (do not change last_updated to preserve FIFO order)
+    const breakdown: { layerId: string; qty: number; unit_price: number; roll_barcode?: string | null }[] = [];
     for (const u of updates) {
       const { error: updErr } = await supabase
         .from('raw_material_inventory')
         .update({ quantity_available: u.newQtyAvail, quantity_on_hand: u.newQtyOnHand })
         .eq('id', u.id);
       if (updErr) throw new Error(`Failed to update inventory layer: ${updErr.message}`);
+      const matchedLayer = sortedLayers.find(layer => layer.id === u.id);
+      breakdown.push({ layerId: u.id, qty: u.take, unit_price: u.unit_price, roll_barcode: matchedLayer?.rollBarcode ?? null });
     }
 
-    return { avgCost: qtyAccum > 0 ? costAccum / qtyAccum : 0, breakdown: updates.map(u => ({ layerId: u.id, qty: u.take, unit_price: u.unit_price })) };
+    return { avgCost: qtyAccum > 0 ? costAccum / qtyAccum : 0, breakdown };
   }
-  private async consumeInventoryLayers(materialId: number, requiredQty: number): Promise<number> {
-    const res = await this.consumeInventoryLayersDetailed(materialId, requiredQty);
+  private async consumeInventoryLayers(materialId: number, requiredQty: number, options?: { barcodes?: string[] }): Promise<number> {
+    const res = await this.consumeInventoryLayersDetailed(materialId, requiredQty, options);
     return res.avgCost;
   }
   private async attachLinesAndMaterials(issues: GoodsIssue[]): Promise<GoodsIssue[]> {
@@ -333,7 +355,7 @@ export class GoodsIssueService {
 
     for (const line of goodsIssue.lines || []) {
       await this.validateInventoryAvailability(line.raw_material_id, line.quantity_issued);
-      const { avgCost, breakdown } = await this.consumeInventoryLayersDetailed(Number(line.raw_material_id), Number(line.quantity_issued));
+      const { avgCost, breakdown } = await this.consumeInventoryLayersDetailed(Number(line.raw_material_id), Number(line.quantity_issued), { barcodes: line.barcodes });
       costByMaterial.set(String(line.raw_material_id), avgCost);
       const now = new Date().toISOString();
       // Write one negative row per layer consumed to preserve exact FIFO pricing in ledger
@@ -344,6 +366,9 @@ export class GoodsIssueService {
         const kgFactorVal = parsed.factor != null ? Math.max(0, parsed.factor) : null;
         const baseLocationParts: string[] = ['Default Warehouse'];
         if (categoryTotalsLine) baseLocationParts.push(categoryTotalsLine);
+        if (line.barcodes && line.barcodes.length) {
+          baseLocationParts.push(`BARCODES:${line.barcodes.join(',')}`);
+        }
         if (line.notes) {
           try {
             const encoded = encodeURIComponent(line.notes);
@@ -370,6 +395,7 @@ export class GoodsIssueService {
           // New explicit weight capture columns (if present in schema)
           weight_kg: weightKgVal,
           kg_conversion_factor: kgFactorVal,
+          roll_barcode: slice.roll_barcode || null,
         }));
         // Try to include po_number if column exists
         const poNumber = goodsIssue.reference_number || null;
@@ -380,29 +406,49 @@ export class GoodsIssueService {
           insErr = res.error;
           if (insErr) {
             const msg = String(insErr.message || '').toLowerCase();
-            // Retry dropping unknown columns progressively: kg columns then po_number
+            // Retry dropping unknown columns progressively: kg columns, roll_barcode, then po_number
             if (msg.includes('column') && (msg.includes('weight_kg') || msg.includes('kg_conversion_factor'))) {
-              rowsWithPo = rowsWithPo.map((r: any) => ({ po_number: r.po_number, last_updated: r.last_updated, transaction_ref: r.transaction_ref, transaction_type: r.transaction_type, location: r.location, inventory_value: r.inventory_value, unit_price: r.unit_price, quantity_reserved: r.quantity_reserved, quantity_available: r.quantity_available, quantity_on_hand: r.quantity_on_hand, raw_material_id: r.raw_material_id }));
+              rowsWithPo = rowsWithPo.map((r: any) => ({ po_number: r.po_number, last_updated: r.last_updated, transaction_ref: r.transaction_ref, transaction_type: r.transaction_type, location: r.location, inventory_value: r.inventory_value, unit_price: r.unit_price, quantity_reserved: r.quantity_reserved, quantity_available: r.quantity_available, quantity_on_hand: r.quantity_on_hand, raw_material_id: r.raw_material_id, roll_barcode: r.roll_barcode }));
               let res2 = await supabase.from('raw_material_inventory').insert(rowsWithPo as any);
               insErr = res2.error;
             }
-            if (insErr && msg.includes('column') && msg.includes('po_number')) {
-              const res3 = await supabase.from('raw_material_inventory').insert(rowsBase as any);
+            if (insErr && msg.includes('column') && msg.includes('roll_barcode')) {
+              rowsWithPo = rowsWithPo.map((r: any) => ({ po_number: r.po_number, last_updated: r.last_updated, transaction_ref: r.transaction_ref, transaction_type: r.transaction_type, location: r.location, inventory_value: r.inventory_value, unit_price: r.unit_price, quantity_reserved: r.quantity_reserved, quantity_available: r.quantity_available, quantity_on_hand: r.quantity_on_hand, raw_material_id: r.raw_material_id }));
+              let res3 = await supabase.from('raw_material_inventory').insert(rowsWithPo as any);
               insErr = res3.error;
+            }
+            if (insErr && msg.includes('column') && msg.includes('po_number')) {
+              const res4 = await supabase.from('raw_material_inventory').insert(rowsBase as any);
+              insErr = res4.error;
               if (insErr && String(insErr.message || '').toLowerCase().includes('weight_kg')) {
-                const trimmed = (rowsBase as any).map((r: any) => ({ last_updated: r.last_updated, transaction_ref: r.transaction_ref, transaction_type: r.transaction_type, location: r.location, inventory_value: r.inventory_value, unit_price: r.unit_price, quantity_reserved: r.quantity_reserved, quantity_available: r.quantity_available, quantity_on_hand: r.quantity_on_hand, raw_material_id: r.raw_material_id }));
-                const res4 = await supabase.from('raw_material_inventory').insert(trimmed as any);
-                insErr = res4.error;
+                const trimmed = (rowsBase as any).map((r: any) => ({ last_updated: r.last_updated, transaction_ref: r.transaction_ref, transaction_type: r.transaction_type, location: r.location, inventory_value: r.inventory_value, unit_price: r.unit_price, quantity_reserved: r.quantity_reserved, quantity_available: r.quantity_available, quantity_on_hand: r.quantity_on_hand, raw_material_id: r.raw_material_id, roll_barcode: r.roll_barcode }));
+                const res5 = await supabase.from('raw_material_inventory').insert(trimmed as any);
+                insErr = res5.error;
+                if (insErr && String(insErr.message || '').toLowerCase().includes('roll_barcode')) {
+                  const res6 = await supabase.from('raw_material_inventory').insert(trimmed.map((r: any) => ({ last_updated: r.last_updated, transaction_ref: r.transaction_ref, transaction_type: r.transaction_type, location: r.location, inventory_value: r.inventory_value, unit_price: r.unit_price, quantity_reserved: r.quantity_reserved, quantity_available: r.quantity_available, quantity_on_hand: r.quantity_on_hand, raw_material_id: r.raw_material_id })) as any);
+                  insErr = res6.error;
+                }
               }
             }
           }
         } else {
           let res = await supabase.from('raw_material_inventory').insert(rowsBase as any);
           insErr = res.error;
-          if (insErr && String(insErr.message || '').toLowerCase().includes('column') && (String(insErr.message || '').toLowerCase().includes('weight_kg') || String(insErr.message || '').toLowerCase().includes('kg_conversion_factor'))) {
-            const trimmed = (rowsBase as any).map((r: any) => ({ last_updated: r.last_updated, transaction_ref: r.transaction_ref, transaction_type: r.transaction_type, location: r.location, inventory_value: r.inventory_value, unit_price: r.unit_price, quantity_reserved: r.quantity_reserved, quantity_available: r.quantity_available, quantity_on_hand: r.quantity_on_hand, raw_material_id: r.raw_material_id }));
-            const res2 = await supabase.from('raw_material_inventory').insert(trimmed as any);
-            insErr = res2.error;
+          if (insErr && String(insErr.message || '').toLowerCase().includes('column')) {
+            const msg = String(insErr.message || '').toLowerCase();
+            if (msg.includes('weight_kg') || msg.includes('kg_conversion_factor')) {
+              const trimmed = (rowsBase as any).map((r: any) => ({ last_updated: r.last_updated, transaction_ref: r.transaction_ref, transaction_type: r.transaction_type, location: r.location, inventory_value: r.inventory_value, unit_price: r.unit_price, quantity_reserved: r.quantity_reserved, quantity_available: r.quantity_available, quantity_on_hand: r.quantity_on_hand, raw_material_id: r.raw_material_id, roll_barcode: r.roll_barcode }));
+              const res2 = await supabase.from('raw_material_inventory').insert(trimmed as any);
+              insErr = res2.error;
+              if (insErr && String(insErr.message || '').toLowerCase().includes('roll_barcode')) {
+                const res3 = await supabase.from('raw_material_inventory').insert(trimmed.map((r: any) => ({ last_updated: r.last_updated, transaction_ref: r.transaction_ref, transaction_type: r.transaction_type, location: r.location, inventory_value: r.inventory_value, unit_price: r.unit_price, quantity_reserved: r.quantity_reserved, quantity_available: r.quantity_available, quantity_on_hand: r.quantity_on_hand, raw_material_id: r.raw_material_id })) as any);
+                insErr = res3.error;
+              }
+            } else if (msg.includes('roll_barcode')) {
+              const trimmed = (rowsBase as any).map((r: any) => ({ last_updated: r.last_updated, transaction_ref: r.transaction_ref, transaction_type: r.transaction_type, location: r.location, inventory_value: r.inventory_value, unit_price: r.unit_price, quantity_reserved: r.quantity_reserved, quantity_available: r.quantity_available, quantity_on_hand: r.quantity_on_hand, raw_material_id: r.raw_material_id }));
+              const res2 = await supabase.from('raw_material_inventory').insert(trimmed as any);
+              insErr = res2.error;
+            }
           }
         }
         if (insErr) {
@@ -471,7 +517,8 @@ export class GoodsIssueService {
         unit_cost: costByMaterial.get(String(line.raw_material_id)) ?? line.unit_cost ?? 0,
         batch_number: line.batch_number,
         notes: line.notes,
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        barcodes: line.barcodes,
       }))
     };
     return mockIssue;
@@ -527,7 +574,7 @@ export class GoodsIssueService {
       await this.validateInventoryAvailability(line.raw_material_id, line.quantity_issued);
       let unitCost = line.unit_cost;
       if (unitCost == null) {
-        unitCost = await this.consumeInventoryLayers(Number(line.raw_material_id), Number(line.quantity_issued));
+        unitCost = await this.consumeInventoryLayers(Number(line.raw_material_id), Number(line.quantity_issued), { barcodes: line.barcodes });
         const { error: updErr } = await supabase
           .from('goods_issue_lines')
           .update({ unit_cost: unitCost })
@@ -536,7 +583,7 @@ export class GoodsIssueService {
           throw new Error(`Failed to set unit cost for line: ${updErr.message}`);
         }
       } else {
-        await this.consumeInventoryLayers(Number(line.raw_material_id), Number(line.quantity_issued));
+        await this.consumeInventoryLayers(Number(line.raw_material_id), Number(line.quantity_issued), { barcodes: line.barcodes });
       }
     }
 

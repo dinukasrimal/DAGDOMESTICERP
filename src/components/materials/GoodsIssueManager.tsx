@@ -320,6 +320,8 @@ export const GoodsIssueManager: React.FC = () => {
   const [giShowWeightEntry, setGiShowWeightEntry] = useState(false);
   const [giCurrentCategoryKey, setGiCurrentCategoryKey] = useState<string | null>(null);
   const giWeightInputRef = useRef<HTMLInputElement | null>(null);
+  const giProcessingBarcodesRef = useRef<Set<string>>(new Set());
+  const giErrorCooldownRef = useRef<Map<string, number>>(new Map());
 
   // Form states
   const [formData, setFormData] = useState<CreateGoodsIssue>({
@@ -2037,7 +2039,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
   };
 
   // Update issuing quantity for a specific material
-  const updateIssuingQuantity = (materialId: string, quantity: number) => {
+  const updateIssuingQuantity = (materialId: string, quantity: number, options?: { barcodes?: string[] }) => {
     setBomMaterialRequirements(prev => 
       prev.map(req => 
         req.material_id === materialId 
@@ -2049,20 +2051,39 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
     // Update form lines
     setFormData(prev => {
       const exists = prev.lines.some(l => l.raw_material_id === materialId);
+      const nextBarcodes = options?.barcodes;
       const newLines = exists
         ? prev.lines.map(line => line.raw_material_id === materialId
-            ? { ...line, quantity_issued: Math.max(0, quantity) }
+            ? { 
+                ...line, 
+                quantity_issued: Math.max(0, quantity),
+                barcodes: nextBarcodes !== undefined ? nextBarcodes : line.barcodes,
+              }
             : line)
         : (quantity > 0
-            ? [...prev.lines, { raw_material_id: materialId, quantity_issued: Math.max(0, quantity), batch_number: '', notes: '' }]
+            ? [...prev.lines, { raw_material_id: materialId, quantity_issued: Math.max(0, quantity), batch_number: '', notes: '', barcodes: nextBarcodes }]
             : prev.lines);
       return { ...prev, lines: newLines };
     });
   };
 
   // Fabric scan handlers (Goods Issue)
+  const shouldShowGiError = (key: string, cooldownMs = 1500) => {
+    const now = Date.now();
+    const last = giErrorCooldownRef.current.get(key) || 0;
+    if (now - last < cooldownMs) return false;
+    giErrorCooldownRef.current.set(key, now);
+    return true;
+  };
+
+  const resetGiScanGuards = () => {
+    giProcessingBarcodesRef.current.clear();
+    giErrorCooldownRef.current.clear();
+  };
+
   const startScanForMaterial = (materialId: string) => {
     setGiCurrentMaterialId(materialId);
+    resetGiScanGuards();
     setGiShowBarcodeCamera(true);
     setGiCurrentCategoryKey(null);
   };
@@ -2070,27 +2091,35 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
   const startScanForCategoryMaterial = (categoryId: number, materialId: number) => {
     setGiCurrentMaterialId(materialId.toString());
     setGiCurrentCategoryKey(`category-${categoryId}`);
+    resetGiScanGuards();
     setGiShowBarcodeCamera(true);
   };
 
   const startScanForCategory = (categoryId: number) => {
     setGiCurrentMaterialId(null);
     setGiCurrentCategoryKey(`category-${categoryId}`);
+    resetGiScanGuards();
     setGiShowBarcodeCamera(true);
   };
 
   const handleBarcodeScannedGI = async (barcode: string) => {
+    const code = barcode.trim();
+    if (!code) return;
+    if (giProcessingBarcodesRef.current.has(code)) return;
+    giProcessingBarcodesRef.current.add(code);
     try {
       // Look up barcode from Goods Received lines
       const { data: lines, error } = await supabase
         .from('goods_received_lines')
         .select('raw_material_id, roll_barcode, roll_weight, roll_length')
-        .eq('roll_barcode', barcode)
+        .eq('roll_barcode', code)
         .limit(1);
       if (error) throw error;
 
       if (!lines || lines.length === 0) {
-        toast({ title: 'Roll Not Found', description: 'This barcode has not been received in Goods Received.', variant: 'destructive' });
+        if (shouldShowGiError(`gi-missing:${code}`)) {
+          toast({ title: 'Roll Not Found', description: 'This barcode has not been received in Goods Received.', variant: 'destructive' });
+        }
         return;
       }
 
@@ -2105,7 +2134,9 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       // Validate Fabric category and target
       const isFabric = material?.category_id === 1 || (material?.name || '').toLowerCase().includes('fabric');
       if (!isFabric) {
-        toast({ title: 'Not Fabric Category', description: 'Scanned roll is not in the Fabric category.', variant: 'destructive' });
+        if (shouldShowGiError(`gi-notfabric:${code}`)) {
+          toast({ title: 'Not Fabric Category', description: 'Scanned roll is not in the Fabric category.', variant: 'destructive' });
+        }
         return;
       }
 
@@ -2113,7 +2144,9 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       if (giCurrentCategoryKey) {
         const expectedCategoryId = Number(giCurrentCategoryKey.replace('category-', '')) || null;
         if (expectedCategoryId && material?.category_id !== expectedCategoryId) {
-          toast({ title: 'Wrong Category', description: 'Scanned roll does not belong to the selected category.', variant: 'destructive' });
+          if (shouldShowGiError(`gi-category:${code}`)) {
+            toast({ title: 'Wrong Category', description: 'Scanned roll does not belong to the selected category.', variant: 'destructive' });
+          }
           return;
         }
       }
@@ -2128,7 +2161,9 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       // If scanning under a specific material row, ensure it matches
       if (giCurrentMaterialId && String(material?.id) !== String(expectedMaterialId)) {
         // If scanning under category mode, allow only if the selected category matches Fabric; otherwise block
-        toast({ title: 'Different Material', description: 'This roll belongs to a different material.', variant: 'destructive' });
+        if (shouldShowGiError(`gi-mismatch:${code}`)) {
+          toast({ title: 'Different Material', description: 'This roll belongs to a different material.', variant: 'destructive' });
+        }
         return;
       }
 
@@ -2138,17 +2173,21 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       const recordedLength = Number((line as any).roll_length) || 0;
 
       // When scanned, bring up the overlay with the recorded value filled
-      setGiScannedBarcode(barcode);
+      setGiScannedBarcode(code);
       if (isWeightMode) {
         if (recordedWeight <= 0) {
-          toast({ title: 'Invalid Roll', description: 'This roll has no recorded weight in GRN.', variant: 'destructive' });
+          if (shouldShowGiError(`gi-invalid-weight:${code}`)) {
+            toast({ title: 'Invalid Roll', description: 'This roll has no recorded weight in GRN.', variant: 'destructive' });
+          }
           return;
         }
         setGiRollWeight(recordedWeight);
         setGiRollLength(0);
       } else {
         if (recordedLength <= 0) {
-          toast({ title: 'Invalid Roll', description: 'This roll has no recorded length in GRN.', variant: 'destructive' });
+          if (shouldShowGiError(`gi-invalid-length:${code}`)) {
+            toast({ title: 'Invalid Roll', description: 'This roll has no recorded length in GRN.', variant: 'destructive' });
+          }
           return;
         }
         setGiRollWeight(0);
@@ -2156,7 +2195,11 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       }
       setGiShowWeightEntry(true);
     } catch (err: any) {
-      toast({ title: 'Scan Error', description: err?.message || 'Failed to validate scanned roll.', variant: 'destructive' });
+      if (shouldShowGiError(`gi-scan-error:${code}`)) {
+        toast({ title: 'Scan Error', description: err?.message || 'Failed to validate scanned roll.', variant: 'destructive' });
+      }
+    } finally {
+      giProcessingBarcodesRef.current.delete(code);
     }
   };
 
@@ -2169,29 +2212,30 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
     const primary = isWeightMode ? giRollWeight : giRollLength;
     if (!primary || primary <= 0) return;
 
-    setGiFabricRolls(prev => {
-      const existing = prev[giCurrentMaterialId] || [];
-      if (existing.some(r => r.barcode === giScannedBarcode)) {
-        toast({ title: 'Duplicate Barcode', description: 'This roll is already scanned for this material.', variant: 'destructive' });
-        return prev;
-      }
-      const updated = {
+    const existing = giFabricRolls[giCurrentMaterialId] || [];
+    if (existing.some(r => r.barcode === giScannedBarcode)) {
+      toast({ title: 'Duplicate Barcode', description: 'This roll is already scanned for this material.', variant: 'destructive' });
+      return;
+    }
+
+    const updatedList = [...existing, { barcode: giScannedBarcode, weight: giRollWeight, length: giRollLength }];
+    setGiFabricRolls(prev => ({
+      ...prev,
+      [giCurrentMaterialId]: updatedList,
+    }));
+
+    const barcodes = updatedList.map(r => r.barcode);
+    const total = updatedList.reduce((s, r) => s + (isWeightMode ? (r.weight || 0) : (r.length || 0)), 0);
+    updateIssuingQuantity(giCurrentMaterialId, total, { barcodes });
+
+    // If scanning under a category selection, mirror into categorySelections to reflect in UI input
+    if (giCurrentCategoryKey) {
+      setCategorySelections(prev => ({
         ...prev,
-        [giCurrentMaterialId]: [...existing, { barcode: giScannedBarcode, weight: giRollWeight, length: giRollLength }]
-      };
-      // Update issuing quantity to total scanned quantity based on unit
-      const total = updated[giCurrentMaterialId].reduce((s, r) => s + (isWeightMode ? (r.weight || 0) : (r.length || 0)), 0);
-      updateIssuingQuantity(giCurrentMaterialId, total);
-      // If scanning under a category selection, mirror into categorySelections to reflect in UI input
-      if (giCurrentCategoryKey) {
-        setCategorySelections(prev => ({
-          ...prev,
-          [giCurrentCategoryKey]: (prev[giCurrentCategoryKey]?.filter(i => i.materialId !== Number(giCurrentMaterialId)) || [])
-            .concat(total > 0 ? [{ materialId: Number(giCurrentMaterialId), quantity: total }] : [])
-        }));
-      }
-      return updated;
-    });
+        [giCurrentCategoryKey]: (prev[giCurrentCategoryKey]?.filter(i => i.materialId !== Number(giCurrentMaterialId)) || [])
+          .concat(total > 0 ? [{ materialId: Number(giCurrentMaterialId), quantity: total }] : [])
+      }));
+    }
 
     // Reset for next scan but keep scanner open
     setGiScannedBarcode('');
@@ -2202,12 +2246,26 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
 
   const handleRemoveScannedRollGI = (barcode: string) => {
     if (!giCurrentMaterialId) return;
-    setGiFabricRolls(prev => {
-      const updatedList = (prev[giCurrentMaterialId] || []).filter(r => r.barcode !== barcode);
-      const total = updatedList.reduce((s, r) => s + r.weight, 0);
-      updateIssuingQuantity(giCurrentMaterialId, total);
-      return { ...prev, [giCurrentMaterialId]: updatedList };
-    });
+    const existing = giFabricRolls[giCurrentMaterialId] || [];
+    const updatedList = existing.filter(r => r.barcode !== barcode);
+    setGiFabricRolls(prev => ({
+      ...prev,
+      [giCurrentMaterialId]: updatedList,
+    }));
+    const mat = rawMaterials.find(m => m.id.toString() === giCurrentMaterialId);
+    const unit = (mat?.purchase_unit || 'kg').toLowerCase();
+    const isWeightMode = unit.includes('kg');
+    const total = updatedList.reduce((s, r) => s + (isWeightMode ? (r.weight || 0) : (r.length || 0)), 0);
+    const barcodes = updatedList.map(r => r.barcode);
+    updateIssuingQuantity(giCurrentMaterialId, total, { barcodes });
+
+    if (giCurrentCategoryKey) {
+      setCategorySelections(prev => ({
+        ...prev,
+        [giCurrentCategoryKey]: (prev[giCurrentCategoryKey]?.filter(i => i.materialId !== Number(giCurrentMaterialId)) || [])
+          .concat(total > 0 ? [{ materialId: Number(giCurrentMaterialId), quantity: total }] : [])
+      }));
+    }
   };
 
   const handleFinishScanningGI = () => {
@@ -2218,6 +2276,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
     setGiRollLength(0);
     setGiCurrentMaterialId(null);
     setGiCurrentCategoryKey(null);
+    resetGiScanGuards();
     // Ensure the Goods Issue dialog remains open after closing scanner
     setIsCreateDialogOpen(true);
   };
@@ -2698,8 +2757,8 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         }
       }
 
-      await Promise.resolve(generateGoodsIssuePdf(issue, supplierName, issuedMap, nameById, categoryById, categoryRequirementByName, weightKgMap));
-      toast({ title: 'PDF Generated', description: `Goods Issue ${issue.issue_number} downloaded` });
+      await generateGoodsIssuePdf(issue, supplierName, issuedMap, nameById, categoryById, categoryRequirementByName, weightKgMap);
+      toast({ title: 'PDF Ready', description: `Goods Issue ${issue.issue_number} exported` });
     } catch (e: any) {
       console.error('Failed to export Goods Issue PDF:', e);
       toast({ title: 'PDF Error', description: e?.message || 'Failed to generate PDF', variant: 'destructive' });
@@ -2772,8 +2831,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         }
       }
 
-      await Promise.resolve(
-        generateGoodsIssuePdf(
+      await generateGoodsIssuePdf(
           selectedIssue,
           selectedSupplierName || undefined,
           issuedMap,
@@ -2781,9 +2839,8 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
           categoryById,
           categoryRequirementByName,
           weightKgMap
-        )
       );
-      toast({ title: 'PDF Generated', description: `Goods Issue ${selectedIssue.issue_number} downloaded` });
+      toast({ title: 'PDF Ready', description: `Goods Issue ${selectedIssue.issue_number} exported` });
     } catch (e: any) {
       console.error('Failed to export Goods Issue PDF (context-aware):', e);
       toast({ title: 'PDF Error', description: e?.message || 'Failed to generate PDF', variant: 'destructive' });
@@ -3993,14 +4050,14 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         )}
         {giShowWeightEntry && giScannedBarcode && (
           <div 
-            className="absolute inset-0 flex items-center justify-center bg-black/50"
+            className="absolute inset-0 flex items-center justify-center bg-black/50 p-4 md:p-8 overflow-y-auto"
             style={{ zIndex: 2147483646, pointerEvents: 'auto' }}
             onClick={(e) => {
               e.stopPropagation();
             }}
           >
             <Card 
-              className="w-full max-w-md mx-4 bg-white"
+              className="w-full max-w-full md:max-w-lg bg-white max-h-[90vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
               style={{ position: 'relative', zIndex: 2147483647, pointerEvents: 'auto' }}
             >
@@ -4011,7 +4068,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
                     <Label>{`${giIsWeightMode ? 'Weight' : 'Length'} (${giUnit}) *`}</Label>
                     <Input

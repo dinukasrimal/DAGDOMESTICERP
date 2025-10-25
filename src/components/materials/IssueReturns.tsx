@@ -140,7 +140,7 @@ const IssueReturns: React.FC = () => {
         toast({ title: 'No lines to print', description: 'This return does not contain any trims lines.', variant: 'destructive' });
         return;
       }
-      generateSupplierReturnPdf({
+      await generateSupplierReturnPdf({
         poNumber: row.po_number || undefined,
         supplierName: row.supplier_display_name || row.supplier_name || undefined,
         returnDate: row.return_date,
@@ -594,7 +594,7 @@ const CreateIssueReturnDialog: React.FC<CreateIssueReturnDialogProps> = ({ open,
         if (insertError) throw new Error(insertError.message);
       }
 
-      generateSupplierReturnPdf({
+      await generateSupplierReturnPdf({
         poNumber: selectedPO.name ?? selectedPO.id ?? undefined,
         supplierName: chosenSupplier ?? undefined,
         returnDate: new Date().toISOString().slice(0, 10),

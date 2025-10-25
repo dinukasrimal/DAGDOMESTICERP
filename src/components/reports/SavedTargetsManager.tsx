@@ -254,12 +254,12 @@ export const SavedTargetsManager: React.FC = () => {
       .join(', ');
   };
 
-  const handlePrintPDF = (target: SavedTarget) => {
+  const handlePrintPDF = async (target: SavedTarget) => {
     try {
-      generateTargetPDF(target);
+      await generateTargetPDF(target);
       toast({
-        title: "PDF Generated",
-        description: `Target report for ${target.customer_name} has been downloaded`,
+        title: 'PDF Ready',
+        description: `Target report for ${target.customer_name} exported`,
       });
     } catch (error) {
       console.error('Error generating PDF:', error);

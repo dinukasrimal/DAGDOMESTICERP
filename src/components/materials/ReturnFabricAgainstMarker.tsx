@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { SearchableSelect } from '@/components/ui/searchable-select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { BarcodeScanner } from '@/components/ui/BarcodeScanner';
+import { BarcodeScanner, type BarcodeScannerHandle } from '@/components/ui/BarcodeScanner';
 import { useToast } from '@/hooks/use-toast';
 import { markerRequestService } from '@/services/markerRequestService';
 import type { MarkerRequest } from '@/services/markerRequestService';
@@ -19,6 +19,7 @@ import { RawMaterialsService, type RawMaterialWithInventory } from '@/services/r
 import { generateMarkerReturnPdf } from '@/lib/pdfUtils';
 import { supabase } from '@/integrations/supabase/client';
 import { QrCode, FileDown } from 'lucide-react';
+import type { MarkerPurchaseOrder, MarkerPurchaseOrderLine } from '@/types/marker';
 
 const purchaseOrderService = new PurchaseOrderService();
 const goodsReceivedService = new GoodsReceivedService();
@@ -170,7 +171,7 @@ const ReturnFabricAgainstMarker: React.FC = () => {
                                 barcodes: (line.barcodes || []) ?? [],
                               }));
                               const today = new Date(row.return_date).toISOString().slice(0, 10);
-                              generateMarkerReturnPdf({
+                              await generateMarkerReturnPdf({
                                 markerNumber: markerRes?.data?.marker_number || 'Marker',
                                 poNumber: row.po_number,
                                 returnDate: today,
@@ -213,8 +214,14 @@ const CreateMarkerReturnDialog: React.FC<CreateMarkerReturnDialogProps> = ({ ope
   const { toast } = useToast();
 
   const [markers, setMarkers] = useState<MarkerRequest[]>([]);
+  const [purchaseOrders, setPurchaseOrders] = useState<MarkerPurchaseOrder[]>([]);
   const [rawMaterials, setRawMaterials] = useState<RawMaterialWithInventory[]>([]);
+  const [selectedPurchaseOrderId, setSelectedPurchaseOrderId] = useState('');
   const [selectedMarkerId, setSelectedMarkerId] = useState('');
+  const selectedPurchaseOrder = useMemo(
+    () => purchaseOrders.find(po => String(po.id) === String(selectedPurchaseOrderId)) || null,
+    [purchaseOrders, selectedPurchaseOrderId]
+  );
   const selectedMarker = useMemo(() => markers.find(m => String(m.id) === String(selectedMarkerId)) || null, [markers, selectedMarkerId]);
 
   const [availableMaterials, setAvailableMaterials] = useState<RawMaterialWithInventory[]>([]);
@@ -222,6 +229,7 @@ const CreateMarkerReturnDialog: React.FC<CreateMarkerReturnDialogProps> = ({ ope
   const selectedMaterial = useMemo(() => availableMaterials.find(m => String(m.id) === String(selectedMaterialId)) || null, [availableMaterials, selectedMaterialId]);
 
   const [rolls, setRolls] = useState<FabricRoll[]>([]);
+  const barcodeScannerRef = useRef<BarcodeScannerHandle | null>(null);
   const [showScanner, setShowScanner] = useState(false);
   const [showWeightEntry, setShowWeightEntry] = useState(false);
   const [scannedBarcode, setScannedBarcode] = useState('');
@@ -253,6 +261,7 @@ const CreateMarkerReturnDialog: React.FC<CreateMarkerReturnDialogProps> = ({ ope
     if (!open) {
       setSelectedMarkerId('');
       setSelectedMaterialId('');
+      setSelectedPurchaseOrderId('');
       setAvailableMaterials([]);
       setRolls([]);
       setReturnLines([]);
@@ -274,6 +283,61 @@ const CreateMarkerReturnDialog: React.FC<CreateMarkerReturnDialogProps> = ({ ope
         toast({ title: 'Failed to load marker requests', description: message, variant: 'destructive' });
       }
       try {
+        const { data, error } = await supabase
+          .from('purchases')
+          .select('*')
+          .not('state', 'eq', 'done')
+          .not('state', 'eq', 'cancel')
+          .order('date_order', { ascending: false })
+          .limit(200);
+
+        if (error) throw error;
+
+        const mapped: MarkerPurchaseOrder[] = (data || []).map((order: any) => {
+          let orderLines: MarkerPurchaseOrderLine[] = [];
+          try {
+            const rawLines = typeof order.order_lines === 'string'
+              ? JSON.parse(order.order_lines)
+              : order.order_lines;
+            if (Array.isArray(rawLines)) {
+              orderLines = rawLines.map((line: any, index: number) => {
+                const qtyRaw = line.product_qty ?? line.product_uom_qty ?? line.qty ?? line.quantity ?? 0;
+                const pendingRaw = line.pending_qty ?? line.to_deliver_qty ?? line.to_invoice_qty ?? null;
+                return {
+                  id: line.id ?? `${order.id}-line-${index}`,
+                  product_name: line.product_name || line.name || 'Unknown Product',
+                  product_id: line.product_id || line.id,
+                  product_qty: Number(qtyRaw),
+                  qty_received: Number(line.qty_received ?? line.received_qty ?? line.qty_done ?? 0),
+                  qty_delivered: Number(line.qty_delivered ?? 0),
+                  qty_done: Number(line.qty_done ?? 0),
+                  pending_qty: pendingRaw != null ? Number(pendingRaw) : undefined,
+                  reference: line.reference || line.default_code || null,
+                } as MarkerPurchaseOrderLine;
+              });
+            }
+          } catch (error) {
+            console.warn('Failed to parse order lines for PO', order.name, error);
+          }
+
+          return {
+            id: order.id,
+            name: order.name,
+            partner_name: order.partner_name,
+            date_order: order.date_order,
+            state: order.state,
+            po_number: order.name,
+            pending_qty: order.pending_qty ?? 0,
+            order_lines: orderLines,
+          } as MarkerPurchaseOrder;
+        });
+
+        setPurchaseOrders(mapped);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Please try again.';
+        toast({ title: 'Failed to load purchase orders', description: message, variant: 'destructive' });
+      }
+      try {
         const mats = await rawMaterialsService.getRawMaterials(false);
         setRawMaterials(mats);
       } catch {
@@ -281,6 +345,19 @@ const CreateMarkerReturnDialog: React.FC<CreateMarkerReturnDialogProps> = ({ ope
       }
     })();
   }, [open, toast]);
+
+  useEffect(() => {
+    if (!selectedPurchaseOrderId) {
+      if (selectedMarkerId) setSelectedMarkerId('');
+      return;
+    }
+    if (!selectedMarkerId) return;
+    const marker = markers.find(m => String(m.id) === String(selectedMarkerId));
+    const poIds = marker?.po_ids?.map(id => String(id)) || [];
+    if (!poIds.includes(String(selectedPurchaseOrderId))) {
+      setSelectedMarkerId('');
+    }
+  }, [selectedPurchaseOrderId, markers, selectedMarkerId]);
 
   useEffect(() => {
     if (!selectedMarker) {
@@ -305,7 +382,21 @@ const CreateMarkerReturnDialog: React.FC<CreateMarkerReturnDialogProps> = ({ ope
     }
   }, [selectedMarker, rawMaterials, selectedMaterialId]);
 
-  const markerOptions = useMemo(() => markers.map(marker => ({ value: String(marker.id), label: marker.marker_number || `Marker ${marker.id}` })), [markers]);
+  const poOptions = useMemo(() => purchaseOrders.map(po => ({
+    value: String(po.id),
+    label: po.po_number || `PO ${po.id}`,
+    description: po.partner_name,
+  })), [purchaseOrders]);
+
+  const filteredMarkers = useMemo(() => {
+    if (!selectedPurchaseOrderId) return [];
+    return markers.filter(marker => {
+      const ids = Array.isArray(marker.po_ids) ? marker.po_ids.map(id => String(id)) : [];
+      return ids.includes(String(selectedPurchaseOrderId));
+    });
+  }, [markers, selectedPurchaseOrderId]);
+
+  const markerOptions = useMemo(() => filteredMarkers.map(marker => ({ value: String(marker.id), label: marker.marker_number || `Marker ${marker.id}` })), [filteredMarkers]);
   const materialOptions = useMemo(() => availableMaterials.map(mat => ({ value: String(mat.id), label: mat.name, description: mat.code || '' })), [availableMaterials]);
 
   const addLine = () => {
@@ -342,24 +433,15 @@ const CreateMarkerReturnDialog: React.FC<CreateMarkerReturnDialogProps> = ({ ope
       toast({ title: 'Select fabric', variant: 'destructive' });
       return;
     }
+    if (showWeightEntry) return;
     if (rolls.some(roll => roll.barcode === code)) {
       toast({ title: 'Duplicate barcode', description: 'Already scanned for this line.', variant: 'destructive' });
-      return;
-    }
-    const { data } = await supabase
-      .from('raw_material_inventory')
-      .select('quantity_available')
-      .eq('raw_material_id', Number(selectedMaterial.id))
-      .eq('roll_barcode', code)
-      .gt('quantity_available', 0)
-      .limit(1);
-    if (!data || data.length === 0) {
-      toast({ title: 'Not in stock', description: 'This barcode has no available quantity.', variant: 'destructive' });
       return;
     }
     setScannedBarcode(code);
     setRollWeightInput('');
     setShowWeightEntry(true);
+    barcodeScannerRef.current?.pause();
     requestWeightInputFocus(50);
   };
 
@@ -379,6 +461,7 @@ const CreateMarkerReturnDialog: React.FC<CreateMarkerReturnDialogProps> = ({ ope
     setShowWeightEntry(false);
     setScannedBarcode('');
     setRollWeightInput('');
+    barcodeScannerRef.current?.resume();
   };
 
   const removeRoll = (barcode: string) => setRolls(prev => prev.filter(roll => roll.barcode !== barcode));
@@ -507,7 +590,7 @@ const CreateMarkerReturnDialog: React.FC<CreateMarkerReturnDialogProps> = ({ ope
         barcodes: line.barcodes.map(b => b.barcode || ''),
       })));
 
-      generateMarkerReturnPdf({
+      await generateMarkerReturnPdf({
         markerNumber: selectedMarker.marker_number || 'Marker',
         poNumber: po.po_number,
         returnDate: new Date().toISOString().split('T')[0],
@@ -531,16 +614,36 @@ const CreateMarkerReturnDialog: React.FC<CreateMarkerReturnDialogProps> = ({ ope
         </DialogHeader>
 
         <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div>
+              <Label>Purchase Order</Label>
+              <SearchableSelect
+                value={selectedPurchaseOrderId}
+                onChange={(value) => {
+                  setSelectedPurchaseOrderId(value);
+                  setSelectedMarkerId('');
+                  setSelectedMaterialId('');
+                  setReturnLines([]);
+                  setRolls([]);
+                }}
+                placeholder="Select purchase order"
+                searchPlaceholder="Search POs..."
+                options={poOptions}
+              />
+            </div>
             <div>
               <Label>Marker Request</Label>
               <SearchableSelect
                 value={selectedMarkerId}
                 onChange={(value) => { setSelectedMarkerId(value); setSelectedMaterialId(''); setReturnLines([]); setRolls([]); }}
-                placeholder="Select marker request"
+                placeholder={selectedPurchaseOrder ? 'Select marker request' : 'Select a PO first'}
                 searchPlaceholder="Search markers..."
                 options={markerOptions}
+                disabled={!selectedPurchaseOrder || markerOptions.length === 0}
               />
+              {selectedPurchaseOrder && markerOptions.length === 0 && (
+                <p className="text-xs text-red-600 mt-1">No markers found for this purchase order.</p>
+              )}
             </div>
             <div>
               <Label>Return Date</Label>
@@ -653,6 +756,7 @@ const CreateMarkerReturnDialog: React.FC<CreateMarkerReturnDialogProps> = ({ ope
         </DialogFooter>
 
         <BarcodeScanner
+          ref={barcodeScannerRef}
           isOpen={showScanner}
           onScan={handleScan}
           onClose={() => setShowScanner(false)}
@@ -662,37 +766,56 @@ const CreateMarkerReturnDialog: React.FC<CreateMarkerReturnDialogProps> = ({ ope
           quantityMetric={isWeightMode ? 'weight' : 'length'}
           onRemoveRoll={(barcode) => removeRoll(barcode)}
           onDone={() => setShowScanner(false)}
-        >
-          {showWeightEntry && scannedBarcode && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/50" style={{ zIndex: 2147483646, pointerEvents: 'auto' }} onClick={(e) => e.stopPropagation()}>
-              <Card className="w-full max-w-md mx-4 bg-white" onClick={(e) => e.stopPropagation()} style={{ position: 'relative', zIndex: 2147483647, pointerEvents: 'auto' }}>
-                <CardHeader>
-                  <CardTitle className="text-lg">Enter {isWeightMode ? 'Weight' : 'Length'}</CardTitle>
-                  <CardDescription>Barcode: <strong>{scannedBarcode}</strong></CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div>
-                    <Label>{isWeightMode ? `Weight (${selectedMaterial?.purchase_unit || 'kg'}) *` : `Length (${selectedMaterial?.purchase_unit || 'kg'}) *`}</Label>
-                    <Input
-                      ref={weightInputRef}
-                      value={rollWeightInput}
-                      placeholder="0.00"
-                      inputMode="decimal"
-                      onChange={(e) => {
-                        const raw = e.target.value.replace(',', '.');
-                        if (raw === '' || decimalInputPattern.test(raw)) setRollWeightInput(raw);
-                      }}
-                    />
-                  </div>
-                  <div className="flex gap-2">
-                    <Button className="flex-1 bg-green-600 hover:bg-green-700" onClick={(e) => { e.preventDefault(); e.stopPropagation(); confirmAddRoll(); }}>Add Roll</Button>
-                    <Button variant="outline" className="flex-1" onClick={() => { setShowWeightEntry(false); setScannedBarcode(''); setRollWeightInput(''); }}>Cancel</Button>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          )}
-        </BarcodeScanner>
+          autoPauseOnScan
+        />
+
+        {showWeightEntry && scannedBarcode && (
+          <div
+            className="fixed inset-0 flex items-center justify-center bg-black/60 p-4 md:p-8"
+            style={{ zIndex: 2147483647 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Card
+              className="w-full max-w-lg bg-white max-h-[85vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <CardHeader>
+                <CardTitle className="text-lg">Enter {isWeightMode ? 'Weight' : 'Length'}</CardTitle>
+                <CardDescription>Barcode: <strong>{scannedBarcode}</strong></CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div>
+                  <Label>{isWeightMode ? `Weight (${selectedMaterial?.purchase_unit || 'kg'}) *` : `Length (${selectedMaterial?.purchase_unit || 'kg'}) *`}</Label>
+                  <Input
+                    ref={weightInputRef}
+                    value={rollWeightInput}
+                    placeholder="0.00"
+                    inputMode="decimal"
+                    onChange={(e) => {
+                      const raw = e.target.value.replace(',', '.');
+                      if (raw === '' || decimalInputPattern.test(raw)) setRollWeightInput(raw);
+                    }}
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <Button className="flex-1 bg-green-600 hover:bg-green-700" onClick={(e) => { e.preventDefault(); e.stopPropagation(); confirmAddRoll(); }}>Add Roll</Button>
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => {
+                      setShowWeightEntry(false);
+                      setScannedBarcode('');
+                      setRollWeightInput('');
+                      barcodeScannerRef.current?.resume();
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

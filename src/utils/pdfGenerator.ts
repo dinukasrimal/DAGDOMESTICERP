@@ -1,4 +1,5 @@
 import jsPDF from 'jspdf';
+import { shareOrDownloadPdf } from '@/lib/pdfUtils';
 
 interface TargetData {
   product_category: string;
@@ -38,7 +39,7 @@ const months = [
   { value: '12', label: 'December' },
 ];
 
-export const generateTargetPDF = (target: SavedTarget): void => {
+export const generateTargetPDF = async (target: SavedTarget): Promise<void> => {
   const pdf = new jsPDF();
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
@@ -231,5 +232,8 @@ export const generateTargetPDF = (target: SavedTarget): void => {
 
   // Save the PDF
   const fileName = `Target_${target.customer_name}_${target.target_year}.pdf`;
-  pdf.save(fileName);
+  await shareOrDownloadPdf(pdf, fileName, {
+    title: `Target ${target.customer_name}`,
+    text: `${target.customer_name} sales target ${target.target_year}`,
+  });
 };
