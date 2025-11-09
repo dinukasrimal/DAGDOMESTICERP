@@ -26,10 +26,12 @@ import {
   QrCode,
   ChevronLeft,
   ChevronRight,
+  TrendingUp,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { usePermissions } from '@/hooks/usePermissions';
 import type { AppComponentKey } from '@/services/userManagementService';
+import { POBudgetSidebar } from '@/components/materials/PoBudgetSidebar';
 
 interface ModernLayoutProps {
   children: React.ReactNode;
@@ -49,6 +51,7 @@ interface SidebarItem {
   view?: string;
   children?: SidebarItem[];
   componentKey?: AppComponentKey;
+  action?: 'po-budget';
 }
 
 const SIDEBAR_ITEMS: SidebarItem[] = [
@@ -90,6 +93,7 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
   { id: 'user-management', label: 'User Management', icon: Users, path: '/admin/users', available: true, isSpecial: false, componentKey: 'user-management' },
   { id: 'marker-requests', label: 'Marker Requests', icon: Ruler, path: '/marker-requests', available: true, isSpecial: false, componentKey: 'marker-requests' },
   { id: 'reports', label: 'Reports & Analytics', icon: BarChart3, path: '/reports', available: true, isSpecial: false, componentKey: 'reports' },
+  { id: 'po-budget', label: 'PO Budget vs Actual', icon: TrendingUp, available: true, isSpecial: false, action: 'po-budget' },
   { id: 'customers', label: 'Customers', icon: Users, path: '/customers', available: false, isSpecial: false },
   { id: 'settings', label: 'Settings', icon: Settings, path: '/settings', available: false, isSpecial: false },
 ];
@@ -158,6 +162,7 @@ export const ModernLayout: React.FC<ModernLayoutProps> = ({
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(defaultExpanded);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [userOverrideCollapse, setUserOverrideCollapse] = useState(false);
+  const [poBudgetSidebarOpen, setPoBudgetSidebarOpen] = useState(false);
 
   useEffect(() => {
     setExpandedGroups((prev) => ({ ...defaultExpanded, ...prev }));
@@ -195,6 +200,10 @@ export const ModernLayout: React.FC<ModernLayoutProps> = ({
 
   const handleNavigate = (item: SidebarItem) => {
     if (!item.available) return;
+    if (item.action === 'po-budget') {
+      setPoBudgetSidebarOpen(true);
+      return;
+    }
     if (item.children?.length) {
       toggleGroup(item.id);
       return;
@@ -345,6 +354,7 @@ export const ModernLayout: React.FC<ModernLayoutProps> = ({
           </div>
         </div>
       </div>
+      <POBudgetSidebar open={poBudgetSidebarOpen} onOpenChange={setPoBudgetSidebarOpen} />
     </div>
   );
 };

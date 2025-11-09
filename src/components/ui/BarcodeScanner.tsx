@@ -78,6 +78,11 @@ interface BarcodeScannerProps {
    * Defaults to 'weight'.
    */
   quantityMetric?: 'weight' | 'length';
+  /**
+   * Controls haptic + visual feedback when a scan succeeds.
+   * Set to false to disable green flash overlay and vibration.
+   */
+  feedback?: boolean;
 }
 
 export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScannerProps>(({ 
@@ -93,6 +98,7 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
   scanCooldownMs = 1000,
   unitLabel = 'kg',
   quantityMetric = 'weight',
+  feedback = true,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
@@ -258,9 +264,11 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
           if (lastCodeRef.current === code) return;
           lastCodeRef.current = code;
 
-          // 2) Haptics + visual
-          if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-          showScanSuccess();
+          // 2) Haptics + visual (optional)
+          if (feedback) {
+            try { if (navigator.vibrate) navigator.vibrate([100, 50, 100]); } catch {}
+            showScanSuccess();
+          }
 
           // 3) Deliver up
           onScan(code);
@@ -284,7 +292,10 @@ export const BarcodeScanner = React.forwardRef<BarcodeScannerHandle, BarcodeScan
 
   // —————————————— Controls ——————————————
   const pauseScanning = () => {
-    cleanup();
+    if (readerRef.current) {
+      try { readerRef.current.reset(); } catch {}
+    }
+    setIsScanning(false);
   };
 
   const resumeScanning = () => {

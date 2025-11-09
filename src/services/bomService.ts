@@ -152,6 +152,13 @@ export interface MultiProductBOMCreate {
 }
 
 export class BOMService {
+  async refreshPurchaseBOMConsumption(): Promise<number> {
+    const { data, error } = await supabase.rpc('refresh_all_purchase_bom_consumption');
+    if (error) {
+      throw error;
+    }
+    return typeof data === 'number' ? data : 0;
+  }
   
   async getBOMsByProduct(productId: number): Promise<BOMWithLines[]> {
     console.log(`🔍 BOMService Debug: Looking for BOMs with product association = ${productId}`);

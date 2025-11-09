@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Plus, Edit, Trash2, Copy, Search, Package, AlertTriangle, FileText, Factory, ChevronLeft, ChevronRight, Users, Palette, Ruler } from 'lucide-react';
+import { Plus, Edit, Trash2, Copy, Search, Package, AlertTriangle, FileText, Factory, ChevronLeft, ChevronRight, Users, Palette, Ruler, RefreshCcw } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { BOMService, BOMWithLines, BOMHeaderInsert, BOMLineInsert, MaterialRequirement } from '../../services/bomService';
 import { RawMaterialsService, RawMaterialWithInventory } from '../../services/rawMaterialsService';
@@ -232,6 +232,7 @@ const BOMContent: React.FC = () => {
   const [showCopyDialog, setShowCopyDialog] = useState(false);
   const [showDetailsDialog, setShowDetailsDialog] = useState(false);
   const [copySourceBOM, setCopySourceBOM] = useState<BOMWithLines | null>(null);
+  const [refreshingBOMConsumption, setRefreshingBOMConsumption] = useState(false);
   const { toast } = useToast();
 
   const [bomFormData, setBOMFormData] = useState<Partial<BOMHeaderInsert>>(() => ({
@@ -370,6 +371,27 @@ const BOMContent: React.FC = () => {
         description: error.message || 'Failed to copy BOM',
         variant: 'destructive'
       });
+    }
+  };
+
+  const handleRefreshPurchaseRequirements = async () => {
+    try {
+      setRefreshingBOMConsumption(true);
+      const updatedCount = await bomService.refreshPurchaseBOMConsumption();
+      toast({
+        title: 'Purchase requirements updated',
+        description: updatedCount > 0
+          ? `Recomputed material requirements for ${updatedCount} ${updatedCount === 1 ? 'purchase' : 'purchases'}.`
+          : 'No purchases required changes.'
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Refresh failed',
+        description: error?.message || 'Unable to refresh BOM requirements. Please try again.',
+        variant: 'destructive'
+      });
+    } finally {
+      setRefreshingBOMConsumption(false);
     }
   };
 
@@ -1171,7 +1193,7 @@ const BOMContent: React.FC = () => {
 
       <Card className="bg-white/80 backdrop-blur-sm border border-white/20 shadow-lg">
         <CardHeader className="bg-gradient-to-r from-orange-500/5 to-red-500/5 border-b border-orange-100">
-          <div className="flex justify-between items-center">
+          <div className="flex justify-between items-center flex-wrap gap-4">
             <div>
               <CardTitle className="flex items-center gap-3 text-lg font-bold text-gray-900">
                 <div className="p-2 rounded-lg bg-gradient-to-r from-orange-500 to-red-500">
@@ -1183,17 +1205,28 @@ const BOMContent: React.FC = () => {
                 Manage {boms.length} bill of materials and their components
               </CardDescription>
             </div>
-            <div className="relative w-72">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
-              <Input
-                id="search-boms"
-                name="search"
-                autoComplete="off"
-                placeholder="Search BOMs by name, product, or code..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10 bg-white/70 border-gray-200 focus:border-orange-300 focus:ring-orange-200"
-              />
+            <div className="flex items-center gap-3">
+              <Button
+                variant="secondary"
+                onClick={handleRefreshPurchaseRequirements}
+                disabled={refreshingBOMConsumption}
+                className="bg-white text-orange-600 border border-orange-200 hover:bg-orange-50"
+              >
+                <RefreshCcw className={`h-4 w-4 mr-2 ${refreshingBOMConsumption ? 'animate-spin' : ''}`} />
+                {refreshingBOMConsumption ? 'Refreshing...' : 'Refresh Purchase Requirements'}
+              </Button>
+              <div className="relative w-72">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+                <Input
+                  id="search-boms"
+                  name="search"
+                  autoComplete="off"
+                  placeholder="Search BOMs by name, product, or code..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10 bg-white/70 border-gray-200 focus:border-orange-300 focus:ring-orange-200"
+                />
+              </div>
             </div>
           </div>
         </CardHeader>

@@ -78,6 +78,32 @@ const parseNumeric = (value: any): number | null => {
   return null;
 };
 
+const safeJsonParse = <T,>(value: unknown, fallback: T): T => {
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return fallback;
+    }
+  }
+  if (value == null) return fallback;
+  return value as T;
+};
+
+type MaterialRequirementRow = {
+  material_id: string;
+  material_name: string;
+  required_quantity: number;
+  issued_so_far: number;
+  issuing_quantity: number;
+  unit: string;
+  available_quantity: number;
+  category_id?: number;
+  category_name?: string;
+  category_materials?: { id: number; name: string; base_unit: string }[];
+  is_fabric?: boolean;
+};
+
 const parseKgFromNotes = (notes?: string): { kg: number | null; factor: number | null } => {
   if (!notes) return { kg: null, factor: null };
   try {
@@ -263,18 +289,8 @@ export const GoodsIssueManager: React.FC = () => {
   // New BOM selection states
   const [availableBOMs, setAvailableBOMs] = useState<BOMWithLines[]>([]);
   const [selectedBOM, setSelectedBOM] = useState<BOMWithLines | null>(null);
-  const [bomMaterialRequirements, setBomMaterialRequirements] = useState<{
-    material_id: string;
-    material_name: string;
-    required_quantity: number;
-    issued_so_far: number;
-    issuing_quantity: number;
-    unit: string;
-    available_quantity: number;
-    category_id?: number; // For category-based consumption
-    category_materials?: { id: number; name: string; base_unit: string; }[]; // Available materials in this category
-    is_fabric?: boolean;
-  }[]>([]);
+  const [bomMaterialRequirements, setBomMaterialRequirements] = useState<MaterialRequirementRow[]>([]);
+  const [allBomMaterialRequirements, setAllBomMaterialRequirements] = useState<MaterialRequirementRow[]>([]);
   const [showBOMSelection, setShowBOMSelection] = useState(false);
   const [categorySelections, setCategorySelections] = useState<{[categoryId: string]: {materialId: number, quantity: number}[]}>({});
   const [issuedByMaterial, setIssuedByMaterial] = useState<Map<string, number>>(new Map());
@@ -660,13 +676,15 @@ export const GoodsIssueManager: React.FC = () => {
   // Recompute available quantities in BOM requirements when rawMaterials refreshes
   useEffect(() => {
     if (!bomMaterialRequirements.length) return;
-    setBomMaterialRequirements(prev => prev.map(req => {
-      if (req.category_id) return req; // skip category placeholder rows
+    const updater = (list: MaterialRequirementRow[]) => list.map(req => {
+      if (req.category_materials?.length) return req;
       const mat = rawMaterials.find(m => m.id.toString() === req.material_id);
       const avail = mat?.inventory?.quantity_available ?? req.available_quantity;
       return { ...req, available_quantity: avail };
-    }));
-  }, [rawMaterials]);
+    });
+    setBomMaterialRequirements(prev => updater(prev));
+    setAllBomMaterialRequirements(prev => updater(prev));
+  }, [rawMaterials, bomMaterialRequirements.length]);
 
   const loadPurchaseOrders = async (): Promise<any[]> => {
     try {
@@ -821,6 +839,7 @@ export const GoodsIssueManager: React.FC = () => {
           setActivePOContext(context);
           setSelectedBOM(null);
           setBomMaterialRequirements([]);
+          setAllBomMaterialRequirements([]);
           setShowBOMSelection(false);
           await loadAvailableBOMs(context);
         }
@@ -848,6 +867,7 @@ export const GoodsIssueManager: React.FC = () => {
           setActivePOContext(context);
           setSelectedBOM(null);
           setBomMaterialRequirements([]);
+          setAllBomMaterialRequirements([]);
           setShowBOMSelection(false);
           await loadAvailableBOMs(context, selectedMarkerRequest);
         }
@@ -1584,12 +1604,13 @@ export const GoodsIssueManager: React.FC = () => {
   };
 
   // Calculate material requirements based on selected BOM and PO quantities
-const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: any, markerOverride?: MarkerRequest | null) => {
+  const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: any, markerOverride?: MarkerRequest | null) => {
     try {
-      const materialRequirements: typeof bomMaterialRequirements = [];
+      const materialRequirements: MaterialRequirementRow[] = [];
       
       if (!bom.lines || bom.lines.length === 0) {
         setBomMaterialRequirements([]);
+        setAllBomMaterialRequirements([]);
         return;
       }
 
@@ -1770,7 +1791,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       }
 
       const mergedRequirements = (() => {
-        const map = new Map<string, typeof materialRequirements[number]>();
+        const map = new Map<string, MaterialRequirementRow>();
         materialRequirements.forEach(req => {
           const key = req.category_id ? `category-${req.category_id}` : req.material_id;
           const existing = map.get(key);
@@ -1807,12 +1828,6 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       const markerRequirementForScaling = markerOverride
         ? extractMarkerFabricKg(markerOverride, (markerOverride as any)?.details) ?? rawMarkerKg ?? markerTotalRequirement
         : markerTotalRequirement;
-      const isFabricRequirement = (req: typeof mergedRequirements[number]) => {
-        if (req.is_fabric === true) return true;
-        if (req.is_fabric === false) return false;
-        return req.category_id ? isFabricCategory(req.category_id, req.material_name) : isFabricMaterialId(req.material_id);
-      };
-
       if (issueTab === 'fabric' && (markerOverride || selectedMarkerRequest) && markerRequirementForScaling != null) {
         // If marker has explicit fabric assignments, restrict scaling only to those materials
         const assignedMaterialIds = new Set<string>(
@@ -1837,7 +1852,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         if (totalRelevant > 0) {
           const scale = markerRequirementForScaling / totalRelevant;
           adjustedRequirements = mergedRequirements.map(req => {
-            const isRelevant = assignedMaterialIds.size > 0
+              const isRelevant = assignedMaterialIds.size > 0
               ? (!req.category_id && assignedMaterialIds.has(req.material_id))
               : isFabricRequirement(req);
             if (!isRelevant) return req;
@@ -1848,7 +1863,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
           });
         } else if (relevantRequirements.length > 0) {
           adjustedRequirements = mergedRequirements.map(req => {
-            const isRelevant = assignedMaterialIds.size > 0
+              const isRelevant = assignedMaterialIds.size > 0
               ? (!req.category_id && assignedMaterialIds.has(req.material_id))
               : isFabricRequirement(req);
             if (!isRelevant) return req;
@@ -1868,7 +1883,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         if (markerRequirementForScaling > 0 && scaledRelevantTotal > 0 && Math.abs(scaledRelevantTotal - markerRequirementForScaling) > 1e-6) {
           const ratio = markerRequirementForScaling / scaledRelevantTotal;
           adjustedRequirements = adjustedRequirements.map(req => {
-            const isRelevant = assignedMaterialIds.size > 0
+          const isRelevant = assignedMaterialIds.size > 0
               ? (!req.category_id && assignedMaterialIds.has(req.material_id))
               : isFabricRequirement(req);
             if (!isRelevant) return req;
@@ -1889,7 +1904,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       }
 
       // Filter based on tab
-      const filterFn = (req: typeof adjustedRequirements[number]) => {
+      const filterFn = (req: MaterialRequirementRow) => {
         const isFab = isFabricRequirement(req);
         if (issueTab !== 'fabric') return !isFab;
         // In fabric tab: if marker assigns specific materials, only include those
@@ -1914,6 +1929,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         filtered,
         totalFiltered: filtered.reduce((sum, req) => sum + (Number(req.required_quantity) || 0), 0),
       });
+      setAllBomMaterialRequirements(adjustedRequirements);
       setBomMaterialRequirements(filtered);
 
       if (mergedRequirements.length === 0) {
@@ -1933,6 +1949,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
     } catch (error) {
       console.error('Failed to calculate BOM-based requirements:', error);
       setBomMaterialRequirements([]);
+      setAllBomMaterialRequirements([]);
     }
   };
 
@@ -1992,6 +2009,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
           setActivePOContext(context);
           setSelectedBOM(null);
           setBomMaterialRequirements([]);
+      setAllBomMaterialRequirements([]);
           setShowBOMSelection(false);
           await loadAvailableBOMs(context);
         }
@@ -2008,6 +2026,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
 
       setSelectedBOM(null);
       setBomMaterialRequirements([]);
+      setAllBomMaterialRequirements([]);
       setShowBOMSelection(false);
 
       await loadAvailableBOMs(context, marker);
@@ -2024,6 +2043,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
           setLinkedPurchaseOrders([fallbackOrder]);
           setSelectedBOM(null);
           setBomMaterialRequirements([]);
+          setAllBomMaterialRequirements([]);
           setShowBOMSelection(false);
 
           await loadAvailableBOMs(context);
@@ -2040,13 +2060,14 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
 
   // Update issuing quantity for a specific material
   const updateIssuingQuantity = (materialId: string, quantity: number, options?: { barcodes?: string[] }) => {
-    setBomMaterialRequirements(prev => 
-      prev.map(req => 
-        req.material_id === materialId 
+    const updater = (list: MaterialRequirementRow[]) =>
+      list.map(req =>
+        req.material_id === materialId
           ? { ...req, issuing_quantity: Math.max(0, quantity) }
           : req
-      )
-    );
+      );
+    setBomMaterialRequirements(prev => updater(prev));
+    setAllBomMaterialRequirements(prev => updater(prev));
     
     // Update form lines
     setFormData(prev => {
@@ -2283,9 +2304,14 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
 
   // Restrict scanning to Fabric only (category_id === 1, or name contains 'fabric')
   const isFabricMaterialId = (materialId: string): boolean => {
-    const requirement = bomMaterialRequirements.find(req => !req.category_id && req.material_id === materialId);
-    if (requirement?.is_fabric === true) return true;
-    if (requirement?.is_fabric === false) return false;
+    const requirement = allBomMaterialRequirements.find(req => req.material_id === materialId)
+      || bomMaterialRequirements.find(req => req.material_id === materialId);
+    if (requirement) {
+      if (typeof requirement.is_fabric === 'boolean') return requirement.is_fabric;
+      if (requirement.category_id !== undefined || requirement.category_name) {
+        return isFabricCategory(requirement.category_id, requirement.category_name);
+      }
+    }
 
     const mat = rawMaterials.find(m => m.id.toString() === materialId);
     if (!mat) return false;
@@ -2297,6 +2323,21 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
   const isFabricCategory = (categoryId?: number, categoryName?: string): boolean => {
     if (categoryId === 1) return true;
     return (categoryName || '').toLowerCase().includes('fabric');
+  };
+
+  const isFabricRequirement = (req: MaterialRequirementRow): boolean => {
+    if (typeof req.is_fabric === 'boolean') return req.is_fabric;
+    if (req.category_id !== undefined || req.category_name) {
+      return isFabricCategory(req.category_id, req.category_name);
+    }
+    return isFabricMaterialId(req.material_id);
+  };
+
+  const filterRequirementsByTab = (source: MaterialRequirementRow[], tab: 'fabric' | 'trims'): MaterialRequirementRow[] => {
+    return source.filter(req => {
+      const isFabric = isFabricRequirement(req);
+      return tab === 'fabric' ? isFabric : !isFabric;
+    });
   };
 
   const handlePOSelection = async (orderId: string) => {
@@ -2337,6 +2378,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
       // Reset BOM selection states
       setSelectedBOM(null);
       setBomMaterialRequirements([]);
+      setAllBomMaterialRequirements([]);
       setShowBOMSelection(false);
 
       // Load available BOMs for the products in this PO
@@ -2359,6 +2401,71 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
           description: 'Multiple marker requests found for this purchase order. Please choose one to continue.',
         });
       }
+
+      // Auto-load precomputed consumption requirements if available
+      await applyPurchaseBOMConsumption(order);
+    }
+  };
+
+  const applyPurchaseBOMConsumption = async (purchaseOrder: any) => {
+    try {
+      const rawConsumption = purchaseOrder?.bom_consumption;
+      const parsed = typeof rawConsumption === 'string'
+        ? safeJsonParse(rawConsumption, {})
+        : rawConsumption || {};
+      const materialsMap = parsed?.materials;
+      if (!materialsMap || typeof materialsMap !== 'object' || Object.keys(materialsMap).length === 0) {
+        return;
+      }
+
+      const poNumbers = purchaseOrder?.po_numbers?.length
+        ? purchaseOrder.po_numbers
+        : purchaseOrder?.po_number
+          ? [purchaseOrder.po_number]
+          : [];
+      const issuedMap = poNumbers.length
+        ? await fetchIssuedSoFarForPO(poNumbers)
+        : new Map<string, number>();
+      setIssuedByMaterial(new Map(issuedMap));
+
+      const nextRequirements = Object.entries(materialsMap).map(([materialId, value]: [string, any]) => {
+        const entry = value || {};
+        const idStr = String(materialId);
+        const requiredQuantity = Number(entry.total) || 0;
+        const issuedSoFar = issuedMap.get(idStr) || 0;
+        const rawMaterial = rawMaterials.find(m => m.id.toString() === idStr);
+        const available = rawMaterial?.inventory?.quantity_available
+          ?? rawMaterial?.inventory?.quantity_on_hand
+          ?? 0;
+        const categoryId = entry.category_id ?? rawMaterial?.category?.id;
+        const categoryName = entry.category_name ?? rawMaterial?.category?.name;
+        const isFabric = categoryId
+          ? isFabricCategory(categoryId, categoryName)
+          : isFabricMaterialId(idStr);
+        return {
+          material_id: idStr,
+          material_name: entry.name || rawMaterial?.name || `Material ${idStr}`,
+          required_quantity: requiredQuantity,
+          issued_so_far: issuedSoFar,
+          issuing_quantity: 0,
+          unit: entry.unit || rawMaterial?.base_unit || '',
+          available_quantity: available,
+          category_id: categoryId,
+          category_name: categoryName,
+          is_fabric: isFabric,
+        };
+      }).filter(req => req.required_quantity > 0);
+
+      if (!nextRequirements.length) {
+        setBomMaterialRequirements([]);
+        setAllBomMaterialRequirements([]);
+        return;
+      }
+
+      setAllBomMaterialRequirements(nextRequirements);
+      setBomMaterialRequirements(filterRequirementsByTab(nextRequirements, issueTab));
+    } catch (error) {
+      console.error('Failed to apply purchase BOM consumption', error);
     }
   };
 
@@ -3015,17 +3122,15 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
               </CardHeader>
               <CardContent>
                 <Tabs value={issueTab} onValueChange={(v: any) => {
-                  setIssueTab(v);
-                  // Re-filter current requirements into form lines
-                  setBomMaterialRequirements(prev => prev.filter(req => {
-                    const isFab = req.category_id ? isFabricCategory(req.category_id, req.material_name) : isFabricMaterialId(req.material_id);
-                    return v === 'fabric' ? isFab : !isFab;
-                  }));
+                  const tab = v as 'fabric' | 'trims';
+                  setIssueTab(tab);
+                  const filtered = filterRequirementsByTab(allBomMaterialRequirements, tab);
+                  setBomMaterialRequirements(filtered);
                   setFormData(prev => ({
                     ...prev,
                     lines: prev.lines.filter(line => {
                       const isFab = isFabricMaterialId(line.raw_material_id);
-                      return v === 'fabric' ? isFab : !isFab;
+                      return tab === 'fabric' ? isFab : !isFab;
                     })
                   }));
                 }}>
@@ -3227,9 +3332,9 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
                 )}
 
                 {/* BOM-Based Material Requirements Table */}
-                {selectedBOM && bomMaterialRequirements.length > 0 && (
+                {bomMaterialRequirements.length > 0 && (
                   <div className="mt-6">
-                    {issueTab === 'fabric' && (
+                    {issueTab === 'fabric' && selectedMarkerRequest && (
                       <div className="mb-4 grid gap-3 md:grid-cols-2">
                         {(perMaterialRequirementText || markerRequirementText) && (
                           <div className="rounded-md border border-rose-200 bg-rose-50/80 p-3">
@@ -3272,7 +3377,9 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
                     )}
                     <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center space-x-2">
                       <FileText className="h-5 w-5 text-blue-600" />
-                      <span>Material Requirements - {selectedBOM.name} ({issueTab === 'fabric' ? 'Fabric' : 'Trims'})</span>
+                      <span>
+                        Material Requirements - {selectedBOM ? selectedBOM.name : 'Purchase Requirements'} ({issueTab === 'fabric' ? 'Fabric' : 'Trims'})
+                      </span>
                     </h3>
                     
                     <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
@@ -3290,7 +3397,6 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
                         </TableHeader>
                         <TableBody>
                           {bomMaterialRequirements
-                            .filter(req => !req.category_id)
                             .filter(req => !perMaterialRequirement || req.material_id === activeMaterialIdForRequirement)
                             .map((req, index) => {
                             const remainingToIssue = Math.max(0, req.required_quantity - req.issued_so_far);
@@ -3298,7 +3404,7 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
                             const isInsufficientStock = req.issuing_quantity > req.available_quantity;
                             
                             // Check if this is a category-based requirement
-                            const isCategoryBased = req.category_id !== undefined;
+                            const isCategoryBased = Array.isArray(req.category_materials) && req.category_materials.length > 0;
                             
                             return (
                               <React.Fragment key={req.material_id}>
@@ -4230,6 +4336,6 @@ const calculateBOMBasedRequirements = async (bom: BOMWithLines, purchaseOrder: a
         </DialogContent>
       </Dialog>
     </div>
-  </ModernLayout>
-);
+    </ModernLayout>
+  );
 };
