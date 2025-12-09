@@ -283,7 +283,7 @@ serve(async (req) => {
     console.log('[Odoo Sync] Syncing purchase lines...');
     const allLinesForSync = transformedPurchases.flatMap(purchase => 
       purchase.order_lines.map(line => ({
-        id: line.id.toString(),
+        id: line.id?.toString() || crypto.randomUUID(),
         purchase_id: purchase.id,
         product_name: line.product_name,
         qty_ordered: line.product_qty,

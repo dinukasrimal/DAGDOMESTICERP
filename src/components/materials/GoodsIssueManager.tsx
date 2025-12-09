@@ -2390,10 +2390,9 @@ export const GoodsIssueManager: React.FC = () => {
       setMarkerOptionsForPO(markersForOrder);
 
       if (markersForOrder.length === 1) {
-        await applyMarkerSelection(markersForOrder[0], order);
         toast({
-          title: 'Marker Linked',
-          description: `Marker ${markersForOrder[0].marker_number} auto-selected for this purchase order.`,
+          title: 'Marker Available',
+          description: `Marker ${markersForOrder[0].marker_number} is linked to this PO. Select it if you plan to issue by marker requirement.`,
         });
       } else if (markersForOrder.length > 1) {
         toast({
@@ -2407,13 +2406,9 @@ export const GoodsIssueManager: React.FC = () => {
     }
   };
 
-  const applyPurchaseBOMConsumption = async (purchaseOrder: any) => {
+  const applyPurchaseBOMConsumption = async (purchaseOrder: any, providedMaterials?: Record<string, any> | null) => {
     try {
-      const rawConsumption = purchaseOrder?.bom_consumption;
-      const parsed = typeof rawConsumption === 'string'
-        ? safeJsonParse(rawConsumption, {})
-        : rawConsumption || {};
-      const materialsMap = parsed?.materials;
+      const materialsMap = providedMaterials ?? extractPurchaseConsumptionMaterials(purchaseOrder);
       if (!materialsMap || typeof materialsMap !== 'object' || Object.keys(materialsMap).length === 0) {
         return;
       }
