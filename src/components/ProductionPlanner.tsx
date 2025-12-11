@@ -1,6 +1,6 @@
 
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useTransition, useRef } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -68,16 +68,67 @@ interface LineGroup {
   isExpanded?: boolean;
 }
 
+const AddLineForm: React.FC<{ onAdd: (name: string, capacity: number) => Promise<void> }> = React.memo(({ onAdd }) => {
+  const [name, setName] = useState('');
+  const [capacity, setCapacity] = useState<number>(100);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setIsSubmitting(true);
+    try {
+      await onAdd(trimmed, capacity || 0);
+      setName('');
+      setCapacity(100);
+    } catch (err) {
+      console.error('Add line failed:', err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+      <h4 className="font-medium mb-3">Add New Line</h4>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="text-sm font-medium">Line Name</label>
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Enter line name"
+          />
+        </div>
+        <div>
+          <label className="text-sm font-medium">Daily Capacity</label>
+          <Input
+            type="number"
+            value={capacity}
+            onChange={(e) => setCapacity(parseInt(e.target.value) || 0)}
+            placeholder="Daily capacity"
+          />
+        </div>
+      </div>
+      <Button onClick={handleSubmit} className="mt-3" disabled={!name.trim() || isSubmitting}>
+        <Plus className="h-4 w-4 mr-2" />
+        {isSubmitting ? 'Adding...' : 'Add Line'}
+      </Button>
+    </div>
+  );
+});
+
 export const ProductionPlanner: React.FC = () => {
   const { toast } = useToast();
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [poSearchTerm, setPoSearchTerm] = useState<string>('');
+  const [/*isPoSearchPending*/, startPoSearchTransition] = useTransition();
+  const poSearchRef = useRef('');
+  const poSearchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   // Line management states
   const [productionLines, setProductionLines] = useState<ProductionLine[]>([]);
   const [showLineDialog, setShowLineDialog] = useState(false);
-  const [newLineName, setNewLineName] = useState('');
-  const [newLineCapacity, setNewLineCapacity] = useState<number>(100);
   const [editingLineId, setEditingLineId] = useState<string | null>(null);
   const [editingLineName, setEditingLineName] = useState('');
   const [editingLineCapacity, setEditingLineCapacity] = useState<number>(100);
@@ -131,9 +182,29 @@ export const ProductionPlanner: React.FC = () => {
     targetLine: null
   });
 
+  // Debounce PO search input to keep typing snappy
+  const handlePoSearchChange = (value: string) => {
+    poSearchRef.current = value;
+    if (poSearchDebounce.current) {
+      clearTimeout(poSearchDebounce.current);
+    }
+    poSearchDebounce.current = setTimeout(() => {
+      startPoSearchTransition(() => setPoSearchTerm(value));
+    }, 150);
+  };
+
+  // Precompute lowercased fields once to avoid repeated toLowerCase per keystroke
+  const normalizedPurchaseOrders = useMemo(() => {
+    return purchaseOrders.map(po => ({
+      ...po,
+      nameLower: po.name?.toLowerCase() || '',
+      partnerLower: po.partner_name?.toLowerCase() || '',
+    }));
+  }, [purchaseOrders]);
+
   // Filter purchase orders based on search term
   const filteredPurchaseOrders = useMemo(() => {
-    let filtered = purchaseOrders;
+    let filtered = normalizedPurchaseOrders;
     
     // Filter out POs with 0 pending quantity (for sidebar display only)
     filtered = filtered.filter(po => (po.pending_qty || 0) > 0);
@@ -147,8 +218,8 @@ export const ProductionPlanner: React.FC = () => {
     if (poSearchTerm.trim()) {
       const searchLower = poSearchTerm.toLowerCase();
       filtered = filtered.filter(po => 
-        po.name.toLowerCase().includes(searchLower) ||
-        po.partner_name.toLowerCase().includes(searchLower)
+        po.nameLower.includes(searchLower) ||
+        po.partnerLower.includes(searchLower)
       );
     }
     
@@ -158,7 +229,7 @@ export const ProductionPlanner: React.FC = () => {
     }
     
     return filtered;
-  }, [purchaseOrders, plannedOrders, poSearchTerm, hiddenPOIds, showHiddenPOs]);
+  }, [normalizedPurchaseOrders, plannedOrders, poSearchTerm, hiddenPOIds, showHiddenPOs]);
 
   // Group lines by their group assignment
   const groupedLines = useMemo(() => {
@@ -180,15 +251,15 @@ export const ProductionPlanner: React.FC = () => {
     return { ungroupedLines, groupedMap };
   }, [productionLines, lineGroups]);
 
-  // Generate extended date range (3 months back, current month, 3 months forward)
+  // Generate extended date range (12 months back, current month, 3 months forward)
   // Auto-extend by 2 months when orders exceed current range
   const dates = useMemo(() => {
     const today = new Date();
     const currentMonth = today.getMonth();
     const currentYear = today.getFullYear();
     
-    // Start 3 months before current month
-    const startDate = new Date(currentYear, currentMonth - 3, 1);
+    // Start 12 months before current month to allow dragging to past dates
+    const startDate = new Date(currentYear, currentMonth - 12, 1);
     // End 3 months after current month
     let endDate = new Date(currentYear, currentMonth + 4, 0); // Last day of 3 months ahead
     
@@ -363,6 +434,13 @@ export const ProductionPlanner: React.FC = () => {
     }
   };
 
+  // Normalize production line shape for UI fields that don't exist in DB (current_load/efficiency are local-only).
+  const normalizeLine = (line: any) => ({
+    ...line,
+    current_load: line.current_load ?? 0,
+    efficiency: line.efficiency ?? 100,
+  });
+
   // Fetch production lines from Supabase
   const fetchProductionLines = async () => {
     try {
@@ -404,9 +482,9 @@ export const ProductionPlanner: React.FC = () => {
           .from('production_lines')
           .select('*')
           .order('name');
-        setProductionLines(newData || []);
+        setProductionLines((newData || []).map(normalizeLine));
       } else {
-        setProductionLines(data || []);
+        setProductionLines((data || []).map(normalizeLine));
       }
     } catch (error) {
       console.error('Error fetching production lines:', error);
@@ -444,42 +522,33 @@ export const ProductionPlanner: React.FC = () => {
 
 
   // Line management functions
-  const handleAddLine = async () => {
-    if (newLineName.trim()) {
-      try {
-        const { data, error } = await supabase
-          .from('production_lines')
-          .insert([
-            {
-              name: newLineName.trim(),
-              capacity: newLineCapacity,
-              current_load: 0,
-              efficiency: 100,
-              status: 'active'
-            }
-          ])
-          .select()
-          .single();
+  const handleAddLine = async (name: string, capacity: number) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    try {
+      const { data, error } = await supabase
+        .from('production_lines')
+        .insert([{ name: trimmedName, capacity }])
+        .select()
+        .single();
 
-        if (error) throw error;
+      if (error) throw error;
 
-        setProductionLines(prev => [...prev, data]);
-        setNewLineName('');
-        setNewLineCapacity(100);
-        setShowLineDialog(false);
-        
-        toast({
-          title: 'Line Added',
-          description: `${data.name} has been added successfully`,
-        });
-      } catch (error) {
-        console.error('Error adding production line:', error);
-        toast({
-          title: 'Error',
-          description: 'Failed to add production line',
-          variant: 'destructive',
-        });
-      }
+      setProductionLines(prev => [...prev, normalizeLine(data)]);
+      
+      toast({
+        title: 'Line Added',
+        description: `${data.name} has been added successfully`,
+      });
+    } catch (error) {
+      console.error('Error adding production line:', error);
+      const message = error instanceof Error ? error.message : 'Failed to add production line';
+      toast({
+        title: 'Error',
+        description: message,
+        variant: 'destructive',
+      });
+      throw error;
     }
   };
   
@@ -1510,14 +1579,10 @@ export const ProductionPlanner: React.FC = () => {
 
       if (updateError) throw updateError;
 
-      // Only update local PO state after successful database operation
-      if (newPendingQty <= 0) {
-        setPurchaseOrders(prev => prev.filter(po => po.id !== draggedPO.id));
-      } else {
-        setPurchaseOrders(prev => prev.map(po => 
-          po.id === draggedPO.id ? { ...po, pending_qty: newPendingQty } : po
-        ));
-      }
+      // Keep PO in local state even when fully scheduled so hover cards retain total quantities/history.
+      setPurchaseOrders(prev => prev.map(po => 
+        po.id === draggedPO.id ? { ...po, pending_qty: newPendingQty } : po
+      ));
 
       const dateRange = schedulingPlan.length > 1 
         ? `${schedulingPlan[0].date} to ${schedulingPlan[schedulingPlan.length - 1].date}`
@@ -2258,8 +2323,8 @@ export const ProductionPlanner: React.FC = () => {
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
               <Input
                 placeholder="Search purchase orders..."
-                value={poSearchTerm}
-                onChange={(e) => setPoSearchTerm(e.target.value)}
+                defaultValue=""
+                onChange={(e) => handlePoSearchChange(e.target.value)}
                 className="pl-10 w-64"
               />
             </div>
@@ -2558,7 +2623,8 @@ export const ProductionPlanner: React.FC = () => {
                                         if (!relatedPO) {
                                           relatedPO = purchaseOrders.find(po => po.id === planned.po_id);
                                         }
-                                        
+                                        const firstProductName = relatedPO?.order_lines?.[0]?.product_name || '';
+
                                         return (
                                           <HoverCard key={planned.id}>
                                             <HoverCardTrigger asChild>
@@ -2590,6 +2656,9 @@ export const ProductionPlanner: React.FC = () => {
                                               >
                                                 <div className="font-medium truncate">{planned.po_id}</div>
                                                 <div className="text-xs opacity-75">{planned.quantity?.toLocaleString()}</div>
+                                                {firstProductName && (
+                                                  <div className="text-[11px] text-gray-600 truncate">{firstProductName}</div>
+                                                )}
                                               </div>
                                             </HoverCardTrigger>
                                             <HoverCardContent className="w-80">
@@ -2720,6 +2789,7 @@ export const ProductionPlanner: React.FC = () => {
                                   if (!relatedPO) {
                                     relatedPO = purchaseOrders.find(po => po.id === planned.po_id);
                                   }
+                                  const firstProductName = relatedPO?.order_lines?.[0]?.product_name || '';
                                   return (
                                     <HoverCard key={planned.id}>
                                       <HoverCardTrigger asChild>
@@ -2748,10 +2818,13 @@ export const ProductionPlanner: React.FC = () => {
                                               order.po_id === draggedPlannedOrder.po_id && order.id === planned.id
                                             ) ? 'opacity-50' : ''
                                           }`}
-                                        >
-                                          <div className="font-medium truncate">{planned.po_id}</div>
-                                          <div className="text-xs opacity-75">{planned.quantity?.toLocaleString()}</div>
-                                        </div>
+                                              >
+                                                <div className="font-medium truncate">{planned.po_id}</div>
+                                                <div className="text-xs opacity-75">{planned.quantity?.toLocaleString()}</div>
+                                                {firstProductName && (
+                                                  <div className="text-[11px] text-gray-600 truncate">{firstProductName}</div>
+                                                )}
+                                              </div>
                                       </HoverCardTrigger>
                                       <HoverCardContent className="w-80">
                                         <div className="space-y-3">
@@ -2885,32 +2958,7 @@ export const ProductionPlanner: React.FC = () => {
           
           <div className="space-y-4">
             {/* Add New Line Form */}
-            <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-              <h4 className="font-medium mb-3">Add New Line</h4>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-sm font-medium">Line Name</label>
-                  <Input
-                    value={newLineName}
-                    onChange={(e) => setNewLineName(e.target.value)}
-                    placeholder="Enter line name"
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">Daily Capacity</label>
-                  <Input
-                    type="number"
-                    value={newLineCapacity}
-                    onChange={(e) => setNewLineCapacity(parseInt(e.target.value) || 0)}
-                    placeholder="Daily capacity"
-                  />
-                </div>
-              </div>
-              <Button onClick={handleAddLine} className="mt-3" disabled={!newLineName.trim()}>
-                <Plus className="h-4 w-4 mr-2" />
-                Add Line
-              </Button>
-            </div>
+            <AddLineForm onAdd={handleAddLine} />
 
             {/* Existing Lines */}
             <div className="space-y-3">

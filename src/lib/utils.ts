@@ -11,6 +11,7 @@ export type SupabaseTable =
   | 'invoices'
   | 'purchases'
   | 'inventory'
+  | 'products'
   | 'orders'
   | 'profiles'
   | 'purchase_holds'

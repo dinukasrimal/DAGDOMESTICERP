@@ -160,7 +160,7 @@ export const ModernLayout: React.FC<ModernLayoutProps> = ({
   }, [sidebarItems, isPathActive]);
 
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(defaultExpanded);
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(true);
   const [userOverrideCollapse, setUserOverrideCollapse] = useState(false);
   const [poBudgetSidebarOpen, setPoBudgetSidebarOpen] = useState(false);
 

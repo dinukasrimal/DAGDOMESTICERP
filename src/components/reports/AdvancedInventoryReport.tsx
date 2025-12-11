@@ -7,6 +7,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
 import { supabase } from '@/integrations/supabase/client';
+import { supabaseBatchFetch } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { 
   ChevronDown, 
@@ -351,37 +352,25 @@ export const AdvancedInventoryReport: React.FC = () => {
     setIsLoading(true);
     try {
       console.log('Loading inventory and sales data...');
-      
-      const [inventoryRes, purchaseRes, salesRes, productsRes, holdsRes] = await Promise.all([
-        supabase.from('inventory').select('*'),
-        supabase.from('purchases').select('*').order('date_order', { ascending: false }),
-        supabase.from('invoices').select('*').order('date_order', { ascending: false }),
-        ((supabase as any).from('products')).select('*'),
-        supabase.from('purchase_holds').select('*')
+
+      // PostgREST caps responses at 1,000 rows; batch-fetch to avoid dropping SKUs (e.g., SEMINA SOLID variants).
+      const [inventoryRows, purchaseRows, salesRows, productRows, holdsRows] = await Promise.all([
+        supabaseBatchFetch('inventory', 'id'),
+        supabaseBatchFetch('purchases', 'date_order'),
+        supabaseBatchFetch('invoices', 'date_order'),
+        supabaseBatchFetch('products', 'id'),
+        supabaseBatchFetch('purchase_holds', 'created_at'),
       ]);
 
       console.log('Data loaded:', {
-        inventory: inventoryRes.data?.length || 0,
-        purchases: purchaseRes.data?.length || 0,
-        sales: salesRes.data?.length || 0,
-        holds: holdsRes.data?.length || 0
+        inventory: inventoryRows.length,
+        purchases: purchaseRows.length,
+        sales: salesRows.length,
+        holds: holdsRows.length
       });
 
-      if (inventoryRes.error) {
-        console.error('Inventory error:', inventoryRes.error);
-        throw inventoryRes.error;
-      }
-      if (purchaseRes.error) {
-        console.error('Purchase error:', purchaseRes.error);
-        throw purchaseRes.error;
-      }
-      if (salesRes.error) {
-        console.error('Sales error:', salesRes.error);
-        throw salesRes.error;
-      }
-
       // Transform the data to ensure proper types
-      const transformedInventory = ((inventoryRes.data as RawInventoryRow[] || []).map(item => ({
+      const transformedInventory = ((inventoryRows as RawInventoryRow[] || []).map(item => ({
         id: item.id,
         product_id: typeof item.product_id === 'string' || typeof item.product_id === 'number' ? item.product_id : undefined,
         product_name: item.product_name || 'Unknown Product',
@@ -397,7 +386,7 @@ export const AdvancedInventoryReport: React.FC = () => {
         location: item.location || 'WH/Stock'
       }) as InventoryData)) as InventoryData[];
 
-      const transformedPurchases = (purchaseRes.data || []).map(item => ({
+      const transformedPurchases = (purchaseRows || []).map(item => ({
         id: item.id,
         name: item.name || '',
         partner_name: item.partner_name || '',
@@ -420,13 +409,13 @@ export const AdvancedInventoryReport: React.FC = () => {
       }));
 
       // Set purchase holds data
-      setPurchaseHolds(holdsRes.data || []);
+      setPurchaseHolds(holdsRows || []);
       
       // Mark purchases as on hold based on holds data
       const holdMap = new Map();
-      console.log('Hold records from database:', holdsRes.data);
+      console.log('Hold records from database:', holdsRows);
       
-      (holdsRes.data || []).forEach((hold: any) => {
+      (holdsRows || []).forEach((hold: any) => {
         console.log('Processing hold record:', hold);
         
         // Store the PO name/ID for matching (no expiration check)
@@ -450,7 +439,7 @@ export const AdvancedInventoryReport: React.FC = () => {
 
       setInventoryData(transformedInventory);
       setPurchaseData(purchasesWithHoldStatus);
-      setSalesData((salesRes.data || []).map(inv => ({
+      setSalesData((salesRows || []).map(inv => ({
         ...inv,
         order_lines: Array.isArray(inv.order_lines)
           ? inv.order_lines.map((line: any) => {
@@ -467,7 +456,7 @@ export const AdvancedInventoryReport: React.FC = () => {
             })
           : []
       })));
-      setProductsData(productsRes.data || []);
+      setProductsData(productRows || []);
 
       // If we have no inventory data, create some sample data to show structure
       if (transformedInventory.length === 0) {
@@ -552,6 +541,12 @@ export const AdvancedInventoryReport: React.FC = () => {
         product_ref: prod,
       };
     });
+
+    // Debug: surface what the client has for SEMINA to chase missing items.
+    if (process.env.NODE_ENV !== 'production') {
+      const seminaItems = joinedInventory.filter(item => (item.product_category || '').toUpperCase() === 'SEMINA');
+      console.log('SEMINA inventory items (client-side join):', seminaItems.length, seminaItems.map(i => i.product_name));
+    }
 
     // Group by category from products table
     const categoryMap: { [key: string]: typeof joinedInventory } = {};
