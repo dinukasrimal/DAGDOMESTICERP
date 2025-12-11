@@ -1362,6 +1362,8 @@ export const ProductionPlanner: React.FC = () => {
         date: string;
         quantity: number;
       }> = [];
+      // Track capacity already allocated in this scheduling pass (per date) so we always consume any leftover.
+      const localCapacityUsage = new Map<string, number>();
       const ordersToMove: PlannedOrder[] = [];
 
       // Schedule across multiple days if needed
@@ -1369,18 +1371,16 @@ export const ProductionPlanner: React.FC = () => {
         if (isWorkingDay(currentDate, line.id)) {
           const dateStr = currentDate.toISOString().split('T')[0];
           const conflictingOrders = getConflictingOrders(currentDate, line.id);
-          const availableCapacityOnDate = getAvailableCapacity(currentDate, line.id);
+          const availableCapacityOnDate = getAvailableCapacity(currentDate, line.id) - (localCapacityUsage.get(dateStr) || 0);
           
-          // Check if we need to move conflicting orders
-          if (availableCapacityOnDate < remainingQuantity && conflictingOrders.length > 0) {
-            // Move conflicting orders that would be displaced
+          // Only consider moving conflicting orders if there is zero available capacity; otherwise consume the remaining capacity first.
+          if (availableCapacityOnDate <= 0 && remainingQuantity > 0 && conflictingOrders.length > 0) {
             const capacityNeeded = Math.min(remainingQuantity, line.capacity);
             let capacityToFree = capacityNeeded - availableCapacityOnDate;
             
             for (const conflictingOrder of conflictingOrders) {
               if (capacityToFree <= 0) break;
               
-              // Add to orders to move (avoid duplicates)
               if (!ordersToMove.some(order => order.id === conflictingOrder.id)) {
                 ordersToMove.push(conflictingOrder);
                 capacityToFree -= conflictingOrder.quantity;
@@ -1388,12 +1388,11 @@ export const ProductionPlanner: React.FC = () => {
             }
           }
           
-          // Calculate available capacity after moving conflicting orders
-          const effectiveCapacity = Math.min(line.capacity, availableCapacityOnDate + 
-            ordersToMove
-              .filter(order => order.scheduled_date === dateStr && order.line_id === line.id)
-              .reduce((sum, order) => sum + order.quantity, 0)
-          );
+          // Calculate effective capacity (existing open capacity only; we no longer inflate by moved orders unless they are actually moved)
+          const freedCapacity = ordersToMove
+            .filter(order => order.scheduled_date === dateStr && order.line_id === line.id)
+            .reduce((sum, order) => sum + order.quantity, 0);
+          const effectiveCapacity = Math.max(0, availableCapacityOnDate + freedCapacity);
           
           if (effectiveCapacity > 0) {
             const quantityToSchedule = Math.min(remainingQuantity, effectiveCapacity);
@@ -1402,6 +1401,7 @@ export const ProductionPlanner: React.FC = () => {
               date: dateStr,
               quantity: quantityToSchedule
             });
+            localCapacityUsage.set(dateStr, (localCapacityUsage.get(dateStr) || 0) + quantityToSchedule);
 
             remainingQuantity -= quantityToSchedule;
           }
