@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Calendar as CalendarComponent } from '@/components/ui/calendar';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -68,18 +69,21 @@ interface LineGroup {
   isExpanded?: boolean;
 }
 
-const AddLineForm: React.FC<{ onAdd: (name: string, capacity: number) => Promise<void> }> = React.memo(({ onAdd }) => {
-  const [name, setName] = useState('');
+const AddLineForm: React.FC<{ onAdd: (name: string, capacity: number) => Promise<void>; existingNames: string[] }> = React.memo(({ onAdd, existingNames }) => {
+  const [nameOption, setNameOption] = useState<string>('custom');
+  const [customName, setCustomName] = useState('');
   const [capacity, setCapacity] = useState<number>(100);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = async () => {
-    const trimmed = name.trim();
+    const resolvedName = nameOption === 'custom' ? customName : nameOption;
+    const trimmed = resolvedName.trim();
     if (!trimmed) return;
     setIsSubmitting(true);
     try {
       await onAdd(trimmed, capacity || 0);
-      setName('');
+      setCustomName('');
+      setNameOption('custom');
       setCapacity(100);
     } catch (err) {
       console.error('Add line failed:', err);
@@ -92,13 +96,26 @@ const AddLineForm: React.FC<{ onAdd: (name: string, capacity: number) => Promise
     <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
       <h4 className="font-medium mb-3">Add New Line</h4>
       <div className="grid grid-cols-2 gap-4">
-        <div>
+        <div className="space-y-2">
           <label className="text-sm font-medium">Line Name</label>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Enter line name"
-          />
+          <Select value={nameOption} onValueChange={setNameOption}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Choose line" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="custom">Custom name</SelectItem>
+              {existingNames.map((name) => (
+                <SelectItem key={name} value={name}>{name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {nameOption === 'custom' && (
+            <Input
+              value={customName}
+              onChange={(e) => setCustomName(e.target.value)}
+              placeholder="Enter line name"
+            />
+          )}
         </div>
         <div>
           <label className="text-sm font-medium">Daily Capacity</label>
@@ -110,7 +127,7 @@ const AddLineForm: React.FC<{ onAdd: (name: string, capacity: number) => Promise
           />
         </div>
       </div>
-      <Button onClick={handleSubmit} className="mt-3" disabled={!name.trim() || isSubmitting}>
+      <Button onClick={handleSubmit} className="mt-3" disabled={!((nameOption === 'custom' ? customName : nameOption).trim()) || isSubmitting}>
         <Plus className="h-4 w-4 mr-2" />
         {isSubmitting ? 'Adding...' : 'Add Line'}
       </Button>
@@ -142,6 +159,7 @@ export const ProductionPlanner: React.FC = () => {
   const [isGlobalHoliday, setIsGlobalHoliday] = useState(true);
   const [selectedHolidayLines, setSelectedHolidayLines] = useState<string[]>([]);
   const [isCreatingHolidays, setIsCreatingHolidays] = useState(false);
+  const [calendarColumnWidth, setCalendarColumnWidth] = useState<number>(128);
   
   // Line grouping states
   const [lineGroups, setLineGroups] = useState<LineGroup[]>([]);
@@ -167,6 +185,7 @@ export const ProductionPlanner: React.FC = () => {
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [selectedPlannedOrders, setSelectedPlannedOrders] = useState<Set<string>>(new Set());
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+  const [lineNameFilter, setLineNameFilter] = useState<string>('all');
   const [originalPOData, setOriginalPOData] = useState<Map<string, PurchaseOrder>>(new Map());
   const [isManualScheduling, setIsManualScheduling] = useState(false);
   
@@ -231,12 +250,21 @@ export const ProductionPlanner: React.FC = () => {
     return filtered;
   }, [normalizedPurchaseOrders, plannedOrders, poSearchTerm, hiddenPOIds, showHiddenPOs]);
 
+  const uniqueLineNames = useMemo(() => {
+    return Array.from(new Set(productionLines.map(line => line.name).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  }, [productionLines]);
+
+  const displayedLines = useMemo(() => {
+    if (lineNameFilter === 'all') return productionLines;
+    return productionLines.filter(line => line.name === lineNameFilter);
+  }, [lineNameFilter, productionLines]);
+
   // Group lines by their group assignment
   const groupedLines = useMemo(() => {
     const ungroupedLines: ProductionLine[] = [];
     const groupedMap = new Map<string, ProductionLine[]>();
     
-    productionLines.forEach(line => {
+    displayedLines.forEach(line => {
       const group = lineGroups.find(g => g.line_ids.includes(line.id));
       if (group) {
         if (!groupedMap.has(group.id)) {
@@ -249,7 +277,7 @@ export const ProductionPlanner: React.FC = () => {
     });
     
     return { ungroupedLines, groupedMap };
-  }, [productionLines, lineGroups]);
+  }, [displayedLines, lineGroups]);
 
   // Generate extended date range (12 months back, current month, 3 months forward)
   // Auto-extend by 2 months when orders exceed current range
@@ -2317,7 +2345,7 @@ export const ProductionPlanner: React.FC = () => {
         </div>
 
         {/* PO Controls and Filters */}
-        <div className="flex items-center justify-between bg-white/80 backdrop-blur-sm rounded-xl p-4 border-0 shadow-lg">
+          <div className="flex items-center justify-between bg-white/80 backdrop-blur-sm rounded-xl p-4 border-0 shadow-lg">
           <div className="flex items-center gap-4">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -2335,6 +2363,35 @@ export const ProductionPlanner: React.FC = () => {
             >
               {showHiddenPOs ? 'Hide Hidden' : 'Show Hidden'} ({hiddenPOIds.size})
             </Button>
+            <Select value={lineNameFilter} onValueChange={(val) => setLineNameFilter(val)}>
+              <SelectTrigger className="w-48 h-9 text-sm">
+                <SelectValue placeholder="Filter line" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All lines</SelectItem>
+                {uniqueLineNames.map(name => (
+                  <SelectItem key={name} value={name}>{name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <div className="flex items-center gap-2 text-xs text-gray-600">
+              <span>Column width</span>
+              <Input
+                type="number"
+                min={96}
+                max={220}
+                value={calendarColumnWidth}
+                onChange={(e) => setCalendarColumnWidth(Math.min(220, Math.max(96, parseInt(e.target.value) || 0)))}
+                className="w-20 h-8 text-xs"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setCalendarColumnWidth(128)}
+              >
+                Reset
+              </Button>
+            </div>
           </div>
           <div className="flex items-center gap-2 text-sm text-gray-600">
             <span>{filteredPurchaseOrders.length} POs</span>
@@ -2599,7 +2656,7 @@ export const ProductionPlanner: React.FC = () => {
                                 return (
                                   <div
                                     key={`${line.id}-${date.toISOString()}`}
-                                    className={`w-32 h-20 border-r border-gray-200 relative transition-all duration-200 ${
+                                    className={`h-20 border-r border-gray-200 relative transition-all duration-200 ${
                                       isToday(date)
                                         ? 'bg-blue-50 border-blue-200'
                                         : isHoliday(date, line.id)
@@ -2612,6 +2669,7 @@ export const ProductionPlanner: React.FC = () => {
                                               ? 'bg-gray-100/50'
                                               : 'bg-white hover:bg-blue-50'
                                     }`}
+                                    style={{ width: `${calendarColumnWidth}px`, minWidth: `${calendarColumnWidth}px` }}
                                     onDragOver={handleDragOver}
                                     onDrop={(e) => handleUniversalDrop(e, line, date)}
                                   >
@@ -2765,7 +2823,7 @@ export const ProductionPlanner: React.FC = () => {
                           return (
                             <div
                               key={`${line.id}-${date.toISOString()}`}
-                              className={`w-32 h-20 border-r border-gray-200 relative transition-all duration-200 ${
+                              className={`h-20 border-r border-gray-200 relative transition-all duration-200 ${
                                 isToday(date)
                                   ? 'bg-blue-50 border-blue-200'
                                   : isHoliday(date, line.id)
@@ -2778,6 +2836,7 @@ export const ProductionPlanner: React.FC = () => {
                                         ? 'bg-gray-100/50'
                                         : 'bg-white hover:bg-blue-50'
                               }`}
+                              style={{ width: `${calendarColumnWidth}px`, minWidth: `${calendarColumnWidth}px` }}
                               onDragOver={handleDragOver}
                               onDrop={(e) => handleUniversalDrop(e, line, date)}
                             >
@@ -2958,7 +3017,7 @@ export const ProductionPlanner: React.FC = () => {
           
           <div className="space-y-4">
             {/* Add New Line Form */}
-            <AddLineForm onAdd={handleAddLine} />
+            <AddLineForm onAdd={handleAddLine} existingNames={uniqueLineNames} />
 
             {/* Existing Lines */}
             <div className="space-y-3">
