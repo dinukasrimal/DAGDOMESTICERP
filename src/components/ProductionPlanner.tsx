@@ -1183,6 +1183,37 @@ function rebalanceByCapacity(
     setShowSplitPODialog(true);
   };
 
+  // Open purchase-order context menu near cursor and keep it within viewport
+  const openPOContextMenu = (e: React.MouseEvent, po: PurchaseOrder) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const menuWidth = 200;
+    const menuHeight = 140;
+    const padding = 8;
+    const viewportWidth = document.documentElement.clientWidth;
+    const viewportHeight = document.documentElement.clientHeight;
+    const x = Math.max(padding, Math.min(e.clientX + 4, viewportWidth - menuWidth - padding));
+    const y = Math.max(padding, Math.min(e.clientY + 4, viewportHeight - menuHeight - padding));
+    setPoContextMenu({ po, x, y });
+  };
+
+  const openSplitDialogForPlanned = (plannedOrder: PlannedOrder) => {
+    // Find the related PO from current list or original map
+    let po = purchaseOrders.find(p => p.name === plannedOrder.po_id || p.id === plannedOrder.po_id);
+    if (!po) {
+      po = originalPOData.get(plannedOrder.po_id);
+    }
+    if (!po) {
+      toast({ title: 'Split unavailable', description: 'Could not find PO details to split.', variant: 'destructive' });
+      return;
+    }
+    if ((po as any).is_split) {
+      toast({ title: 'Already split', description: 'This PO is already a split order.', variant: 'destructive' });
+      return;
+    }
+    openSplitDialog(po);
+  };
+
   // Save split orders to Supabase split_orders table
   const saveSplitOrders = async (originalPO: PurchaseOrder, splitPOs: any[]) => {
     try {
@@ -1329,27 +1360,19 @@ function rebalanceByCapacity(
       // Store split orders separately in a custom table or local storage
       await saveSplitOrders(originalPO, splitPOs);
 
-      // Remove original PO from the array and add split POs
+      // Remove original and insert all splits in place in purchase order list
       setPurchaseOrders(prev => {
-        const filtered = prev.filter(po => po.id !== originalPO.id);
-        return [...filtered, ...splitPOs];
+        const idx = prev.findIndex(po => po.id === originalPO.id);
+        const without = prev.filter(po => po.id !== originalPO.id);
+        if (idx >= 0) {
+          return [...without.slice(0, idx), ...splitPOs, ...without.slice(idx)];
+        }
+        return [...without, ...splitPOs];
       });
 
-      // Update any planned production that references the original PO
-      const plannedOrdersForOriginalPO = plannedOrders.filter(planned => planned.po_id === originalPO.name);
-      
-      if (plannedOrdersForOriginalPO.length > 0) {
-        // Move all planned production to the first split (local state only for now)
-        const firstSplitName = splitPOs[0].name;
-        
-        // Update local state
-        setPlannedOrders(prev => 
-          prev.map(planned => 
-            planned.po_id === originalPO.name 
-              ? { ...planned, po_id: firstSplitName }
-              : planned
-          )
-        );
+      // Clear any planned production referencing original; user will drag splits as needed
+      if (plannedOrders.some(planned => planned.po_id === originalPO.name)) {
+        setPlannedOrders(prev => prev.filter(planned => planned.po_id !== originalPO.name));
       }
 
       toast({
@@ -1801,9 +1824,124 @@ function rebalanceByCapacity(
     }
   };
 
+  const moveSplitGroupToSidebar = async (plannedOrder: PlannedOrder) => {
+    // Identify split group
+    const relatedPO = purchaseOrders.find(po => po.name === plannedOrder.po_id || po.id === plannedOrder.po_id);
+    const originalId = (relatedPO as any)?.original_po_id;
+    if (!originalId) return false;
+
+    const splitGroup = purchaseOrders.filter(po => (po as any)?.original_po_id === originalId);
+    const splitIds = splitGroup.map(po => po.id);
+
+    // Compute total to return: pending from splits + any scheduled quantities
+    const plannedBackQty = plannedOrders
+      .filter(o => splitIds.includes(o.po_id))
+      .reduce((sum, o) => sum + (o.quantity || 0), 0);
+    const pendingFromSplits = splitGroup.reduce((sum, po) => sum + (po.pending_qty || 0), 0);
+    const totalReturn = plannedBackQty + pendingFromSplits;
+
+    // Delete planned blocks for splits
+    await supabase.from('planned_production').delete().in('purchase_id', splitIds);
+    setPlannedOrders(prev => prev.filter(o => !splitIds.includes(o.po_id)));
+
+    // Delete split records
+    await supabase.from('split_orders').delete().eq('original_po_id', originalId);
+
+    // Restore original PO record
+    const original = originalPOData.get(originalId) || {
+      id: originalId,
+      name: relatedPO?.name?.split('-S')[0] || originalId,
+      partner_name: relatedPO?.partner_name || '',
+      date_order: relatedPO?.date_order || '',
+      amount_total: relatedPO?.amount_total || 0,
+      state: 'purchase',
+      order_lines: relatedPO?.order_lines || [],
+      total_qty: totalReturn,
+      pending_qty: totalReturn
+    };
+
+    // Update DB pending qty for original
+    await supabase
+      .from('purchases')
+      .update({ pending_qty: (original.pending_qty || 0) + totalReturn, state: 'purchase' })
+      .eq('id', originalId);
+
+    // Update local purchase orders
+    setPurchaseOrders(prev => {
+      const filtered = prev.filter(po => !splitIds.includes(po.id));
+      const withoutOriginal = filtered.filter(po => po.id !== originalId);
+      return [...withoutOriginal, { ...original, pending_qty: (original.pending_qty || 0) + totalReturn }];
+    });
+
+    toast({
+      title: 'PO Restored',
+      description: `Moved ${original.name} back to sidebar (unsplit).`,
+    });
+    return true;
+  };
+
+  const unsplitOrder = async (splitPO: PurchaseOrder) => {
+    const originalId = (splitPO as any)?.original_po_id;
+    if (!originalId) return;
+    const groupSplits = purchaseOrders.filter(po => (po as any)?.original_po_id === originalId);
+    const splitIds = groupSplits.map(po => po.id);
+    const totalQty = groupSplits.reduce((sum, po) => sum + (po.pending_qty || 0), 0);
+
+    const { error: plannedDeleteError } = await supabase.from('planned_production').delete().in('purchase_id', splitIds);
+    if (plannedDeleteError) {
+      console.warn('Failed to delete planned blocks for splits during unsplit:', plannedDeleteError);
+    }
+    setPlannedOrders(prev => prev.filter(o => !splitIds.includes(o.po_id)));
+    const { error: splitDeleteError } = await supabase.from('split_orders').delete().eq('original_po_id', originalId);
+    if (splitDeleteError) {
+      console.warn('Failed to delete split order rows during unsplit:', splitDeleteError);
+    }
+
+    // Clear any cached splits in localStorage so they don't reappear on refresh
+    try {
+      const cachedSplits = JSON.parse(localStorage.getItem('splitOrders') || '[]');
+      const remaining = cachedSplits.filter((split: any) => split.original_po_id !== originalId);
+      localStorage.setItem('splitOrders', JSON.stringify(remaining));
+    } catch (storageError) {
+      console.warn('Failed to clear cached split orders for unsplit:', storageError);
+    }
+
+    const original = originalPOData.get(originalId) || {
+      id: originalId,
+      name: groupSplits[0]?.name?.split('-S')[0] || originalId,
+      partner_name: groupSplits[0]?.partner_name || '',
+      date_order: groupSplits[0]?.date_order || '',
+      amount_total: groupSplits[0]?.amount_total || 0,
+      state: 'purchase',
+      order_lines: groupSplits[0]?.order_lines || [],
+      total_qty: totalQty,
+      pending_qty: totalQty
+    };
+
+    await supabase
+      .from('purchases')
+      .update({ pending_qty: (original.pending_qty || 0) + totalQty, state: 'purchase' })
+      .eq('id', originalId);
+
+    // Remove local split entries and restore original locally
+    setPurchaseOrders(prev => {
+      const withoutSplits = prev.filter(po => !splitIds.includes(po.id) && po.id !== originalId && !(po as any)?.original_po_id);
+      return [...withoutSplits, { ...original, pending_qty: (original.pending_qty || 0) + totalQty }];
+    });
+
+    // Reload from Supabase to ensure splits are gone and original is visible
+    fetchPurchaseOrders().catch(err => console.error('Error refreshing POs after unsplit:', err));
+
+    toast({ title: 'Unsplit', description: 'Restored original PO to sidebar.' });
+  };
+
   // Move planned order back to sidebar
   const movePlannedOrderToSidebar = async (plannedOrder: PlannedOrder) => {
     try {
+      // If this belongs to a split group, restore full PO instead of keeping splits
+      const handled = await moveSplitGroupToSidebar(plannedOrder);
+      if (handled) return;
+
       // Find all blocks for the same PO
       const allBlocksForPO = plannedOrders.filter(order => order.po_id === plannedOrder.po_id);
       
@@ -2056,7 +2194,6 @@ function rebalanceByCapacity(
       movePlannedOrderToSidebar(plannedOrder);
       document.body.removeChild(contextMenu);
     };
-    
     contextMenu.appendChild(moveMenuItem);
     document.body.appendChild(contextMenu);
     
@@ -2759,10 +2896,7 @@ function rebalanceByCapacity(
                           <div
                             draggable
                             onDragStart={(e) => handleDragStart(e, po)}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              setPoContextMenu({ po, x: e.clientX, y: e.clientY });
-                            }}
+                            onContextMenu={(e) => openPOContextMenu(e, po)}
                             className={`p-3 bg-white rounded-lg border transition-all cursor-move ${
                               hiddenPOIds.has(po.id) 
                                 ? 'border-gray-200 opacity-50' 
@@ -2825,6 +2959,7 @@ function rebalanceByCapacity(
               </ScrollArea>
             </CardContent>
           </Card>
+
 
           {/* Enhanced Production Calendar */}
           <Card className="lg:col-span-3 bg-white/80 backdrop-blur-sm border-0 shadow-lg">
@@ -3283,46 +3418,6 @@ function rebalanceByCapacity(
           </Card>
         </div>
 
-        {/* Enhanced Planned Orders Summary */}
-        {plannedOrders.length > 0 && (
-          <Card className="bg-white/80 backdrop-blur-sm border-0 shadow-lg">
-            <CardHeader>
-              <CardTitle className="flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <Clock className="h-5 w-5 text-purple-600" />
-                  <span>Planned Orders</span>
-                </div>
-                <Badge variant="secondary">{plannedOrders.length}</Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                {plannedOrders.slice(0, 8).map((planned) => {
-                  const line = productionLines.find(l => l.id === planned.line_id);
-                  return (
-                    <div key={planned.id} className="p-3 bg-gradient-to-br from-green-50 to-green-100 rounded-lg border border-green-200 hover:shadow-md transition-shadow">
-                      <div className="space-y-2">
-                        <div className="font-medium text-sm text-gray-900 truncate">{planned.po_id}</div>
-                        <div className="text-xs text-gray-600">{line?.name}</div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs text-gray-600">
-                            {planned.quantity?.toLocaleString() || '0'}
-                          </span>
-                          <Badge className="bg-green-100 text-green-800 text-xs">
-                            {planned.status}
-                          </Badge>
-                        </div>
-                        <div className="text-xs text-gray-500">
-                          {new Date(planned.scheduled_date).toLocaleDateString()}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </CardContent>
-          </Card>
-        )}
       </div>
 
       {/* Production Recording Dialog */}
@@ -3730,15 +3825,28 @@ function rebalanceByCapacity(
           style={{ left: poContextMenu.x, top: poContextMenu.y }}
           onMouseLeave={() => setPoContextMenu(null)}
         >
-          <button
-            className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100"
-            onClick={() => {
-              openSplitDialog(poContextMenu.po);
-              setPoContextMenu(null);
-            }}
-          >
-            Split Order
-          </button>
+          {!(poContextMenu.po as any).is_split && (
+            <button
+              className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100"
+              onClick={() => {
+                openSplitDialog(poContextMenu.po);
+                setPoContextMenu(null);
+              }}
+            >
+              Split Order
+            </button>
+          )}
+          {(poContextMenu.po as any).is_split && (
+            <button
+              className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100"
+              onClick={() => {
+                unsplitOrder(poContextMenu.po);
+                setPoContextMenu(null);
+              }}
+            >
+              Unsplit Order
+            </button>
+          )}
           <button
             className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100"
             onClick={() => {
@@ -3873,3 +3981,5 @@ function rebalanceByCapacity(
     </div>
   );
 };
+
+export default ProductionPlanner;
