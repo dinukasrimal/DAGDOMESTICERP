@@ -15,11 +15,14 @@ import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { 
   Package, Calendar, Clock, Users, TrendingUp, RefreshCw, AlertCircle, Plus, CalendarDays, 
-  Edit, Trash2, ChevronDown, ChevronRight, GripVertical, Settings, Search
+  Edit, Trash2, ChevronDown, ChevronRight, GripVertical, Settings, Search, Download
 } from 'lucide-react';
 import { supabaseBatchFetch, cn } from '@/lib/utils';
 import { supabaseDataService } from '@/services/supabaseDataService';
 import { Holiday } from '@/types/scheduler';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import { shareOrDownloadPdf } from '@/lib/pdfUtils';
 
 interface PurchaseOrder {
   id: string;
@@ -185,6 +188,7 @@ export const ProductionPlanner: React.FC = () => {
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [selectedPlannedOrders, setSelectedPlannedOrders] = useState<Set<string>>(new Set());
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+  const [isGeneratingPdfs, setIsGeneratingPdfs] = useState(false);
   const [lineNameFilter, setLineNameFilter] = useState<string>('all');
   const [originalPOData, setOriginalPOData] = useState<Map<string, PurchaseOrder>>(new Map());
   const [isManualScheduling, setIsManualScheduling] = useState(false);
@@ -342,6 +346,105 @@ export const ProductionPlanner: React.FC = () => {
     const compareDate = new Date(date);
     compareDate.setHours(0, 0, 0, 0);
     return compareDate < today;
+  };
+
+  const buildLinePlanPdf = async (line: ProductionLine, orders: PlannedOrder[]) => {
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const margin = 14;
+
+    const addHeader = () => {
+      pdf.setFillColor(37, 99, 235);
+      pdf.rect(0, 0, pageWidth, 26, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(14);
+      pdf.setFont(undefined, 'bold');
+      pdf.text('Production Line Plan', margin, 17);
+      pdf.setFontSize(10);
+      pdf.text(line.name || 'Unnamed Line', pageWidth - margin, 17, { align: 'right' });
+      pdf.setTextColor(0, 0, 0);
+    };
+
+    const addMeta = () => {
+      pdf.setFontSize(10);
+      pdf.text(`Line: ${line.name}`, margin, 34);
+      pdf.text(`Capacity: ${line.capacity ?? '-'} / day`, margin, 40);
+      pdf.text(`Generated: ${new Date().toLocaleString()}`, margin, 46);
+    };
+
+    const addTable = () => {
+      const tableBody = orders
+        .sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date))
+        .map(order => {
+          const related = purchaseOrders.find(po => po.id === order.po_id || po.name === order.po_id);
+          const partner = related?.partner_name || '—';
+          const firstLine = related?.order_lines?.[0];
+          const product = firstLine?.product_name || '—';
+          return [
+            order.scheduled_date,
+            order.po_id,
+            partner,
+            product,
+            order.quantity?.toLocaleString() || '—',
+            order.status || 'planned'
+          ];
+        });
+
+      autoTable(pdf, {
+        startY: 56,
+        head: [['Date', 'PO', 'Partner', 'Item', 'Qty', 'Status']],
+        body: tableBody,
+        styles: { fontSize: 9, cellPadding: 3 },
+        headStyles: { fillColor: [37, 99, 235], textColor: 255, halign: 'center' },
+        columnStyles: {
+          0: { cellWidth: 26 },
+          1: { cellWidth: 36 },
+          2: { cellWidth: 38 },
+          3: { cellWidth: 42 },
+          4: { cellWidth: 18, halign: 'right' },
+          5: { cellWidth: 20, halign: 'center' }
+        },
+        didDrawPage: () => {
+          addHeader();
+          addMeta();
+        }
+      });
+    };
+
+    addHeader();
+    addMeta();
+    addTable();
+
+    await shareOrDownloadPdf(pdf, `Line_${line.name || 'Plan'}.pdf`, {
+      title: `${line.name} Plan`
+    });
+  };
+
+  const handleDownloadAllLinePdfs = async () => {
+    setIsGeneratingPdfs(true);
+    try {
+      const lineOrdersMap = new Map<string, PlannedOrder[]>();
+      plannedOrders.forEach(order => {
+        if (!lineOrdersMap.has(order.line_id)) {
+          lineOrdersMap.set(order.line_id, []);
+        }
+        lineOrdersMap.get(order.line_id)!.push(order);
+      });
+
+      const linesWithOrders = productionLines.filter(line => (lineOrdersMap.get(line.id)?.length || 0) > 0);
+      for (const line of linesWithOrders) {
+        const orders = lineOrdersMap.get(line.id) || [];
+        await buildLinePlanPdf(line, orders);
+      }
+      if (linesWithOrders.length === 0) {
+        toast({ title: 'No schedules to export', description: 'There are no planned orders to export yet.' });
+      }
+    } catch (err) {
+      console.error('PDF generation failed', err);
+      toast({ title: 'PDF generation failed', description: 'Could not create planner PDFs. Please try again.' });
+    } finally {
+      setIsGeneratingPdfs(false);
+    }
   };
 
   const isHoliday = (date: Date, lineId?: string) => {
@@ -2789,6 +2892,19 @@ function rebalanceByCapacity(
                 <RefreshCw className="mr-2 h-4 w-4" />
               )}
               Sync POs
+            </Button>
+            <Button
+              onClick={handleDownloadAllLinePdfs}
+              disabled={isGeneratingPdfs || plannedOrders.length === 0}
+              variant="outline"
+              className="bg-white shadow-sm"
+            >
+              {isGeneratingPdfs ? (
+                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="mr-2 h-4 w-4" />
+              )}
+              {isGeneratingPdfs ? 'Preparing PDFs...' : 'Download PDFs'}
             </Button>
           </div>
         </div>
